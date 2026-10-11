@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <openssl/evp.h>
 #include "../core/ByteBuffer.hpp"
+#include "BlockStateTraits.hpp"
 #include "../generated/BlockStates.hpp"
 
 namespace cppfm {
@@ -46,14 +48,6 @@ inline std::array<std::uint8_t,16> packUuidFromUrl(const std::string& url) {
     }
     return out;
 }
-
-struct HotbarEntry { std::uint32_t itemId; std::uint16_t stateId; };
-inline const struct { const char* name; int cnt; } kKit[] = {
-    {"minecraft:iron_sword",1}, {"minecraft:iron_pickaxe",1}, {"minecraft:iron_axe",1},
-    {"minecraft:bread",8}, {"minecraft:apple",4},
-    {"minecraft:cobblestone",64}, {"minecraft:oak_planks",64}, {"minecraft:torch",32},
-    {"minecraft:dirt",64},
-};
 
 inline std::string blockNameByState(std::uint16_t sid) {
     if (auto* d = gen::blockByState(sid)) return std::string(d->name);

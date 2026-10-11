@@ -4,9 +4,12 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <fstream>
 #include <cstdio>
@@ -28,6 +31,51 @@ class World;   // forward for location checks; included conditionally below
 #include "World.hpp"
 
 namespace cppfm {
+
+namespace datapack_detail {
+inline bool isDirectoryIfPresent(const std::filesystem::path& path) {
+    namespace fs = std::filesystem;
+    std::error_code error;
+    const bool exists = fs::exists(path, error);
+    if (error)
+        throw fs::filesystem_error("inspect datapack directory", path,
+                                   error);
+    if (!exists) return false;
+    if (!fs::is_directory(path, error) || error)
+        throw fs::filesystem_error("inspect datapack directory", path,
+            error ? error : std::make_error_code(
+                std::errc::not_a_directory));
+    return true;
+}
+
+inline std::vector<std::filesystem::directory_entry> sortedSubdirectories(
+    const std::filesystem::path& root, std::error_code& error) {
+    namespace fs = std::filesystem;
+    error.clear();
+    std::vector<fs::directory_entry> directories;
+    if (!isDirectoryIfPresent(root)) return directories;
+    fs::directory_iterator it(root, error);
+    const fs::directory_iterator end;
+    while (!error && it != end) {
+        std::error_code statusError;
+        const bool isDirectory = it->is_directory(statusError);
+        if (statusError) {
+            error = statusError;
+            break;
+        }
+        if (isDirectory)
+            directories.push_back(*it);
+        it.increment(error);
+    }
+    std::sort(directories.begin(), directories.end(),
+        [](const fs::directory_entry& lhs,
+           const fs::directory_entry& rhs) {
+            return lhs.path().filename().generic_string() <
+                   rhs.path().filename().generic_string();
+        });
+    return directories;
+}
+} // namespace datapack_detail
 
 inline bool jsonSubset(const json::Value& want, const json::Value& have){
     if(want.isObj()){
@@ -101,6 +149,8 @@ inline double predicateRandom01(const PredicateContext& context) {
 
 class DatapackManager {
 public:
+    enum class PackPosition { First, Last, Before, After };
+
     TagManager tagManager;
     LootTableEvaluator lootTables;
 
@@ -111,7 +161,11 @@ public:
 
     // pack enable/disable state
     std::unordered_set<std::string> enabledPacks;
+    std::unordered_set<std::string> disabledPacks;
     std::unordered_set<std::string> availablePacks;
+    // Low-to-high resource priority. For a shared resource, the last enabled
+    // pack with content loaded wins; a set alone cannot encode that setting.
+    std::vector<std::string> enabledPackOrder_;
     RecipeManager* recipes_ = nullptr;
     std::string assetsBase_ = "assets/data";
     std::string worldDatapacks_ = "world/datapacks";
@@ -120,132 +174,200 @@ public:
         // vanilla always available and enabled
         availablePacks.insert("vanilla");
         enabledPacks.insert("vanilla");
+        enabledPackOrder_.push_back("vanilla");
         availablePacks.insert("cppfm");
         enabledPacks.insert("cppfm");
+        enabledPackOrder_.push_back("cppfm");
     }
 
-    // Load all datapack content. `assetsBase` is the base directory containing tags/ and loot_tables/ (default "assets/data").
+    // Load all datapack content. `assetsBase` is the data root containing
+    // namespace folders plus tags/ and loot tables (default "assets/data").
     // `worldDatapacks` is the per-world datapack root (default "world/datapacks"); scanned if present.
     void loadAll(RecipeManager& recipes,
                  const std::string& assetsBase = "assets/data",
                  const std::string& worldDatapacks = "world/datapacks") {
-        recipes_ = &recipes;
-        assetsBase_ = assetsBase;
-        worldDatapacks_ = worldDatapacks;
+        auto staged = makeStagingManager();
+        staged.recipes_ = &recipes;
+        staged.assetsBase_ = assetsBase;
+        staged.worldDatapacks_ = worldDatapacks;
         namespace fs = std::filesystem;
         std::error_code ec;
-        // primary assets
-        tagManager.loadDirectory(assetsBase + "/tags");
-        if (tagManager.itemTags.empty()) tagManager.loadDirectory("assets/data/tags");
-        tagManager.applyToRecipeTags(recipes.tags_);
-        recipes.syncTagsFrom(tagManager); // plan37 B-03 double sync (1) before recipes
-        lootTables.loadDirectory(assetsBase + "/loot_tables");
-        if (lootTables.size() == 0) lootTables.loadDirectory("assets/data/loot_tables");
-
-        // scan assetsBase for advancements/predicates/item_modifiers/functions
-        loadPackDirectory(assetsBase, "vanilla");
-        if (assetsBase != "assets/data") loadPackDirectory("assets/data", "vanilla");
-
-        // scan world/datapacks/*/data/** if present
-        if (fs::exists(worldDatapacks, ec)) {
-            for (auto& entry : fs::directory_iterator(worldDatapacks, ec)) {
-                if (!entry.is_directory(ec)) continue;
-                std::string packName = entry.path().filename().string();
-                std::string base = entry.path().string() + "/data";
-                if (!fs::exists(base, ec)) continue;
-                availablePacks.insert(packName);
-                // default enable newly discovered packs if not already disabled
-                if (enabledPacks.find(packName) == enabledPacks.end()) {
-                    enabledPacks.insert(packName);
+        // Refresh discovery without forgetting user choices. A newly installed
+        // pack defaults to enabled, while a pack disabled earlier in this
+        // process stays disabled across /reload.
+        staged.availablePacks.clear();
+        staged.availablePacks.insert("vanilla");
+        staged.availablePacks.insert("cppfm");
+        staged.enabledPacks.insert("vanilla");
+        staged.enabledPacks.insert("cppfm");
+        if (datapack_detail::isDirectoryIfPresent(worldDatapacks)) {
+            const auto packs =
+                datapack_detail::sortedSubdirectories(worldDatapacks, ec);
+            if (ec)
+                throw fs::filesystem_error("scan datapack root",
+                                           worldDatapacks, ec);
+            for (const auto& entry : packs) {
+                const auto packName = entry.path().filename().string();
+                const auto base = entry.path() / "data";
+                if (!datapack_detail::isDirectoryIfPresent(base)) continue;
+                staged.availablePacks.insert(packName);
+                if (!staged.enabledPacks.contains(packName) &&
+                    !staged.disabledPacks.contains(packName)) {
+                    staged.enabledPacks.insert(packName);
+                    staged.enabledPackOrder_.push_back(packName);
                 }
-                TagManager extra;
-                extra.loadDirectory(base + "/tags");
-                for (auto& [k,v] : extra.itemTags) for (auto id: v) tagManager.itemTags[k].insert(id);
-                for (auto& [k,v] : extra.blockTags) for (auto id: v) tagManager.blockTags[k].insert(id);
-                tagManager.applyToRecipeTags(recipes.tags_);
-                recipes.syncTagsFrom(tagManager); // plan37 B-03 double sync (2) datapack tags
-                lootTables.loadDirectory(base + "/loot_tables");
-                loadPackDirectory(base, packName);
             }
         }
-        // ensure enabled contains at least vanilla
-        if (enabledPacks.empty()) enabledPacks.insert("vanilla");
-        // final double sync after all datapacks merged
-        tagManager.applyToRecipeTags(recipes.tags_);
-        recipes.syncTagsFrom(tagManager);
+        for (auto pack = staged.enabledPacks.begin();
+             pack != staged.enabledPacks.end();) {
+            if (*pack != "vanilla" && *pack != "cppfm" &&
+                !staged.availablePacks.contains(*pack)) {
+                pack = staged.enabledPacks.erase(pack);
+            } else {
+                ++pack;
+            }
+        }
+        std::erase_if(staged.enabledPackOrder_, [&staged](const std::string& name) {
+            return !staged.enabledPacks.contains(name);
+        });
+        // Keep the invariant even if a caller modified the legacy public set
+        // directly. New packs are appended in deterministic discovery order.
+        std::vector<std::string> missingOrderEntries;
+        for (const auto& name : staged.enabledPacks) {
+            if (std::find(staged.enabledPackOrder_.begin(),
+                          staged.enabledPackOrder_.end(), name) ==
+                staged.enabledPackOrder_.end())
+                missingOrderEntries.push_back(name);
+        }
+        std::sort(missingOrderEntries.begin(), missingOrderEntries.end());
+        staged.enabledPackOrder_.insert(staged.enabledPackOrder_.end(),
+                                        missingOrderEntries.begin(),
+                                        missingOrderEntries.end());
+        commitRebuiltState(std::move(staged));
     }
 
-    void loadPackDirectory(const std::string& base, const std::string& packName) {
+    void loadPackDirectory(const std::string& base) {
         namespace fs = std::filesystem;
-        std::error_code ec;
         // advancements: <base>/<ns>/advancements/*.json predicates: <base>/<ns>/predicates/*.json item_modifiers:
         // <base>/<ns>/item_modifiers/*.json functions: <base>/<ns>/functions/*.mcfunction
-        if (!fs::exists(base, ec)) return;
-        for (auto& nsEntry : fs::directory_iterator(base, ec)) {
-            if (!nsEntry.is_directory(ec)) continue;
-            std::string ns = nsEntry.path().filename().string();
+        if (!datapack_detail::isDirectoryIfPresent(base)) return;
+        std::error_code error;
+        const auto namespaces = datapack_detail::sortedSubdirectories(
+            base, error);
+        if (error)
+            throw fs::filesystem_error("scan datapack namespaces", base,
+                                       error);
+        for (const auto& nsEntry : namespaces) {
+            const auto nameSpace = nsEntry.path().filename().string();
             // skip tags/loot_tables already handled
-            if (ns == "tags" || ns == "loot_tables" || ns == "loot_table") continue;
-            std::string advDir = nsEntry.path().string() + "/advancements";
-            if (fs::exists(advDir, ec)) scanJsonDir(advDir, ns, advancements, packName);
-            std::string advDir2 = nsEntry.path().string() + "/advancement";
-            if (fs::exists(advDir2, ec)) scanJsonDir(advDir2, ns, advancements, packName);
-            std::string predDir = nsEntry.path().string() + "/predicates";
-            if (fs::exists(predDir, ec)) scanJsonDir(predDir, ns, predicates, packName);
-            std::string predDir2 = nsEntry.path().string() + "/predicate";
-            if (fs::exists(predDir2, ec)) scanJsonDir(predDir2, ns, predicates, packName);
-            std::string modDir = nsEntry.path().string() + "/item_modifiers";
-            if (fs::exists(modDir, ec)) scanJsonDir(modDir, ns, itemModifiers, packName);
-            std::string modDir2 = nsEntry.path().string() + "/item_modifier";
-            if (fs::exists(modDir2, ec)) scanJsonDir(modDir2, ns, itemModifiers, packName);
-            std::string funcDir = nsEntry.path().string() + "/functions";
-            if (fs::exists(funcDir, ec)) scanFunctionDir(funcDir, ns, packName);
-            std::string funcDir2 = nsEntry.path().string() + "/function";
-            if (fs::exists(funcDir2, ec)) scanFunctionDir(funcDir2, ns, packName);
+            if (nameSpace == "tags" || nameSpace == "loot_tables" ||
+                nameSpace == "loot_table") continue;
+            const auto nsPath = nsEntry.path();
+            for (const auto* directory : {"advancements", "advancement"})
+                scanJsonDir((nsPath / directory).string(), nameSpace,
+                            advancements);
+            for (const auto* directory : {"predicates", "predicate"})
+                scanJsonDir((nsPath / directory).string(), nameSpace,
+                            predicates);
+            for (const auto* directory : {"item_modifiers", "item_modifier"})
+                scanJsonDir((nsPath / directory).string(), nameSpace,
+                            itemModifiers);
+            for (const auto* directory : {"functions", "function"})
+                scanFunctionDir((nsPath / directory).string(), nameSpace);
         }
-        // also support flat layout: base/functions etc without ns? check base/advancements flat?
     }
 
     void scanJsonDir(const std::string& dir, const std::string& ns,
-                     std::unordered_map<std::string, std::string>& out,
-                     const std::string& packName) {
+                     std::unordered_map<std::string, std::string>& out) {
         namespace fs = std::filesystem;
-        std::error_code ec;
-        for (auto& e : fs::recursive_directory_iterator(dir, ec)) {
-            if (!e.is_regular_file(ec) || e.path().extension() != ".json") continue;
-            try {
-                std::string rel = fs::relative(e.path(), dir, ec).string();
-                if (rel.size()>5 && rel.substr(rel.size()-5)==".json") rel = rel.substr(0, rel.size()-5);
-                for (auto& c: rel) if (c=='\\') c='/';
-                std::string id = ns + ":" + rel;
-                // read file
-                std::ifstream f(e.path());
-                std::string txt((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-                out[id] = txt;
-            } catch (...) {}
+        const fs::path root(dir);
+        if (!datapack_detail::isDirectoryIfPresent(root)) return;
+        std::error_code error;
+        std::vector<fs::path> files;
+        fs::recursive_directory_iterator it(root, error), end;
+        if (error)
+            throw fs::filesystem_error("scan datapack JSON directory", root,
+                                       error);
+        while (it != end) {
+            std::error_code statusError;
+            const bool regular = it->is_regular_file(statusError);
+            if (statusError)
+                throw fs::filesystem_error("inspect datapack JSON file",
+                                           it->path(), statusError);
+            if (regular && it->path().extension() == ".json")
+                files.push_back(it->path());
+            it.increment(error);
+            if (error)
+                throw fs::filesystem_error("scan datapack JSON directory",
+                                           root, error);
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto& path : files) {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+                throw fs::filesystem_error("open datapack JSON file", path,
+                    std::make_error_code(std::errc::io_error));
+            std::string text(std::istreambuf_iterator<char>(input), {});
+            if (input.bad())
+                throw fs::filesystem_error("read datapack JSON file", path,
+                    std::make_error_code(std::errc::io_error));
+            const auto parsed = json::Value::parse(text);
+            if (!parsed.isObj())
+                throw std::runtime_error("datapack JSON root is not an object: " +
+                                         path.string());
+            auto relative = path.lexically_relative(root).generic_string();
+            if (relative.size() <= 5 ||
+                relative.substr(relative.size() - 5) != ".json")
+                throw std::runtime_error("invalid datapack JSON path: " +
+                                         path.string());
+            relative.resize(relative.size() - 5);
+            out.insert_or_assign(ns + ":" + relative, std::move(text));
         }
     }
 
-    void scanFunctionDir(const std::string& dir, const std::string& ns,
-                         const std::string& packName) {
+    void scanFunctionDir(const std::string& dir, const std::string& ns) {
         namespace fs = std::filesystem;
-        std::error_code ec;
-        for (auto& e : fs::recursive_directory_iterator(dir, ec)) {
-            if (!e.is_regular_file(ec) || e.path().extension() != ".mcfunction") continue;
-            try {
-                std::string rel = fs::relative(e.path(), dir, ec).string();
-                if (rel.size()>11 && rel.substr(rel.size()-11)==".mcfunction") rel = rel.substr(0, rel.size()-11);
-                for (auto& c: rel) if (c=='\\') c='/';
-                std::string id = ns + ":" + rel;
-                std::ifstream f(e.path());
-                std::vector<std::string> lines;
-                std::string line;
-                while (std::getline(f,line)) {
-                    // trim?
-                    lines.push_back(line);
-                }
-                functions[id] = std::move(lines);
-            } catch (...) {}
+        const fs::path root(dir);
+        if (!datapack_detail::isDirectoryIfPresent(root)) return;
+        std::error_code error;
+        std::vector<fs::path> files;
+        fs::recursive_directory_iterator it(root, error), end;
+        if (error)
+            throw fs::filesystem_error("scan datapack function directory",
+                                       root, error);
+        while (it != end) {
+            std::error_code statusError;
+            const bool regular = it->is_regular_file(statusError);
+            if (statusError)
+                throw fs::filesystem_error("inspect datapack function file",
+                                           it->path(), statusError);
+            if (regular && it->path().extension() == ".mcfunction")
+                files.push_back(it->path());
+            it.increment(error);
+            if (error)
+                throw fs::filesystem_error("scan datapack function directory",
+                                           root, error);
+        }
+        std::sort(files.begin(), files.end());
+        for (const auto& path : files) {
+            std::ifstream input(path, std::ios::binary);
+            if (!input)
+                throw fs::filesystem_error("open datapack function file", path,
+                    std::make_error_code(std::errc::io_error));
+            auto relative = path.lexically_relative(root).generic_string();
+            if (relative.size() <= 11 ||
+                relative.substr(relative.size() - 11) != ".mcfunction")
+                throw std::runtime_error("invalid datapack function path: " +
+                                         path.string());
+            relative.resize(relative.size() - 11);
+            std::vector<std::string> lines;
+            for (std::string line; std::getline(input, line);)
+                lines.push_back(std::move(line));
+            if (input.bad())
+                throw fs::filesystem_error("read datapack function file", path,
+                    std::make_error_code(std::errc::io_error));
+            functions.insert_or_assign(ns + ":" + relative,
+                                       std::move(lines));
         }
     }
 
@@ -299,9 +421,7 @@ public:
         return v;
     }
     std::vector<std::string> listEnabled() const {
-        std::vector<std::string> v(enabledPacks.begin(), enabledPacks.end());
-        std::sort(v.begin(), v.end());
-        return v;
+        return enabledPackOrder_;
     }
     bool isEnabled(const std::string& name) const {
         return enabledPacks.find(name) != enabledPacks.end();
@@ -310,62 +430,48 @@ public:
         return availablePacks.find(name) != availablePacks.end();
     }
     void rebuildEnabledContent() {
-        namespace fs = std::filesystem;
-        std::error_code ec;
-        advancements.clear();
-        predicates.clear();
-        itemModifiers.clear();
-        functions.clear();
-        if (recipes_) {
-            recipes_->clear();
-            // The built-in pack is part of every enabled-pack rebuild.  Keep
-            // direct enablePack/disablePack callers consistent with the
-            // GameServer refresh path, which otherwise used to reload these
-            // defaults only as a side effect.
-            recipes_->loadDefaults();
-        }
-        tagManager.itemTags.clear();
-        tagManager.blockTags.clear();
-        lootTables.clear();
-        if (isEnabled("vanilla")) {
-            tagManager.loadDirectory(assetsBase_ + "/tags");
-            lootTables.loadDirectory(assetsBase_ + "/loot_tables");
-            loadPackDirectory(assetsBase_, "vanilla");
-        }
-        if (fs::exists(worldDatapacks_, ec)) {
-            for (const auto& entry : fs::directory_iterator(worldDatapacks_, ec)) {
-                if (!entry.is_directory(ec)) continue;
-                const auto name = entry.path().filename().string();
-                if (!isEnabled(name)) continue;
-                const auto base = entry.path().string() + "/data";
-                if (!fs::exists(base, ec)) continue;
-                TagManager extra;
-                extra.loadDirectory(base + "/tags");
-                for (auto& [k, v] : extra.itemTags)
-                    for (auto id : v) tagManager.itemTags[k].insert(id);
-                for (auto& [k, v] : extra.blockTags)
-                    for (auto id : v) tagManager.blockTags[k].insert(id);
-                lootTables.loadDirectory(base + "/loot_tables");
-                loadPackDirectory(base, name);
-            }
-        }
-        if (recipes_) {
-            tagManager.applyToRecipeTags(recipes_->tags_);
-            recipes_->syncTagsFrom(tagManager);
-        }
+        commitRebuiltState(makeStagingManager());
     }
 
     bool enablePack(const std::string& name) {
-        if (!isAvailable(name)) return false;
-        auto [it, inserted] = enabledPacks.insert(name);
-        if (inserted) rebuildEnabledContent();
-        return inserted;
+        return enablePack(name, PackPosition::Last);
+    }
+    bool enablePack(const std::string& name, PackPosition position,
+                    const std::string& reference = {}) {
+        if (!isAvailable(name) || isEnabled(name)) return false;
+        if ((position == PackPosition::Before ||
+             position == PackPosition::After) &&
+            (reference.empty() || reference == name ||
+             !isEnabled(reference)))
+            return false;
+
+        auto staged = makeStagingManager();
+        auto insertion = staged.enabledPackOrder_.end();
+        if (position == PackPosition::First) {
+            insertion = staged.enabledPackOrder_.begin();
+        } else if (position == PackPosition::Before ||
+                   position == PackPosition::After) {
+            const auto target = std::find(staged.enabledPackOrder_.begin(),
+                                          staged.enabledPackOrder_.end(), reference);
+            if (target == staged.enabledPackOrder_.end()) return false;
+            insertion = position == PackPosition::Before
+                ? target : std::next(target);
+        }
+
+        staged.disabledPacks.erase(name);
+        staged.enabledPacks.insert(name);
+        staged.enabledPackOrder_.insert(insertion, name);
+        commitRebuiltState(std::move(staged));
+        return true;
     }
     bool disablePack(const std::string& name) {
         if (enabledPacks.find(name) == enabledPacks.end()) return false;
         if (name == "vanilla") return false;
-        enabledPacks.erase(name);
-        rebuildEnabledContent();
+        auto staged = makeStagingManager();
+        staged.enabledPacks.erase(name);
+        staged.disabledPacks.insert(name);
+        std::erase(staged.enabledPackOrder_, name);
+        commitRebuiltState(std::move(staged));
         return true;
     }
 
@@ -1068,6 +1174,85 @@ public:
             }
             return true;
         } catch (...) { return false; }
+    }
+
+private:
+    DatapackManager makeStagingManager() const {
+        DatapackManager staged;
+        staged.enabledPacks = enabledPacks;
+        staged.disabledPacks = disabledPacks;
+        staged.availablePacks = availablePacks;
+        staged.enabledPackOrder_ = enabledPackOrder_;
+        staged.recipes_ = recipes_;
+        staged.assetsBase_ = assetsBase_;
+        staged.worldDatapacks_ = worldDatapacks_;
+        return staged;
+    }
+
+    void commitRebuiltState(DatapackManager staged) {
+        staged.rebuildEnabledContentInPlace();
+        if (staged.recipes_)
+            staged.recipes_->syncTagsFrom(staged.tagManager);
+
+        // All potentially throwing parsing/loading and recipe-tag allocation
+        // has completed. Swapping standard-allocator containers publishes the
+        // staged generation without exposing a partially loaded registry.
+        static_assert(std::is_nothrow_swappable_v<TagManager>);
+        static_assert(std::is_nothrow_swappable_v<LootTableEvaluator>);
+        static_assert(std::is_nothrow_swappable_v<decltype(advancements)>);
+        static_assert(std::is_nothrow_swappable_v<decltype(functions)>);
+        using std::swap;
+        swap(tagManager, staged.tagManager);
+        swap(lootTables, staged.lootTables);
+        swap(advancements, staged.advancements);
+        swap(predicates, staged.predicates);
+        swap(itemModifiers, staged.itemModifiers);
+        swap(functions, staged.functions);
+        swap(enabledPacks, staged.enabledPacks);
+        swap(disabledPacks, staged.disabledPacks);
+        swap(availablePacks, staged.availablePacks);
+        swap(enabledPackOrder_, staged.enabledPackOrder_);
+        swap(recipes_, staged.recipes_);
+        swap(assetsBase_, staged.assetsBase_);
+        swap(worldDatapacks_, staged.worldDatapacks_);
+    }
+
+    void rebuildEnabledContentInPlace() {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        tagManager.itemTags.clear();
+        tagManager.blockTags.clear();
+        tagManager.biomeTags.clear();
+        lootTables.clear();
+        advancements.clear();
+        predicates.clear();
+        itemModifiers.clear();
+        functions.clear();
+        std::vector<std::string> enabledDataRoots;
+        for (const auto& name : enabledPackOrder_) {
+            if (name == "vanilla") {
+                if (!isEnabled(name)) continue;
+                tagManager.loadDirectory(assetsBase_ + "/tags");
+                if (tagManager.itemTags.empty() && assetsBase_ != "assets/data")
+                    tagManager.loadDirectory("assets/data/tags");
+                lootTables.loadDirectory(assetsBase_);
+                if (lootTables.size() == 0 && assetsBase_ != "assets/data")
+                    lootTables.loadDirectory("assets/data");
+                loadPackDirectory(assetsBase_);
+                if (assetsBase_ != "assets/data")
+                    loadPackDirectory("assets/data");
+                enabledDataRoots.push_back(assetsBase_);
+                continue;
+            }
+            if (name == "cppfm" || !isEnabled(name)) continue;
+            const auto base =
+                (fs::path(worldDatapacks_) / name / "data").string();
+            if (!fs::exists(base, ec)) continue;
+            enabledDataRoots.push_back(base);
+            lootTables.loadDirectory(base);
+            loadPackDirectory(base);
+        }
+        tagManager.mergeDataPackDirectories(enabledDataRoots);
     }
 };
 

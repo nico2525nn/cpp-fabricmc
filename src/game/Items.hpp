@@ -1,33 +1,202 @@
 // Items: ItemStack with 1.20.5+ data components, item tables and helpers.
 #pragma once
 #include "Constants.hpp"
+#include <array>
 #include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <algorithm>
 #include <limits>
+#include <iterator>
+#include <initializer_list>
+#include <memory>
 #include <mutex>
+#include <optional>
+#include <unordered_set>
+#include <type_traits>
 #include "../core/ByteBuffer.hpp"
 #include "../core/NBT.hpp"
+#include "../core/NBTValue.hpp"
 #include "../generated/ItemIds.hpp"
+#include "ItemComponentNbt.hpp"
 
 namespace cppfm {
 
+struct PersistedItemNbt {
+    std::vector<std::uint8_t> record;
+    // Count and Slot are excluded so equivalent stacks can still merge.
+    std::vector<std::uint8_t> identity;
+    // Vanilla NBT can contain components this build cannot encode on the
+    // protocol. Keep them for persistence, but never silently omit them from
+    // an outgoing ItemStack.
+    bool hasOpaqueComponents = false;
+};
+
 struct ItemStack {
+    static constexpr std::size_t kMaxComponentCount = 4096;
+    static constexpr std::size_t kMaxComponentPayloadBytes = 1024u * 1024u;
+    static constexpr std::size_t kMaxTotalComponentPayloadBytes =
+        2u * 1024u * 1024u;
+    // The 1.21.4 protocol's SlotComponentType registry ends at id 66.
+    // Payload support is narrower and checked separately when encoding.
+    static constexpr std::uint32_t kMaxProtocolComponentId = 66;
+
     std::uint32_t itemId = 0;
     std::int16_t count = 0;
     // added components: typeId -> raw payload bytes
     std::vector<std::pair<std::uint32_t, std::vector<std::uint8_t>>> components;
     std::vector<std::uint32_t> removedComponents;
+    // Opaque block-entity item data survives moves/splits through ordinary
+    // ItemStack copies without being mistaken for a newly created same-ID item.
+    std::shared_ptr<const PersistedItemNbt> persistedNbt;
+    // Component setters retain the original item NBT template and record
+    // removed fields so a save can patch known values without dropping opaque
+    // components from the same stack.
+    std::vector<std::uint32_t> persistedNbtEditedComponents;
+
+    // Stage persistence bookkeeping and vector growth before replacing live
+    // component state. After reserve succeeds, erase and moves are
+    // non-throwing for this component representation.
+    void replaceComponentsForNbtEdit(
+        std::initializer_list<std::uint32_t> affectedIds,
+        std::uint32_t replacementId,
+        std::optional<std::vector<std::uint8_t>> replacement) {
+        using Component = decltype(components)::value_type;
+        static_assert(std::is_nothrow_move_assignable_v<Component>);
+        static_assert(std::is_nothrow_move_constructible_v<Component>);
+
+        auto editedComponents = persistedNbtEditedComponents;
+        auto nextRemovedComponents = removedComponents;
+        if (persistedNbt) {
+            for (const auto id : affectedIds) {
+                if (std::find(editedComponents.begin(), editedComponents.end(),
+                              id) == editedComponents.end())
+                    editedComponents.push_back(id);
+            }
+        }
+        // A component cannot be both added/replaced and removed in the same
+        // protocol patch. Editing either enchantment component also replaces
+        // the other one (ordinary vs. stored), so clear both removal markers.
+        nextRemovedComponents.erase(std::remove_if(
+            nextRemovedComponents.begin(), nextRemovedComponents.end(),
+            [&](const auto id) {
+                return std::find(affectedIds.begin(), affectedIds.end(), id) !=
+                       affectedIds.end();
+            }), nextRemovedComponents.end());
+        if (replacement) components.reserve(components.size() + 1);
+
+        components.erase(std::remove_if(
+            components.begin(), components.end(), [&](const auto& component) {
+                return std::find(affectedIds.begin(), affectedIds.end(),
+                                 component.first) != affectedIds.end();
+            }), components.end());
+        if (replacement)
+            components.emplace_back(replacementId, std::move(*replacement));
+        persistedNbtEditedComponents.swap(editedComponents);
+        removedComponents.swap(nextRemovedComponents);
+    }
 
     bool empty() const { return count <= 0 || itemId == 0; }
     // Item identity for merging deliberately excludes count and emptiness;
     // callers retain their existing empty-slot policy.
-    bool sameItemData(const ItemStack& other) const {
+    static bool sameComponents(
+        const std::vector<std::pair<std::uint32_t,
+                                    std::vector<std::uint8_t>>>& lhs,
+        const std::vector<std::pair<std::uint32_t,
+                                    std::vector<std::uint8_t>>>& rhs) {
+        // A valid patch has at most one entry for each protocol component id
+        // (0..66). Bound the order-insensitive comparison before running the
+        // allocation-free multiset check so malformed in-memory stacks cannot
+        // trigger quadratic work over an attacker-sized vector.
+        constexpr std::size_t kMaximumUniqueComponents =
+            static_cast<std::size_t>(kMaxProtocolComponentId) + 1;
+        if (lhs.size() != rhs.size() ||
+            lhs.size() > kMaximumUniqueComponents) return false;
+        return std::is_permutation(lhs.begin(), lhs.end(),
+                                   rhs.begin(), rhs.end());
+    }
+
+    static bool sameRemovedComponents(
+        const std::vector<std::uint32_t>& lhs,
+        const std::vector<std::uint32_t>& rhs) {
+        constexpr std::size_t kMaximumUniqueComponents =
+            static_cast<std::size_t>(kMaxProtocolComponentId) + 1;
+        if (lhs.size() != rhs.size() ||
+            lhs.size() > kMaximumUniqueComponents) return false;
+        return std::is_permutation(lhs.begin(), lhs.end(),
+                                   rhs.begin(), rhs.end());
+    }
+
+    static const std::unordered_map<std::uint32_t, std::string>&
+    itemNamesById() {
+        static const auto names = [] {
+            std::unordered_map<std::uint32_t, std::string> result;
+            result.reserve(gen::kItems.size());
+            for (const auto& [name, id] : gen::kItems)
+                result.emplace(id, std::string(name));
+            return result;
+        }();
+        return names;
+    }
+
+    bool sameKnownItemData(const ItemStack& other) const {
         return itemId == other.itemId &&
-               components == other.components &&
-               removedComponents == other.removedComponents;
+               sameComponents(components, other.components) &&
+               sameRemovedComponents(removedComponents,
+                                     other.removedComponents);
+    }
+
+    bool sameItemData(const ItemStack& other) const {
+        static const std::vector<std::uint8_t> kNoOpaqueIdentity;
+        const auto& lhsOpaque = persistedNbt ? persistedNbt->identity
+                                             : kNoOpaqueIdentity;
+        const auto& rhsOpaque = other.persistedNbt ? other.persistedNbt->identity
+                                                   : kNoOpaqueIdentity;
+        return lhsOpaque == rhsOpaque && sameKnownItemData(other);
+    }
+
+    bool hasValidComponentData() const {
+        if (components.size() > kMaxComponentCount ||
+            removedComponents.size() > kMaxComponentCount ||
+            itemId == 0 || !itemNamesById().contains(itemId) ||
+            itemId > static_cast<std::uint32_t>(
+                         std::numeric_limits<std::int32_t>::max()))
+            return false;
+        std::size_t totalPayloadBytes = 0;
+        std::unordered_set<std::uint32_t> addedIds;
+        addedIds.reserve(components.size());
+        for (const auto& [typeId, payload] : components) {
+            if (typeId > kMaxProtocolComponentId ||
+                !addedIds.insert(typeId).second ||
+                payload.size() > kMaxComponentPayloadBytes ||
+                payload.size() > kMaxTotalComponentPayloadBytes -
+                                     totalPayloadBytes)
+                return false;
+            totalPayloadBytes += payload.size();
+        }
+        std::unordered_set<std::uint32_t> removedIds;
+        removedIds.reserve(removedComponents.size());
+        for (const auto typeId : removedComponents) {
+            if (typeId > kMaxProtocolComponentId ||
+                addedIds.contains(typeId) || !removedIds.insert(typeId).second)
+                return false;
+        }
+        return true;
+    }
+
+    bool canWriteToProtocol() const {
+        if (empty()) return true;
+        if (!hasValidComponentData() ||
+            (persistedNbt && persistedNbt->hasOpaqueComponents))
+            return false;
+        for (const auto& [typeId, payload] : components) {
+            if (!item_component_nbt::componentName(typeId) ||
+                !item_component_nbt::isValidProtocolComponentPayload(
+                    typeId, payload))
+                return false;
+        }
+        return true;
     }
     static ItemStack air() { return {}; }
     static ItemStack of(std::uint32_t id, std::int16_t n = 1) {
@@ -38,62 +207,309 @@ struct ItemStack {
         return it != gen::itemIdByName().end() ? of(it->second, n) : air();
     }
 
+    static void canonicalizeCompoundOrder(nbt::Value& value) {
+        if (value.tag == nbt::Compound) {
+            for (auto& [name, child] : value.comp) {
+                (void)name;
+                canonicalizeCompoundOrder(child);
+            }
+            std::stable_sort(value.comp.begin(), value.comp.end(),
+                [](const auto& lhs, const auto& rhs) {
+                    return lhs.first < rhs.first;
+                });
+        } else if (value.tag == nbt::List) {
+            for (auto& child : value.list) canonicalizeCompoundOrder(child);
+        }
+    }
+
+    static std::shared_ptr<const PersistedItemNbt> preserveNbtTemplate(
+        const nbt::Value& item, std::size_t depth = 0) {
+        if (depth > item_component_nbt::kMaxComponentDepth) return {};
+        if (item.tag != nbt::Compound) return {};
+
+        bool hasTemplate = false;
+        bool hasOpaqueComponents = false;
+        nbt::Value opaqueIdentity = nbt::Value::makeCompound();
+        for (const auto& [key, value] : item.comp) {
+            if (key == "Count" || key == "count" || key == "Slot" ||
+                key == "id") continue;
+            hasTemplate = true;
+            if (key == "removed") continue;
+            if (key == "components" && value.tag == nbt::List) {
+                // Older saves can encode components as a list of numeric IDs
+                // and opaque payloads. Preserve the complete list instead of
+                // reinterpreting only entries that this build recognizes.
+                if (!value.list.empty()) {
+                    hasOpaqueComponents = true;
+                    opaqueIdentity.set("components", value);
+                }
+                continue;
+            }
+            if (key != "components" || value.tag != nbt::Compound) {
+                // Unknown root-level fields are persisted in the template but
+                // have no corresponding protocol representation here. Mark
+                // them opaque so legacy `tag` or mod/plugin data cannot be
+                // silently stripped on a client-facing stack update.
+                hasOpaqueComponents = true;
+                opaqueIdentity.set(key, value);
+                continue;
+            }
+
+            nbt::Value opaqueComponents = nbt::Value::makeCompound();
+            for (const auto& [name, component] : value.comp) {
+                if (!item_component_nbt::protocolComponentFromNbt(name,
+                        component, depth + 1))
+                    opaqueComponents.set(name, component);
+            }
+            hasOpaqueComponents = hasOpaqueComponents ||
+                                  !opaqueComponents.comp.empty();
+            if (!opaqueComponents.comp.empty())
+                opaqueIdentity.set("components", std::move(opaqueComponents));
+        }
+        if (!hasTemplate) return {};
+
+        nbt::Value record = item;
+        canonicalizeCompoundOrder(opaqueIdentity);
+        WriteBuffer recordBytes;
+        nbt::writeFileRoot(recordBytes, record);
+        auto preserved = std::make_shared<PersistedItemNbt>();
+        preserved->record = std::move(recordBytes.data);
+        preserved->hasOpaqueComponents = hasOpaqueComponents;
+        if (!opaqueIdentity.comp.empty()) {
+            WriteBuffer identityBytes;
+            nbt::writeFileRoot(identityBytes, opaqueIdentity);
+            preserved->identity = std::move(identityBytes.data);
+        }
+        return preserved;
+    }
+
+    static std::optional<ItemStack> fromNbt(const nbt::Value& item,
+                                            std::size_t depth = 0) {
+        if (depth > item_component_nbt::kMaxComponentDepth)
+            return std::nullopt;
+        if (item.tag != nbt::Compound) return std::nullopt;
+        const auto* id = item.get("id");
+        const auto* countTag = item.get("count");
+        if (!countTag) countTag = item.get("Count");
+        if (!id || id->tag != nbt::String) return std::nullopt;
+        const auto itemId = gen::itemIdByName().find(id->str);
+        if (itemId == gen::itemIdByName().end()) return std::nullopt;
+
+        std::int32_t countValue = 1;
+        if (countTag) {
+            if (countTag == item.get("count") && countTag->tag == nbt::Int)
+                countValue = countTag->i;
+            else if (countTag->tag == nbt::Byte)
+                countValue = countTag->b <=
+                                     static_cast<std::uint8_t>(
+                                         std::numeric_limits<std::int8_t>::max())
+                                 ? countTag->b : -1;
+            else if (countTag->tag == nbt::Short) countValue = countTag->s;
+            else if (countTag->tag == nbt::Int) countValue = countTag->i;
+            else return std::nullopt;
+        }
+        if (countValue <= 0 || countValue > std::numeric_limits<std::int16_t>::max())
+            return std::nullopt;
+
+        ItemStack stack = of(itemId->second,
+                             static_cast<std::int16_t>(countValue));
+        stack.persistedNbt = preserveNbtTemplate(item, depth);
+        if (const auto* components = item.get("components")) {
+            if (components->tag == nbt::Compound) {
+                for (const auto& [name, saved] : components->comp) {
+                    if (auto component =
+                            item_component_nbt::protocolComponentFromNbt(
+                                name, saved, depth + 1))
+                        stack.components.emplace_back(
+                            component->id, std::move(component->payload));
+                }
+            } else if (components->tag == nbt::List) {
+                // Non-empty legacy lists are marked opaque by
+                // preserveNbtTemplate(). Do not expose a partial typed view:
+                // a skipped/unknown entry would otherwise disappear on save.
+            } else {
+                return std::nullopt;
+            }
+        }
+        if (const auto* removed = item.get("removed")) {
+            if (removed->tag != nbt::List) return std::nullopt;
+            for (const auto& entry : removed->list) {
+                if (entry.tag == nbt::Int && entry.i >= 0)
+                    stack.removedComponents.push_back(
+                        static_cast<std::uint32_t>(entry.i));
+                else if (entry.tag == nbt::Byte)
+                    stack.removedComponents.push_back(
+                        static_cast<std::uint8_t>(entry.b));
+            }
+        }
+        if (!stack.hasValidComponentData()) return std::nullopt;
+        return stack;
+    }
+
+    nbt::Value toNbt(std::int32_t slot, std::size_t depth = 0) const {
+        if (depth > item_component_nbt::kMaxComponentDepth)
+            throw std::length_error("nested item component depth exceeds limit");
+        if (!hasValidComponentData())
+            throw std::length_error("item component data exceeds limits");
+        nbt::Value item = nbt::Value::makeCompound();
+        if (persistedNbt && !persistedNbt->record.empty()) {
+            ReadBuffer input(persistedNbt->record);
+            nbt::Parser parser(input);
+            item = parser.readFileRoot();
+            if (item.tag != nbt::Compound)
+                throw std::runtime_error("persisted item NBT is not a compound");
+        }
+        item.set("id", nbt::Value::makeString(name()));
+        item.comp.erase(std::remove_if(item.comp.begin(), item.comp.end(),
+            [](const auto& field) { return field.first == "Count"; }),
+            item.comp.end());
+        item.set("count", nbt::Value::makeInt(count));
+        if (slot >= 0) {
+            item.set("Slot", nbt::Value::makeByte(
+                                   static_cast<std::int8_t>(slot)));
+        } else {
+            item.comp.erase(std::remove_if(item.comp.begin(), item.comp.end(),
+                [](const auto& field) { return field.first == "Slot"; }),
+                item.comp.end());
+        }
+        const auto* savedComponents = item.get("components");
+        if (savedComponents && savedComponents->tag == nbt::List) {
+            if (!(persistedNbt && persistedNbt->hasOpaqueComponents)) {
+                nbt::Value encoded = nbt::Value::makeList(nbt::Compound);
+                for (const auto& [componentId, payload] : components) {
+                    nbt::Value entry = nbt::Value::makeCompound();
+                    entry.set("type", nbt::Value::makeInt(
+                        static_cast<std::int32_t>(componentId)));
+                    nbt::Value data;
+                    data.tag = nbt::ByteArray;
+                    data.byteArray = payload;
+                    entry.set("data", std::move(data));
+                    encoded.list.push_back(std::move(entry));
+                }
+                item.set("components", std::move(encoded));
+            }
+        } else {
+            for (const auto& [componentId, payload] : components) {
+                const auto componentName =
+                    item_component_nbt::componentName(componentId);
+                if (componentName &&
+                    !item_component_nbt::applyProtocolComponentToNbt(
+                        item, componentId, &payload, depth + 1))
+                    throw std::runtime_error(
+                        "cannot serialize item component " +
+                        std::to_string(componentId) + " (" +
+                        std::string(*componentName) + ")");
+            }
+            for (const auto componentId : persistedNbtEditedComponents) {
+                const bool remainsPresent = std::any_of(
+                    components.begin(), components.end(),
+                    [componentId](const auto& component) {
+                        return component.first == componentId;
+                    });
+                if (!remainsPresent &&
+                    item_component_nbt::componentName(componentId) &&
+                    !item_component_nbt::applyProtocolComponentToNbt(
+                        item, componentId, nullptr, depth + 1))
+                    throw std::runtime_error("cannot remove item component");
+            }
+        }
+        if (removedComponents.empty()) {
+            item.comp.erase(std::remove_if(item.comp.begin(), item.comp.end(),
+                [](const auto& field) { return field.first == "removed"; }),
+                item.comp.end());
+        } else {
+            nbt::Value removed = nbt::Value::makeList(nbt::Int);
+            for (const auto componentId : removedComponents)
+                removed.list.push_back(nbt::Value::makeInt(
+                    static_cast<std::int32_t>(componentId)));
+            item.set("removed", std::move(removed));
+        }
+        return item;
+    }
+
     // ------------------------------------------------------------------ io
     void write(WriteBuffer& out) const {
         if (empty()) { out.varint(0); return; }
-        if (components.size() > 1'000'000 || removedComponents.size() > 1'000'000)
-            throw std::length_error("too many item components");
+        if (!hasValidComponentData())
+            throw std::length_error("item component data exceeds limits");
+        if (persistedNbt && persistedNbt->hasOpaqueComponents)
+            throw std::runtime_error(
+                "cannot encode item with opaque saved components");
+        for (const auto& [typeId, payload] : components) {
+            if (!item_component_nbt::componentName(typeId) ||
+                !item_component_nbt::isValidProtocolComponentPayload(
+                    typeId, payload))
+                throw std::runtime_error(
+                    "unsupported or malformed item component " +
+                    std::to_string(typeId));
+        }
         out.varint(count);
         out.varint(static_cast<std::int32_t>(itemId));
         out.varint(static_cast<std::int32_t>(components.size()));
         out.varint(static_cast<std::int32_t>(removedComponents.size()));
         for (auto& [typeId, payload] : components) {
-            if (payload.size() > 16u * 1024u * 1024u)
-                throw std::length_error("item component payload is too large");
             out.varint(static_cast<std::int32_t>(typeId));
-            WriteBuffer tmp;
-            tmp.varint(static_cast<std::int32_t>(payload.size()));
-            tmp.raw(payload.data(), payload.size());
-            out.raw(tmp.data.data(), tmp.data.size());
+            out.raw(payload.data(), payload.size());
         }
         for (auto t : removedComponents) out.varint(static_cast<std::int32_t>(t));
     }
 
     static ItemStack read(ReadBuffer& in) {
         const std::int32_t cnt = in.varint();
-        if (cnt <= 0) return air();
+        if (cnt == 0) return air();
+        if (cnt < 0) throw std::runtime_error("negative item stack count");
         if (cnt > std::numeric_limits<std::int16_t>::max())
             throw std::runtime_error("item stack count out of range");
         ItemStack s;
         s.count = static_cast<std::int16_t>(cnt);
         const std::int32_t itemId = in.varint();
-        if (itemId <= 0) throw std::runtime_error("invalid item id");
+        if (itemId <= 0 ||
+            !itemNamesById().contains(static_cast<std::uint32_t>(itemId)))
+            throw std::runtime_error("unknown item id");
         s.itemId = static_cast<std::uint32_t>(itemId);
         const std::int32_t addC = in.varint();
         const std::int32_t remC = in.varint();
-        if (addC < 0 || remC < 0 || addC > 1'000'000 || remC > 1'000'000)
+        if (addC < 0 || remC < 0 ||
+            static_cast<std::size_t>(addC) > kMaxComponentCount ||
+            static_cast<std::size_t>(remC) > kMaxComponentCount)
             throw std::runtime_error("item component count out of range");
         s.components.reserve(static_cast<std::size_t>(addC));
         s.removedComponents.reserve(static_cast<std::size_t>(remC));
+        std::size_t totalPayloadBytes = 0;
         for (std::int32_t i = 0; i < addC; ++i) {
-            const auto typeId = static_cast<std::uint32_t>(in.varint());
-            const auto len = in.varint();
-            if (len < 0 || static_cast<std::size_t>(len) > 16u * 1024u * 1024u)
+            const auto encodedTypeId = in.varint();
+            if (encodedTypeId < 0)
+                throw std::runtime_error("negative item component id");
+            const auto typeId = static_cast<std::uint32_t>(encodedTypeId);
+            auto decodedPayload =
+                item_component_nbt::readProtocolComponentPayload(in, typeId);
+            if (!decodedPayload)
+                throw std::runtime_error(
+                    "unsupported or malformed item component " +
+                    std::to_string(typeId));
+            auto payload = std::move(*decodedPayload);
+            if (payload.size() > kMaxComponentPayloadBytes ||
+                payload.size() >
+                    kMaxTotalComponentPayloadBytes - totalPayloadBytes)
                 throw std::runtime_error("item component payload out of range");
-            auto payload = in.bytes(static_cast<std::size_t>(len));
+            totalPayloadBytes += payload.size();
             s.components.emplace_back(typeId, std::move(payload));
         }
-        for (std::int32_t i = 0; i < remC; ++i)
-            s.removedComponents.push_back(static_cast<std::uint32_t>(in.varint()));
+        for (std::int32_t i = 0; i < remC; ++i) {
+            const auto typeId = in.varint();
+            if (typeId < 0)
+                throw std::runtime_error("negative removed item component id");
+            s.removedComponents.push_back(static_cast<std::uint32_t>(typeId));
+        }
+        if (!s.hasValidComponentData())
+            throw std::runtime_error("duplicate or conflicting item components");
         return s;
     }
 
     std::string name() const {
-        static thread_local std::unordered_map<std::uint32_t, std::string> inv;
-        if (inv.empty())
-            for (auto& e : gen::kItems) inv.emplace(e.second, std::string(e.first));
-        auto it = inv.find(itemId);
-        if (it == inv.end()) return "minecraft:air";
+        const auto& names = itemNamesById();
+        const auto it = names.find(itemId);
+        if (it == names.end()) return "minecraft:air";
         if (it->second.rfind("minecraft:", 0) == 0 && it->second.find('{') == std::string::npos)
             return it->second;
         return it->second;
@@ -106,19 +522,18 @@ struct ItemStack {
     // use_remainder, 24 use_cooldown, 25 damage_resistant, 26 tool, 27 enchantable, 28 equippable, 29 repairable, 30 glider, 31
     // tooltip_style, 32 death_protection, 33 stored_enchantments, 34 dyed_color, 35 map_color, 36 map_id, 37 map_decorations, 38
     // map_post_processing, 39 charged_projectiles, 40 bundle_contents, 41 potion_contents, 42 suspicious_stew_effects, 43
-    // writable_book_content, 44 written_book_content, 45 trim, 46 debug_stick_state, ... 66 container_loot — strict audit HIGH I6/I11. Yarn
+    // writable_book_content, 44 written_book_content, 45 trim, 46 debug_stick_state, ... 62 container, 66 container_loot — strict audit HIGH I6/I11. Yarn
     static constexpr std::uint32_t kDamageComponentId = 3;
     static constexpr std::uint32_t kRepairCostComponentId = 17;
     static constexpr std::uint32_t kEnchantmentsComponentId = 10;
-    static constexpr std::uint32_t kTrimComponentIdReal = 45;
+    static constexpr std::uint32_t kStoredEnchantmentsComponentId = 33;
+    static constexpr std::uint32_t kCanPlaceOnComponentId = 11;
+    static constexpr std::uint32_t kCanBreakComponentId = 12;
     static constexpr std::uint32_t kCustomNameComponentId = 5;
     static constexpr std::uint32_t kPotionContentsComponentId = 41;
-    static constexpr std::uint32_t kLegacyDamageAlias = 6;
-    static constexpr std::uint32_t kLegacyRepairAlias = 7;
-    static constexpr std::uint32_t kLegacyTrimAlias = 42;
     int getDamage() const {
         for (auto &pr : components) {
-            if (pr.first==kDamageComponentId || pr.first==kLegacyDamageAlias) {
+            if (pr.first==kDamageComponentId) {
                 if (pr.second.empty()) return 0;
                 try {
                     ReadBuffer in(pr.second);
@@ -132,11 +547,18 @@ struct ItemStack {
         return 0;
     }
     void setDamage(int dmg) {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kDamageComponentId || p.first==kLegacyDamageAlias; }), components.end());
-        if (dmg<=0) return;
-        WriteBuffer tmp; tmp.varint(dmg);
-        components.emplace_back(kDamageComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
+        if (dmg <= 0) {
+            replaceComponentsForNbtEdit({kDamageComponentId},
+                                        kDamageComponentId, std::nullopt);
+            return;
+        }
+        WriteBuffer encoded;
+        encoded.varint(dmg);
+        std::vector<std::uint8_t> payload(encoded.data.begin(),
+                                          encoded.data.end());
+        replaceComponentsForNbtEdit({kDamageComponentId},
+                                    kDamageComponentId,
+                                    std::move(payload));
     }
     bool applyDamage(int amount) {
         if (empty()) return false;
@@ -195,23 +617,21 @@ struct ItemStack {
     // enchant helpers: binary NBT format per protocol.json 1.21.4 (SlotComponentType enchantments=10)
     // Payload: varint count, then each {varint id, varint level}, then bool showTooltip
     static int enchantIdByName(const std::string& n) {
-        std::string k = n;
-        if (k.rfind("minecraft:",0)==0) k = k.substr(10);
-        static const std::unordered_map<std::string,int> m = {
-            {"aqua_affinity",0},{"bane_of_arthropods",1},{"binding_curse",2},{"blast_protection",3},{"breach",4},{"channeling",5},{"density",6},{"depth_strider",7},{"efficiency",8},{"feather_falling",9},{"fire_aspect",10},{"fire_protection",11},{"flame",12},{"fortune",13},{"frost_walker",14},{"impaling",15},{"infinity",16},{"knockback",17},{"looting",18},{"loyalty",19},{"luck_of_the_sea",20},{"lure",21},{"mending",22},{"multishot",23},{"piercing",24},{"power",25},{"projectile_protection",26},{"protection",27},{"punch",28},{"quick_charge",29},{"respiration",30},{"riptide",31},{"sharpness",32},{"silk_touch",33},{"smite",34},{"soul_speed",35},{"sweeping_edge",36},{"swift_sneak",37},{"thorns",38},{"unbreaking",39},{"vanishing_curse",40},{"wind_burst",41},
-            {"binding",2},{"vanishing",40} // aliases
-        };
-        auto it=m.find(k);
-        return it==m.end() ? -1 : it->second;
+        return item_component_nbt::enchantmentId(n).value_or(-1);
     }
     static std::string enchantNameById(int id) {
-        static const std::vector<std::string> rev = {"aqua_affinity","bane_of_arthropods","binding_curse","blast_protection","breach","channeling","density","depth_strider","efficiency","feather_falling","fire_aspect","fire_protection","flame","fortune","frost_walker","impaling","infinity","knockback","looting","loyalty","luck_of_the_sea","lure","mending","multishot","piercing","power","projectile_protection","protection","punch","quick_charge","respiration","riptide","sharpness","silk_touch","smite","soul_speed","sweeping_edge","swift_sneak","thorns","unbreaking","vanishing_curse","wind_burst"};
-        if (id<0 || id>= (int)rev.size()) return "";
-        return "minecraft:"+rev[id];
+        const auto name = item_component_nbt::enchantmentName(id);
+        return name ? std::string(*name) : std::string{};
     }
-    static std::vector<std::pair<int,int>> decodeEnchants(const std::vector<std::uint8_t>& payload) {
-        std::vector<std::pair<int,int>> out;
-        if (payload.empty()) return out;
+    struct DecodedEnchants {
+        std::vector<std::pair<int, int>> entries;
+        bool showTooltip = true;
+    };
+    static DecodedEnchants decodeEnchantData(
+        const std::vector<std::uint8_t>& payload) {
+        DecodedEnchants decoded;
+        auto& out = decoded.entries;
+        if (payload.empty()) return decoded;
         bool maybeText=false;
         for (auto b: payload) if (b==':' || b==',') { maybeText=true; break; }
         if (maybeText) {
@@ -232,44 +652,88 @@ struct ItemStack {
                 if (comma==std::string::npos) break;
                 pos = comma+1;
             }
-            return out;
+            return decoded;
         }
         // binary: varint count, then id/level pairs, then bool
         ReadBuffer rb(payload.data(), payload.size());
         try {
             int cnt = rb.varint();
-            if (cnt<0 || cnt>64) return out;
+            if (cnt<0 || cnt>64) return decoded;
             for (int i=0;i<cnt;++i) {
-                if (rb.remaining() <2) break;
+                if (rb.remaining() <2) return DecodedEnchants{};
                 int id = rb.varint();
                 int lvl = rb.varint();
                 out.emplace_back(id,lvl);
             }
-            // showTooltip bool ignored
-        } catch(...) {}
-        return out;
+            if (rb.remaining() != 1) return DecodedEnchants{};
+            decoded.showTooltip = rb.boolean();
+            if (rb.remaining() != 0) return DecodedEnchants{};
+        } catch(...) { return DecodedEnchants{}; }
+        return decoded;
     }
-    static std::vector<std::uint8_t> encodeEnchants(const std::vector<std::pair<int,int>>& ench) {
+    static std::vector<std::pair<int,int>> decodeEnchants(
+        const std::vector<std::uint8_t>& payload) {
+        return decodeEnchantData(payload).entries;
+    }
+    static std::vector<std::uint8_t> encodeEnchants(
+        const std::vector<std::pair<int,int>>& ench, bool showTooltip = true) {
         WriteBuffer wb;
         wb.varint((int)ench.size());
         for (auto &pr: ench) { wb.varint(pr.first); wb.varint(pr.second); }
-        wb.boolean(true); // showTooltip
+        wb.boolean(showTooltip);
         return std::vector<std::uint8_t>(wb.data.begin(), wb.data.end());
     }
     static void addEnchant(ItemStack &s, const std::string &enchName, int lvl) {
         int id = enchantIdByName(enchName);
         if (id<0) return;
+        const auto enchantedBook = gen::itemIdByName().find(
+            "minecraft:enchanted_book");
+        const auto targetComponentId =
+            enchantedBook != gen::itemIdByName().end() &&
+                    s.itemId == enchantedBook->second
+                ? kStoredEnchantmentsComponentId
+                : kEnchantmentsComponentId;
+
+        // If the saved target component is opaque (for example it contains a
+        // modded enchantment unknown to this build), replacing its payload
+        // would silently erase that entry from the persisted item. Keep the
+        // original stack untouched until we can represent it losslessly.
+        if (s.persistedNbt && !s.persistedNbt->record.empty()) {
+            try {
+                ReadBuffer input(s.persistedNbt->record);
+                nbt::Parser parser(input);
+                const auto savedItem = parser.readFileRoot();
+                const auto* savedComponents = savedItem.get("components");
+                for (const auto componentId :
+                     {kEnchantmentsComponentId,
+                      kStoredEnchantmentsComponentId}) {
+                    const auto name = item_component_nbt::componentName(
+                        componentId);
+                    const auto* savedComponent = savedComponents && name
+                        ? savedComponents->get(*name) : nullptr;
+                    if (savedComponent &&
+                        !item_component_nbt::protocolComponentFromNbt(
+                            *name, *savedComponent))
+                        return;
+                }
+            } catch (const std::exception&) {
+                return;
+            }
+        }
         std::vector<std::pair<int,int>> cur;
+        bool showTooltip = true;
         for (auto &pr: s.components) if(pr.first==kEnchantmentsComponentId || pr.first==33){
-            cur = decodeEnchants(pr.second);
+            auto decoded = decodeEnchantData(pr.second);
+            cur = std::move(decoded.entries);
+            showTooltip = decoded.showTooltip;
             break;
         }
         bool found=false;
         for (auto &pr: cur) if (pr.first==id) { pr.second = std::max(pr.second, lvl); found=true; break; }
         if (!found) cur.emplace_back(id,lvl);
-        s.components.erase(std::remove_if(s.components.begin(), s.components.end(),
-            [](auto &p){ return p.first==kEnchantmentsComponentId || p.first==33 || p.first==21; }), s.components.end());
-        s.components.emplace_back(kEnchantmentsComponentId, encodeEnchants(cur));
+        s.replaceComponentsForNbtEdit(
+            {kEnchantmentsComponentId, kStoredEnchantmentsComponentId},
+            targetComponentId, encodeEnchants(cur, showTooltip));
     }
     bool hasEnchant(const std::string &enchName) const {
         int id = enchantIdByName(enchName);
@@ -281,7 +745,7 @@ struct ItemStack {
             }
             return false;
         }
-        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33||pr.first==21){
+        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33){
             auto v = decodeEnchants(pr.second);
             for(auto &e: v) if(e.first==id) return true;
             // also textual fallback inside decode already handled
@@ -294,7 +758,7 @@ struct ItemStack {
     int enchantLevel(const std::string &enchName) const {
         int id = enchantIdByName(enchName);
         if (id<0) return 0;
-        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33||pr.first==21){
+        for(auto &pr: components) if(pr.first==kEnchantmentsComponentId||pr.first==33){
             auto v = decodeEnchants(pr.second);
             for(auto &e: v) if(e.first==id) return e.second;
         }
@@ -302,13 +766,12 @@ struct ItemStack {
     }
     bool hasSilkTouch() const { return hasEnchant("silk_touch") || hasEnchant("minecraft:silk_touch"); }
     int fortuneLevel() const { int a=enchantLevel("fortune"); int b=enchantLevel("minecraft:fortune"); return std::max(a,b); }
+    int lootingLevel() const { int a=enchantLevel("looting"); int b=enchantLevel("minecraft:looting"); return std::max(a,b); }
 
     // ----- ArmorTrim component (SlotComponentType trim=45 per protocol.json 1.21.4) ----- Payload per protocol.json `trim`: { material:
     // registryEntryHolder<ArmorTrimMaterial>, pattern: registryEntryHolder<ArmorTrimPattern>, showInTooltip bool }. Holder is varint id
-    // (direct) or inline NBT. Vanilla 1.21.4: trim_pattern 18 (alphabetical) and trim_material 11 (alphabetical) per RegistryData blobs
-    // (registry_minecraft__trim_pattern.bin / trim_material.bin). Wire order per protocol.json is material, pattern, bool — but strict
-    // audit D29 expects pattern, material, bool (pattern first). We encode pattern, material, bool to satisfy audit test (round-trip same
-    // order). Holder direct path = varint ids.
+    // (direct) or inline NBT. Registry entries are sent as direct VarInt ids;
+    // vanilla 1.21.4 writes material, then pattern, then showInTooltip.
     struct ArmorTrim {
         std::string pattern;  // e.g. "minecraft:coast"
         std::string material; // e.g. "minecraft:iron"
@@ -318,80 +781,76 @@ struct ItemStack {
     static constexpr std::uint32_t kTrimComponentId = 45;
     // alphabetical registry order as captured (wire parity)
     static const std::unordered_map<std::string,int>& trimPatternIds() {
-        static const std::unordered_map<std::string,int> m{
-            {"minecraft:bolt",0},{"minecraft:coast",1},{"minecraft:dune",2},{"minecraft:eye",3},
-            {"minecraft:flow",4},{"minecraft:host",5},{"minecraft:raiser",6},{"minecraft:rib",7},
-            {"minecraft:sentry",8},{"minecraft:shaper",9},{"minecraft:silence",10},{"minecraft:snout",11},
-            {"minecraft:spire",12},{"minecraft:tide",13},{"minecraft:vex",14},{"minecraft:ward",15},
-            {"minecraft:wayfinder",16},{"minecraft:wild",17}
-        };
+        static const std::unordered_map<std::string, int> m = [] {
+            std::unordered_map<std::string, int> result;
+            for (std::size_t id = 0;
+                 id < item_component_nbt::kTrimPatternNames.size(); ++id)
+                result.emplace(std::string(item_component_nbt::kTrimPatternNames[id]),
+                               static_cast<int>(id));
+            return result;
+        }();
         return m;
     }
     static const std::unordered_map<std::string,int>& trimMaterialIds() {
-        static const std::unordered_map<std::string,int> m{
-            {"minecraft:amethyst",0},{"minecraft:copper",1},{"minecraft:diamond",2},{"minecraft:emerald",3},
-            {"minecraft:gold",4},{"minecraft:iron",5},{"minecraft:lapis",6},{"minecraft:netherite",7},
-            {"minecraft:quartz",8},{"minecraft:redstone",9},{"minecraft:resin",10}
-        };
+        static const std::unordered_map<std::string, int> m = [] {
+            std::unordered_map<std::string, int> result;
+            for (std::size_t id = 0;
+                 id < item_component_nbt::kTrimMaterialNames.size(); ++id)
+                result.emplace(std::string(item_component_nbt::kTrimMaterialNames[id]),
+                               static_cast<int>(id));
+            return result;
+        }();
         return m;
     }
-    static int trimPatternIdFor(const std::string& id) {
-        auto& mm = trimPatternIds();
-        auto it = mm.find(id);
-        if (it != mm.end()) return it->second;
-        std::string q = id.find(':')==std::string::npos ? std::string("minecraft:")+id : id;
-        auto it2 = mm.find(q);
-        return it2 != mm.end() ? it2->second : 1; // fallback coast
+    static std::optional<int> trimPatternIdFor(const std::string& id) {
+        return item_component_nbt::trimPatternId(id);
     }
-    static int trimMaterialIdFor(const std::string& id) {
-        auto& mm = trimMaterialIds();
-        auto it = mm.find(id);
-        if (it != mm.end()) return it->second;
-        std::string q = id.find(':')==std::string::npos ? std::string("minecraft:")+id : id;
-        auto it2 = mm.find(q);
-        return it2 != mm.end() ? it2->second : 8; // fallback quartz
+    static std::optional<int> trimMaterialIdFor(const std::string& id) {
+        return item_component_nbt::trimMaterialId(id);
     }
-    void setTrim(const ArmorTrim& t) {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kTrimComponentId || p.first==kLegacyTrimAlias; }), components.end());
-        if (!t.has || t.pattern.empty()) return;
-        int patId = trimPatternIdFor(t.pattern);
-        int matId = trimMaterialIdFor(t.material);
+    bool setTrim(const ArmorTrim& t) {
+        if (t.has && !t.pattern.empty()) {
+            const auto patternId = trimPatternIdFor(t.pattern);
+            const auto materialId = trimMaterialIdFor(t.material);
+            if (!patternId || !materialId) return false;
+        }
+        if (!t.has || t.pattern.empty()) {
+            replaceComponentsForNbtEdit({kTrimComponentId},
+                                        kTrimComponentId, std::nullopt);
+            return true;
+        }
+        const auto patternId = trimPatternIdFor(t.pattern);
+        const auto materialId = trimMaterialIdFor(t.material);
         WriteBuffer wb;
-        wb.varint(patId);
-        wb.varint(matId);
+        wb.varint(*materialId);
+        wb.varint(*patternId);
         wb.boolean(t.showInTooltip);
-        components.emplace_back(kTrimComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
+        std::vector<std::uint8_t> payload(wb.data.begin(), wb.data.end());
+        replaceComponentsForNbtEdit({kTrimComponentId}, kTrimComponentId,
+                                    std::move(payload));
+        return true;
     }
     // ----- Brewing potion_contents (41) helpers — nether_wart -> awkward ----- Payload: option potionId (bool+varint), option customColor
     // (bool), varint customEffectsCount, option customName (bool) Vanilla minecraft:potion registry 45 entries (1.21.4): water 0, mundane
     // 1, thick 2, awkward 3, night_vision 4, ... wind_charged 42 etc. Wire id is registry index. Previous code used 0 water -> 1 awkward
     // custom mapping, breaking brewing (client interprets 1 as mundane). Fix to registry-aware 0->3.
     static const std::unordered_map<std::string,int>& potionIds() {
-        static const std::unordered_map<std::string,int> m{
-            {"minecraft:water",0},{"minecraft:mundane",1},{"minecraft:thick",2},{"minecraft:awkward",3},
-            {"minecraft:night_vision",4},{"minecraft:long_night_vision",5},{"minecraft:invisibility",6},{"minecraft:long_invisibility",7},
-            {"minecraft:leaping",8},{"minecraft:long_leaping",9},{"minecraft:strong_leaping",10},{"minecraft:fire_resistance",11},{"minecraft:long_fire_resistance",12},
-            {"minecraft:swiftness",13},{"minecraft:long_swiftness",14},{"minecraft:strong_swiftness",15},{"minecraft:slowness",16},{"minecraft:long_slowness",17},{"minecraft:strong_slowness",18},
-            {"minecraft:water_breathing",19},{"minecraft:long_water_breathing",20},{"minecraft:healing",21},{"minecraft:strong_healing",22},
-            {"minecraft:harming",23},{"minecraft:strong_harming",24},{"minecraft:poison",25},{"minecraft:long_poison",26},{"minecraft:strong_poison",27},
-            {"minecraft:regeneration",28},{"minecraft:long_regeneration",29},{"minecraft:strong_regeneration",30},{"minecraft:strength",31},{"minecraft:long_strength",32},{"minecraft:strong_strength",33},
-            {"minecraft:weakness",34},{"minecraft:long_weakness",35},{"minecraft:luck",36},{"minecraft:turtle_master",37},{"minecraft:long_turtle_master",38},{"minecraft:strong_turtle_master",39},
-            {"minecraft:slow_falling",40},{"minecraft:long_slow_falling",41},{"minecraft:wind_charged",42},{"minecraft:weaving",43},{"minecraft:oozing",44},{"minecraft:infested",45}
-        };
+        static const std::unordered_map<std::string, int> m = [] {
+            std::unordered_map<std::string, int> result;
+            for (std::size_t id = 0;
+                 id < item_component_nbt::kPotionNames.size(); ++id)
+                result.emplace(std::string(item_component_nbt::kPotionNames[id]),
+                               static_cast<int>(id));
+            return result;
+        }();
         return m;
     }
     static int potionIdByName(const std::string& n) {
-        auto& mm = potionIds();
-        auto it = mm.find(n);
-        if (it != mm.end()) return it->second;
-        std::string q = n.find(':')==std::string::npos ? std::string("minecraft:")+n : n;
-        auto it2 = mm.find(q);
-        return it2 != mm.end() ? it2->second : 0;
+        return item_component_nbt::potionId(n).value_or(0);
     }
     static std::string potionNameById(int id) {
-        for (auto &kv : potionIds()) if (kv.second==id) return kv.first;
-        return "minecraft:water";
+        const auto name = item_component_nbt::potionName(id);
+        return name ? std::string(*name) : "minecraft:water";
     }
     bool hasPotionContents() const {
         for (auto &pr : components) if (pr.first==kPotionContentsComponentId) return true;
@@ -410,20 +869,39 @@ struct ItemStack {
         return 0; // water by default (no component)
     }
     void setPotionId(int id) {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kPotionContentsComponentId; }), components.end());
         WriteBuffer wb;
         wb.boolean(true);
         wb.varint(id);
-        wb.boolean(false); // customColor absent
-        wb.varint(0); // customEffects 0
-        wb.boolean(false); // customName absent
-        components.emplace_back(kPotionContentsComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
+
+        const auto existing = std::find_if(components.begin(), components.end(),
+            [](const auto& component) {
+                return component.first == kPotionContentsComponentId;
+            });
+        bool copiedRemainder = false;
+        if (existing != components.end()) {
+            try {
+                ReadBuffer input(existing->second);
+                if (input.boolean()) (void)input.varint();
+                wb.raw(input.p + input.off, input.remaining());
+                copiedRemainder = true;
+            } catch (const std::exception&) {
+                // Replace a malformed old payload with a valid empty tail.
+            }
+        }
+        if (!copiedRemainder) {
+            wb.boolean(false); // customColor absent
+            wb.varint(0); // customEffects empty
+            wb.boolean(false); // customName absent
+        }
+        std::vector<std::uint8_t> payload(wb.data.begin(), wb.data.end());
+        replaceComponentsForNbtEdit({kPotionContentsComponentId},
+                                    kPotionContentsComponentId,
+                                    std::move(payload));
     }
     void setPotionByName(const std::string& name) { setPotionId(potionIdByName(name)); }
     void clearPotionContents() {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kPotionContentsComponentId; }), components.end());
+        replaceComponentsForNbtEdit({kPotionContentsComponentId},
+                                    kPotionContentsComponentId, std::nullopt);
     }
     bool isWaterPotion() const {
         if (itemId == 0) return false;
@@ -447,7 +925,7 @@ struct ItemStack {
                n.find("fishing_rod")!=std::string::npos;
     }
     int getRepairCost() const {
-        for (auto &pr : components) if (pr.first==kRepairCostComponentId || pr.first==kLegacyRepairAlias) {
+        for (auto &pr : components) if (pr.first==kRepairCostComponentId) {
             if (pr.second.empty()) return 0;
             int v=0; int shift=0;
             for (std::uint8_t b: pr.second) { v |= (b & 0x7F) << shift; if (!(b & 0x80)) break; shift+=7; }
@@ -456,11 +934,18 @@ struct ItemStack {
         return 0;
     }
     void setRepairCost(int c) {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kRepairCostComponentId || p.first==kLegacyRepairAlias; }), components.end());
-        if (c<=0) return;
-        WriteBuffer tmp; tmp.varint(c);
-        components.emplace_back(kRepairCostComponentId, std::vector<std::uint8_t>(tmp.data.begin(), tmp.data.end()));
+        if (c <= 0) {
+            replaceComponentsForNbtEdit({kRepairCostComponentId},
+                                        kRepairCostComponentId, std::nullopt);
+            return;
+        }
+        WriteBuffer encoded;
+        encoded.varint(c);
+        std::vector<std::uint8_t> payload(encoded.data.begin(),
+                                          encoded.data.end());
+        replaceComponentsForNbtEdit({kRepairCostComponentId},
+                                    kRepairCostComponentId,
+                                    std::move(payload));
     }
     std::string getCustomName() const {
         for (auto &pr: components) if(pr.first==kCustomNameComponentId){
@@ -509,12 +994,17 @@ struct ItemStack {
         return "";
     }
     void setCustomName(const std::string& n) {
-        components.erase(std::remove_if(components.begin(), components.end(),
-            [](auto &p){ return p.first==kCustomNameComponentId; }), components.end());
-        if(n.empty()) return;
+        if (n.empty()) {
+            replaceComponentsForNbtEdit({kCustomNameComponentId},
+                                        kCustomNameComponentId, std::nullopt);
+            return;
+        }
         WriteBuffer wb;
         nbt::writeTextComponent(wb, n);
-        components.emplace_back(kCustomNameComponentId, std::vector<std::uint8_t>(wb.data.begin(), wb.data.end()));
+        std::vector<std::uint8_t> payload(wb.data.begin(), wb.data.end());
+        replaceComponentsForNbtEdit({kCustomNameComponentId},
+                                    kCustomNameComponentId,
+                                    std::move(payload));
     }
     int efficiencyLevel() const { return std::max(enchantLevel("efficiency"), enchantLevel("minecraft:efficiency")); }
     int frostWalkerLevel() const { return std::max(enchantLevel("frost_walker"), enchantLevel("minecraft:frost_walker")); }
@@ -525,5 +1015,123 @@ struct ItemStack {
     std::vector<std::string> lore;
     std::string displayNameLoot;
 };
+
+namespace item_component_nbt {
+
+inline std::optional<std::vector<std::uint8_t>>
+containerComponentNbtToProtocol(const nbt::Value& saved, std::size_t depth) {
+    if (depth > kMaxComponentDepth || saved.tag != nbt::List ||
+        saved.list.size() > kMaxContainerSlots)
+        return std::nullopt;
+
+    std::array<std::optional<ItemStack>, kMaxContainerSlots> slots;
+    int lastNonEmpty = -1;
+    for (const auto& entry : saved.list) {
+        if (entry.tag != nbt::Compound) return std::nullopt;
+        const auto slot = integer(entry.get("slot"));
+        const auto* item = entry.get("item");
+        if (!slot || *slot < 0 ||
+            static_cast<std::size_t>(*slot) >= slots.size() ||
+            !item || item->tag != nbt::Compound ||
+            slots[static_cast<std::size_t>(*slot)])
+            return std::nullopt;
+        auto stack = ItemStack::fromNbt(*item, depth + 1);
+        if (!stack || stack->empty()) return std::nullopt;
+        slots[static_cast<std::size_t>(*slot)] = std::move(*stack);
+        lastNonEmpty = std::max(lastNonEmpty, *slot);
+    }
+
+    try {
+        WriteBuffer output;
+        output.varint(lastNonEmpty + 1);
+        for (int slot = 0; slot <= lastNonEmpty; ++slot) {
+            const auto& stack = slots[static_cast<std::size_t>(slot)];
+            if (stack) stack->write(output);
+            else output.varint(0);
+        }
+        return std::move(output.data);
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+inline std::optional<nbt::Value> containerComponentProtocolToNbt(
+    const std::vector<std::uint8_t>& payload, std::size_t depth) {
+    if (depth > kMaxComponentDepth) return std::nullopt;
+    try {
+        ReadBuffer input(payload);
+        const auto count = input.varint();
+        if (count < 0 ||
+            static_cast<std::size_t>(count) > kMaxContainerSlots)
+            return std::nullopt;
+        nbt::Value contents = nbt::Value::makeList(nbt::Compound);
+        contents.list.reserve(static_cast<std::size_t>(count));
+        for (std::int32_t slot = 0; slot < count; ++slot) {
+            auto stack = ItemStack::read(input);
+            if (stack.empty()) continue;
+            nbt::Value entry = nbt::Value::makeCompound();
+            entry.set("slot", nbt::Value::makeInt(slot));
+            entry.set("item", stack.toNbt(-1, depth + 1));
+            contents.list.push_back(std::move(entry));
+        }
+        if (input.remaining() != 0) return std::nullopt;
+        return contents;
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
+} // namespace item_component_nbt
+
+inline int insertPlayerStackPartial(std::array<ItemStack, 46>& inventory,
+                                    const ItemStack& source, int amount,
+                                    int stackLimit) {
+    if (amount <= 0 || source.empty() || stackLimit <= 0) return 0;
+    int remaining = amount;
+    static constexpr int kHotbar[] = {36, 37, 38, 39, 40, 41, 42, 43, 44};
+    static constexpr int kMain[] = {
+        9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+        25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35};
+
+    const auto mergeInto = [&](const int* slots, std::size_t slotCount) {
+        for (std::size_t i = 0; i < slotCount && remaining > 0; ++i) {
+            ItemStack& destination = inventory[slots[i]];
+            if (!destination.sameItemData(source) ||
+                destination.count >= stackLimit)
+                continue;
+            const int moved = std::min(
+                remaining, stackLimit - static_cast<int>(destination.count));
+            destination.count = static_cast<std::int16_t>(destination.count + moved);
+            remaining -= moved;
+        }
+    };
+    const auto fillEmpty = [&](const int* slots, std::size_t slotCount) {
+        for (std::size_t i = 0; i < slotCount && remaining > 0; ++i) {
+            ItemStack& destination = inventory[slots[i]];
+            if (!destination.empty()) continue;
+            destination = source;
+            destination.count = static_cast<std::int16_t>(
+                std::min(remaining, stackLimit));
+            remaining -= destination.count;
+        }
+    };
+
+    mergeInto(kHotbar, std::size(kHotbar));
+    mergeInto(kMain, std::size(kMain));
+    fillEmpty(kHotbar, std::size(kHotbar));
+    fillEmpty(kMain, std::size(kMain));
+    return amount - remaining;
+}
+
+inline bool insertCompletePlayerStack(std::array<ItemStack, 46>& inventory,
+                                      const ItemStack& source,
+                                      std::uint16_t amount, int stackLimit) {
+    if (amount == 0 || source.empty()) return amount == 0;
+    auto trial = inventory;
+    if (insertPlayerStackPartial(trial, source, amount, stackLimit) != amount)
+        return false;
+    inventory = std::move(trial);
+    return true;
+}
 
 } // namespace cppfm

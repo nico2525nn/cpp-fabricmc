@@ -47,6 +47,8 @@ enum class ConfigKey {
     Pvp,
     AllowFlight,
     Hardcore,
+    GameMode,
+    ForceGameMode,
     JvmEnabled,
     JvmStrict,
     JvmClasses,
@@ -67,7 +69,7 @@ struct KeySpec {
 // This is the only application key registry.  In particular, an entry here
 // does not imply support for every similarly named vanilla property.  Unknown
 // server.properties keys are reported as unsupported by applyServerProperties.
-constexpr std::array<KeySpec, 58> kKeySpecs{{
+constexpr std::array<KeySpec, 61> kKeySpecs{{
     {"server-port", ConfigKey::Port, true, true},
     {"port", ConfigKey::Port, true, true},
     {"max-players", ConfigKey::MaxPlayers, true, true},
@@ -116,6 +118,9 @@ constexpr std::array<KeySpec, 58> kKeySpecs{{
     {"allow-flight", ConfigKey::AllowFlight, true, true},
     {"allowFlight", ConfigKey::AllowFlight, true, true},
     {"hardcore", ConfigKey::Hardcore, true, true},
+    {"gamemode", ConfigKey::GameMode, true, true},
+    {"force-gamemode", ConfigKey::ForceGameMode, true, true},
+    {"forceGameMode", ConfigKey::ForceGameMode, false, true},
     {"jvm", ConfigKey::JvmEnabled, true, true},
     {"jvm-enabled", ConfigKey::JvmEnabled, true, true},
     {"jvm-strict", ConfigKey::JvmStrict, true, true},
@@ -217,6 +222,26 @@ bool parseDifficulty(std::string_view text, std::string& difficulty) {
         normalized != "normal" && normalized != "hard") return false;
     difficulty = normalized;
     return true;
+}
+
+bool parseGameMode(std::string_view text, std::uint8_t& gameMode) {
+    constexpr std::array<std::string_view, 4> kById{
+        "survival", "creative", "adventure", "spectator"};
+    int id = 0;
+    if (parseInteger(text, id)) {
+        if (id < 0 || static_cast<std::size_t>(id) >= kById.size()) return false;
+        gameMode = static_cast<std::uint8_t>(id);
+        return true;
+    }
+
+    const std::string normalized = asciiLower(std::string(text));
+    for (std::size_t i = 0; i < kById.size(); ++i) {
+        if (normalized == kById[i]) {
+            gameMode = static_cast<std::uint8_t>(i);
+            return true;
+        }
+    }
+    return false;
 }
 
 void applySeed(ServerConfig& config, std::string_view value,
@@ -353,6 +378,13 @@ void applyValue(ServerConfig& config, ConfigKey key, std::string_view value,
     case ConfigKey::Hardcore:
         if (!parseBool(value, boolValue, propertySource)) invalid(diagnostics, originalKey, value);
         else config.hardcore = boolValue;
+        break;
+    case ConfigKey::GameMode:
+        if (!parseGameMode(value, config.gameMode)) invalid(diagnostics, originalKey, value);
+        break;
+    case ConfigKey::ForceGameMode:
+        if (!parseBool(value, boolValue, propertySource)) invalid(diagnostics, originalKey, value);
+        else config.forceGameMode = boolValue;
         break;
     case ConfigKey::JvmEnabled:
         if (!parseBool(value, boolValue, propertySource)) invalid(diagnostics, originalKey, value);

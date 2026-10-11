@@ -12,6 +12,7 @@
 #include <cstring>
 #include <filesystem>
 #include <future>
+#include <limits>
 #include <mutex>
 #include <thread>
 #include <type_traits>
@@ -206,7 +207,10 @@ static void test_blocks() {
         std::uint32_t pearl = gen::itemIdByName().find("minecraft:ender_pearl")->second;
         rig.place(0, 2, 0, comp);
         rig.world.setBlock(0, 2, 1, stateByName("minecraft:hopper"));
-        BlockEntity& be = rig.bes.create(posKey(0, 2, 1), BlockEntity::Kind::Hopper);
+        auto beOwner = rig.bes.createShared(posKey(0, 2, 1),
+                                           BlockEntity::Kind::Hopper);
+        std::lock_guard entityLock(*beOwner->stateMtx);
+        BlockEntity& be = *beOwner;
         be.generic.slotCount = 5;
         be.generic.slots[0] = ItemStack::of(pearl, 16);
         rig.place(0, 2, -1, wire0);
@@ -242,17 +246,22 @@ static void test_blocks() {
     CHECK_EQ_INT(GameServer::HOPPER_TRANSFER_INTERVAL_TICKS, 8, "hopper transfer interval 8t (vanilla; impl gate GameServer::hoppersTick)");
     {
         BlockEntityStore store;
-        BlockEntity& be = store.create(posKey(3, 2, 1), BlockEntity::Kind::Hopper);
-        CHECK(store.getAt(3, 2, 1) != nullptr && store.getAt(3, 2, 1)->kind == BlockEntity::Kind::Hopper, "hopper block entity kind roundtrip via store");
-        (void)be;
+        auto owner = store.createShared(posKey(3, 2, 1),
+                                        BlockEntity::Kind::Hopper);
+        std::lock_guard entityLock(*owner->stateMtx);
+        CHECK(store.getAt(3, 2, 1) == owner &&
+                  owner->kind == BlockEntity::Kind::Hopper,
+              "hopper block entity kind roundtrip via store");
     }
     {
         // CrafterBlockEntity state must survive the same chunk NBT boundary
         // as vanilla: recipe slots, disabled slot mask, delayed craft state,
         // and the triggered flag are all gameplay-visible.
         BlockEntityStore source;
-        BlockEntity& crafter = source.create(posKey(3, 2, 1),
-                                              BlockEntity::Kind::Crafter);
+        auto crafterOwner = source.createShared(posKey(3, 2, 1),
+                                                BlockEntity::Kind::Crafter);
+        std::lock_guard crafterLock(*crafterOwner->stateMtx);
+        BlockEntity& crafter = *crafterOwner;
         crafter.crafter.slots[0] = ItemStack::of(
             gen::itemIdByName().at("minecraft:oak_log"), 2);
         crafter.crafter.setSlotEnabled(4, false);
@@ -265,7 +274,7 @@ static void test_blocks() {
 
         BlockEntityStore restored;
         restored.readChunkNbt(root);
-        const auto* loaded = restored.getAt(3, 2, 1);
+        const auto loaded = restored.getAt(3, 2, 1);
         CHECK(loaded && loaded->kind == BlockEntity::Kind::Crafter,
               "crafter block entity kind survives chunk NBT");
         CHECK(loaded && loaded->crafter.slots[0].itemId ==
@@ -1171,6 +1180,85 @@ static void test_food_potion_brewing() {
     CHECK(!PotionBrewing::isGunpowder(idOf("minecraft:redstone")), "redstone is not gunpowder");
 }
 
+static void test_consumable_use_state() {
+    curSection = "CONSUMABLE_USE";
+    std::printf("\n[component-driven timed consumable use]\n");
+
+    const auto defaultFoodTicks =
+        Session::ConsumableUseState::consumeTicks(1.6F);
+    CHECK(defaultFoodTicks && *defaultFoodTicks == 32,
+          "1.6-second consumable duration maps to 32 server ticks");
+    const auto fractionalTicks =
+        Session::ConsumableUseState::consumeTicks(0.051F);
+    CHECK(fractionalTicks && *fractionalTicks == 2,
+          "fractional duration rounds up so use cannot finish early");
+    CHECK(!Session::ConsumableUseState::consumeTicks(0.0F) &&
+              !Session::ConsumableUseState::consumeTicks(-1.0F) &&
+              !Session::ConsumableUseState::consumeTicks(
+                  std::numeric_limits<float>::infinity()) &&
+              !Session::ConsumableUseState::consumeTicks(
+                  std::numeric_limits<float>::max()),
+          "invalid and overflowing component durations are rejected");
+
+    Session::ConsumableUseState use;
+    constexpr bool hasConsumableComponent = true;
+    constexpr bool hasFoodComponent = false;
+    ItemStack consumableOnly = ItemStack::ofName("minecraft:stick", 2);
+    WriteBuffer consumePayload;
+    consumePayload.f32(0.1F);
+    consumableOnly.components.emplace_back(22, consumePayload.data);
+    const auto componentTicks =
+        Session::ConsumableUseState::consumeTicksFromPayload(
+            consumableOnly.components.front().second);
+    CHECK(componentTicks && *componentTicks == 2,
+          "ConsumableComponent wire payload supplies its own duration");
+    CHECK(hasConsumableComponent && !hasFoodComponent &&
+              componentTicks &&
+              use.startWithTicks(hasConsumableComponent, 36,
+                                 *componentTicks, consumableOnly),
+          "use eligibility requires ConsumableComponent, not FoodComponent");
+    Session::ConsumableUseState missingConsumable;
+    CHECK(!missingConsumable.start(false, 36, 0.1F, consumableOnly),
+          "food-like stack without a ConsumableComponent is not started");
+    int inventoryCount = 2;
+    (void)use.continueOneTick();
+    CHECK(use.phase() == Session::ConsumableUseState::Phase::Active &&
+              inventoryCount == 2 && !use.takeCompletedSlot(),
+          "inventory stays unchanged before the configured use duration");
+    CHECK(use.continueOneTick() ==
+              Session::ConsumableUseState::TickResult::Ready,
+          "second tick completes a 0.1-second consumable");
+    const auto completedSlot = use.takeCompletedSlot();
+    if (completedSlot && *completedSlot == 36) --inventoryCount;
+    CHECK(completedSlot && *completedSlot == 36 && inventoryCount == 1,
+          "inventory mutation becomes eligible only after the final tick");
+    CHECK(!use.takeCompletedSlot(),
+          "a completed use can only be committed once");
+
+    Session::ConsumableUseState releasedEarly;
+    const ItemStack offhandConsumable =
+        ItemStack::ofName("minecraft:honey_bottle");
+    CHECK(releasedEarly.start(true, 45, 1.6F, offhandConsumable),
+          "offhand timed use starts independently");
+    for (int tick = 0; tick < 10; ++tick)
+        (void)releasedEarly.continueOneTick();
+    CHECK(!releasedEarly.release() &&
+              releasedEarly.phase() ==
+                  Session::ConsumableUseState::Phase::Cancelled &&
+              !releasedEarly.takeCompletedSlot(),
+          "early RELEASE_USE_ITEM cancels without consuming the item");
+
+    CHECK(releasedEarly.start(true, 36, 0.15F, consumableOnly),
+          "an early-released use can begin a fresh attempt");
+    (void)releasedEarly.continueOneTick();
+    releasedEarly.cancel();
+    CHECK(releasedEarly.phase() ==
+              Session::ConsumableUseState::Phase::Cancelled &&
+              releasedEarly.continueOneTick() ==
+                  Session::ConsumableUseState::TickResult::Inactive,
+          "explicit cancellation prevents later ticks from completing use");
+}
+
 void GameServer::broadcastBlockChange(std::int32_t, std::int32_t, std::int32_t, std::uint16_t) {}
 void GameServer::broadcastSound(const char*, double, double, double, float, float, const char*) {}
 bool GameServer::isChunkInSimulationDistance(std::int32_t, std::int32_t) const { return true; }
@@ -1587,6 +1675,7 @@ int main(){
     test_enchants();
     test_mob_behavior(); // plan46 G-06
     test_food_potion_brewing(); // plan46 G-14
+    test_consumable_use_state();
     test_time_growth(); // plan46 G-15
     test_density_coverage(); // plan46 G-10
     test_known_gaps();

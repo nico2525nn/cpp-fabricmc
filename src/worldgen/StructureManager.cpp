@@ -11,6 +11,11 @@
 namespace cppfm::worldgen {
 
 namespace {
+std::int32_t blockToChunk(std::int32_t block) {
+    const auto quotient = block / 16;
+    return block < 0 && block % 16 != 0 ? quotient - 1 : quotient;
+}
+
 template <typename T>
 void drainQueue(std::mutex& mutex, std::vector<T>& queue, std::vector<T>& out) {
     std::lock_guard lock(mutex);
@@ -30,7 +35,7 @@ inline std::uint16_t stateByPalette(const std::unordered_map<std::string,std::st
     return 0;
 }
 struct Writer {
-    Chunk& c;
+    ChunkBuildWriter& c;
     std::int32_t cx, cz;
     std::uint16_t air = 0;
     bool set(std::int32_t wx, std::int32_t wy, std::int32_t wz,
@@ -39,9 +44,9 @@ struct Writer {
         if ((wx >> 4) != cx || (wz >> 4) != cz) return false;
         if (state > std::numeric_limits<std::uint16_t>::max()) return false;
         const int lx = wx & 15, lz = wz & 15, wyR = wy - kMinY;
-        auto& slot = c.blocks[Chunk::index(wyR >> 4, wyR & 15, lz, lx)];
-        if (!overwriteSolid && slot != 0) return false;
-        slot = static_cast<std::uint16_t>(state);
+        const int index = Chunk::index(wyR >> 4, wyR & 15, lz, lx);
+        if (!overwriteSolid && c.blocks.get(index) != 0) return false;
+        c.blocks.set(index, static_cast<std::uint16_t>(state));
         return true;
     }
     void box(std::int32_t x0, std::int32_t y0, std::int32_t z0,
@@ -239,7 +244,7 @@ int StructureManager::loadFromDirectory(const std::string& dir) {
     return total;
 }
 
-void StructureManager::villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::villageHouse(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t bx, std::int32_t bz, int gy) const {
     Writer w{chunk, cx, cz};
     const auto planks = B("minecraft:oak_planks")->defaultState;
@@ -260,7 +265,7 @@ void StructureManager::villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t 
     w.set(bx + 4, gy + 2, bz + 2, glassP);
     w.set(bx + 2, gy + 1, bz + 2, torchB, true);
 }
-void StructureManager::villageFarm(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::villageFarm(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                      std::int32_t bx, std::int32_t bz, int gy) const {
     Writer w{chunk, cx, cz};
     const auto farmland = B("minecraft:farmland") ? B("minecraft:farmland")->defaultState : 0;
@@ -273,7 +278,7 @@ void StructureManager::villageFarm(Chunk& chunk, std::int32_t cx, std::int32_t c
             if (!waterChannel) w.set(bx + dxx, gy + 1, bz + dzz, wheat);
         }
 }
-void StructureManager::villageChurch(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::villageChurch(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                        std::int32_t bx, std::int32_t bz, int gy) const {
     Writer w{chunk, cx, cz};
     const auto cobble = B("minecraft:cobblestone")->defaultState;
@@ -290,7 +295,7 @@ void StructureManager::villageChurch(Chunk& chunk, std::int32_t cx, std::int32_t
     w.set(bx+3, gy+7, bz+3, cobble, true);
     w.set(bx+3, gy+8, bz+3, torchB, true);
 }
-void StructureManager::villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::villageJigsaw(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                        std::int32_t ox, std::int32_t oz, int depth,
                                        const GroundFn& ground) const {
     if (depth <= 0) return;
@@ -319,7 +324,7 @@ void StructureManager::villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t
             villageJigsaw(chunk, cx, cz, nx[i], nz[i], depth-1, ground);
     }
 }
-void StructureManager::villagePiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::villagePiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                       std::int32_t cz, std::int32_t ox,
                                       std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -354,7 +359,7 @@ void StructureManager::villagePiece(Chunk& chunk, std::int32_t cx,
     }
 }
 
-void StructureManager::pyramidPiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::pyramidPiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                       std::int32_t cz, std::int32_t ox,
                                       std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -379,7 +384,7 @@ void StructureManager::pyramidPiece(Chunk& chunk, std::int32_t cx,
           B("minecraft:air")->defaultState, true);
 }
 
-void StructureManager::outpostPiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::outpostPiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                       std::int32_t cz, std::int32_t ox,
                                       std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -396,7 +401,7 @@ void StructureManager::outpostPiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 2, baseY + 11, oz + 2, B("minecraft:torch")->defaultState, true);
 }
 
-void StructureManager::jungleTemplePiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::jungleTemplePiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                            std::int32_t cz, std::int32_t ox,
                                            std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -421,7 +426,7 @@ void StructureManager::jungleTemplePiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 6, baseY + 1, oz + 6, B("minecraft:chest") ? B("minecraft:chest")->defaultState : cobble, true);
 }
 
-void StructureManager::iglooPiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::iglooPiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                     std::int32_t cz, std::int32_t ox,
                                     std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -444,7 +449,7 @@ void StructureManager::iglooPiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 4, baseY + 1, oz + 3, ice, true);
 }
 
-void StructureManager::swampHutPiece(Chunk& chunk, std::int32_t cx,
+void StructureManager::swampHutPiece(ChunkBuildWriter& chunk, std::int32_t cx,
                                        std::int32_t cz, std::int32_t ox,
                                        std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -481,7 +486,7 @@ void StructureManager::swampHutPiece(Chunk& chunk, std::int32_t cx,
     w.set(ox + 4, baseY + 2, oz + 4, B("minecraft:crafting_table") ? B("minecraft:crafting_table")->defaultState : planks, true);
 }
 
-void StructureManager::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::monumentPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                        std::int32_t ox, std::int32_t oz,
                                        const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -525,7 +530,7 @@ void StructureManager::monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t
     const auto sponge = B("minecraft:sponge") ? B("minecraft:sponge")->defaultState : prismarine;
     w.set(ox+28, baseY+10, oz+28, sponge, true);
 }
-void StructureManager::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::mansionPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                       std::int32_t ox, std::int32_t oz,
                                       const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -570,7 +575,7 @@ void StructureManager::mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t 
     w.set(ox+20, baseY+1, oz+20, B("minecraft:torch")?B("minecraft:torch")->defaultState:planks, true);
     // evoker placeholder: leave space (mob spawn would be here)
 }
-void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::trialChambersPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
@@ -689,7 +694,7 @@ void StructureManager::trialChambersPiece(Chunk& chunk, std::int32_t cx, std::in
     // hallway connector east
     straightCorridor(originX+28, originZ-2, 6, 0);
 }
-void StructureManager::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::endCityPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const {
     // End City is generated via fillEnd direct placement; this piece is for StructureManager overworld fallback (no-op)
@@ -711,7 +716,7 @@ void StructureManager::endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t 
     }
     w.set(originX+4, baseY+1, originZ+4, B("minecraft:chest")?B("minecraft:chest")->defaultState:endBricks, true);
 }
-void StructureManager::ancientCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::ancientCityPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto deepslate = B("minecraft:deepslate_bricks") ? B("minecraft:deepslate_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
     const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : deepslate;
@@ -722,7 +727,7 @@ void StructureManager::ancientCityPiece(Chunk& chunk, std::int32_t cx, std::int3
     for (int dz=0; dz<9; ++dz){ w.set(ox, baseY+1, oz+dz, deepslate, true); w.set(ox+8, baseY+1, oz+dz, deepslate, true); }
     w.set(ox+4, baseY+1, oz+4, chest, true);
 }
-void StructureManager::trailRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::trailRuinsPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto bricks = B("minecraft:mud_bricks") ? B("minecraft:mud_bricks")->defaultState : B("minecraft:bricks")->defaultState;
     int baseY = ground ? ground(ox+4, oz+4) : 64;
@@ -730,7 +735,7 @@ void StructureManager::trailRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32
     for (int dy=1; dy<=3; ++dy){ w.set(ox, baseY+dy, oz, bricks, true); w.set(ox+6, baseY+dy, oz+6, bricks, true); }
     w.set(ox+3, baseY+1, oz+3, B("minecraft:suspicious_gravel")?B("minecraft:suspicious_gravel")->defaultState:bricks, true);
 }
-void StructureManager::ruinedPortalPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::ruinedPortalPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto obs = B("minecraft:obsidian")->defaultState;
     const auto crying = B("minecraft:crying_obsidian") ? B("minecraft:crying_obsidian")->defaultState : obs;
@@ -739,7 +744,7 @@ void StructureManager::ruinedPortalPiece(Chunk& chunk, std::int32_t cx, std::int
     for (int dx=0; dx<5; ++dx){ w.set(ox+dx, baseY+4, oz, crying, true); }
     w.set(ox+2, baseY+1, oz, 0, true); w.set(ox+2, baseY+2, oz, 0, true);
 }
-void StructureManager::shipwreckPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::shipwreckPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto planks = B("minecraft:oak_planks")->defaultState;
     const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : planks;
@@ -748,7 +753,7 @@ void StructureManager::shipwreckPiece(Chunk& chunk, std::int32_t cx, std::int32_
     for (int dx=0; dx<7; ++dx) for (int dz=0; dz<3; ++dz) w.set(ox+dx, baseY, oz+dz, planks, true);
     w.set(ox+3, baseY+1, oz+1, chest, true);
 }
-void StructureManager::oceanRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::oceanRuinsPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto stone = B("minecraft:stone_bricks") ? B("minecraft:stone_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
     int baseY = 38;
@@ -756,7 +761,7 @@ void StructureManager::oceanRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32
     for (int dx=0; dx<5; ++dx) for (int dz=0; dz<5; ++dz) w.set(ox+dx, baseY, oz+dz, stone, true);
     w.set(ox+2, baseY+1, oz+2, B("minecraft:chest")?B("minecraft:chest")->defaultState:stone, true);
 }
-void StructureManager::netherFossilPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::netherFossilPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto bone = B("minecraft:bone_block") ? B("minecraft:bone_block")->defaultState : B("minecraft:quartz_block")->defaultState;
     int baseY = 40;
@@ -765,14 +770,14 @@ void StructureManager::netherFossilPiece(Chunk& chunk, std::int32_t cx, std::int
     for (int dy=0; dy<7; ++dy) w.set(ox+2, baseY+dy, oz+2, bone, true);
     for (int dx=-2; dx<=2; ++dx) w.set(ox+dx, baseY+3, oz+2, bone, true);
 }
-void StructureManager::buriedTreasurePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
+void StructureManager::buriedTreasurePiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto chest = B("minecraft:chest") ? B("minecraft:chest")->defaultState : B("minecraft:oak_planks")->defaultState;
     int baseY = ground ? ground(ox+1, oz+1)-2 : 50;
     baseY = std::clamp(baseY, 45, 65);
     w.set(ox+1, baseY, oz+1, chest, true);
 }
-void StructureManager::strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::strongholdPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                         std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto stoneBricks = B("minecraft:stone_bricks") ? B("minecraft:stone_bricks")->defaultState : B("minecraft:cobblestone")->defaultState;
@@ -800,7 +805,7 @@ void StructureManager::strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32
     w.set(ox+2, baseY+1, oz, portalFrame, true);
     w.set(ox+1, baseY+1, oz+1, torch, true);
 }
-void StructureManager::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::mineshaftPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                        std::int32_t ox, std::int32_t oz, const GroundFn& ground) const {
     Writer w{chunk, cx, cz};
     const auto oakPlanks = B("minecraft:oak_planks")->defaultState;
@@ -831,21 +836,113 @@ void StructureManager::mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_
     }
 }
 
-void StructureManager::enqueuePendingMob(int x,int y,int z, const std::string& mob, int count) const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    pendingMobs_.push_back({{x,y,z}, mob, count});
+void StructureManager::enqueuePendingMob(int x, int y, int z,
+                                         const std::string& mob,
+                                         int count) const {
+    PendingMob pending{{x, y, z}, mob, count};
+    if (activeBuildContext_ && activeBuildContext_->owner == this) {
+        activeBuildContext_->mobs.push_back(std::move(pending));
+        return;
+    }
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    queues->mobs.push_back(std::move(pending));
 }
-void StructureManager::enqueuePendingLoot(int x,int y,int z, const std::string& loot) const {
-    std::lock_guard<std::mutex> lk(pendingMtx_);
-    pendingLoot_.push_back({{x,y,z}, loot});
+
+void StructureManager::enqueuePendingLoot(int x, int y, int z,
+                                          const std::string& loot) const {
+    PendingLoot pending{{x, y, z}, loot};
+    if (activeBuildContext_ && activeBuildContext_->owner == this) {
+        activeBuildContext_->loot.push_back(std::move(pending));
+        return;
+    }
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    queues->loot.push_back(std::move(pending));
 }
+
+void StructureManager::commitBuildEffects(ChunkBuildWriter& writer,
+                                          BuildContext& context) const {
+    if (context.mobs.empty() && context.loot.empty()) return;
+    auto queues = pendingQueues_;
+    writer.addPublishCallback(
+        [queues = std::move(queues), mobs = std::move(context.mobs),
+         loot = std::move(context.loot)]() mutable {
+            std::lock_guard lock(queues->mutex);
+            // Reserve both destinations before changing either queue. Moving
+            // the staged records after reserve is non-throwing, so publication
+            // cannot expose only part of a candidate's structure side effects.
+            queues->mobs.reserve(queues->mobs.size() + mobs.size());
+            queues->loot.reserve(queues->loot.size() + loot.size());
+            for (auto& mob : mobs) queues->mobs.push_back(std::move(mob));
+            for (auto& entry : loot) queues->loot.push_back(std::move(entry));
+        });
+}
+
 void StructureManager::drainPendingMobs(std::vector<PendingMob>& out) const {
-    drainQueue(pendingMtx_, pendingMobs_, out);
+    const auto queues = pendingQueues_;
+    drainQueue(queues->mutex, queues->mobs, out);
 }
-void StructureManager::drainPendingLoot(std::vector<PendingLoot>& out) const {
-    drainQueue(pendingMtx_, pendingLoot_, out);
+void StructureManager::drainPendingLoot(
+    std::vector<PendingLoot>& out, std::int64_t currentTick) const {
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    auto& pending = queues->loot;
+    const auto readyCount = static_cast<std::size_t>(std::count_if(
+        pending.begin(), pending.end(), [&](const PendingLoot& item) {
+            return item.retryAfterTick <= currentTick;
+        }));
+    out.reserve(out.size() + readyCount);
+    auto readyEnd = pending.begin();
+    for (auto current = pending.begin(); current != pending.end(); ++current) {
+        if (current->retryAfterTick <= currentTick) {
+            out.push_back(std::move(*current));
+        } else {
+            if (readyEnd != current) *readyEnd = std::move(*current);
+            ++readyEnd;
+        }
+    }
+    pending.erase(readyEnd, pending.end());
 }
-void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+
+bool StructureManager::hasPendingLootInChunk(
+    std::int32_t cx, std::int32_t cz) const {
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    return std::any_of(queues->loot.begin(), queues->loot.end(),
+        [cx, cz](const PendingLoot& pending) {
+            return (pending.pos[0] >> 4) == cx &&
+                   (pending.pos[2] >> 4) == cz;
+        });
+}
+
+std::size_t StructureManager::pendingLootCount() const {
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    return queues->loot.size();
+}
+
+std::vector<std::pair<std::int32_t, std::int32_t>>
+StructureManager::pendingLootChunks() const {
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    std::vector<std::pair<std::int32_t, std::int32_t>> chunks;
+    chunks.reserve(queues->loot.size());
+    for (const auto& pending : queues->loot)
+        chunks.emplace_back(pending.pos[0] >> 4, pending.pos[2] >> 4);
+    std::sort(chunks.begin(), chunks.end());
+    chunks.erase(std::unique(chunks.begin(), chunks.end()), chunks.end());
+    return chunks;
+}
+
+void StructureManager::requeuePendingLoot(
+    PendingLoot pending, std::int64_t retryAfterTick) const {
+    pending.retryAfterTick = retryAfterTick;
+    const auto queues = pendingQueues_;
+    std::lock_guard lock(queues->mutex);
+    queues->loot.push_back(std::move(pending));
+}
+void StructureManager::placeTrialChambersPalette(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                    std::int32_t originX, std::int32_t originZ,
                                    const std::string& pieceName,
                                    const std::unordered_map<std::string,std::string>& palette,
@@ -944,7 +1041,7 @@ void StructureManager::placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, 
         enqueuePendingMob(originX+4, baseY+2, originZ+4, "minecraft:breeze", 1);
     }
 }
-void StructureManager::placeGenericPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+void StructureManager::placeGenericPalette(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                              std::int32_t originX, std::int32_t originZ,
                              const std::string& pieceName,
                              const std::unordered_map<std::string,std::string>& palette,
@@ -1045,8 +1142,31 @@ void StructureManager::placeGenericPalette(Chunk& chunk, std::int32_t cx, std::i
     }
 }
 
-void StructureManager::generate(Chunk& chunk, std::int32_t cx,
+void StructureManager::generate(ChunkBuildWriter& chunk, std::int32_t cx,
                                        std::int32_t cz, const GroundFn& ground) const {
+    BuildContextScope buildScope(this, &chunk);
+    const auto enqueueEffectsOwnedByThisChunk =
+        [&](const ConfiguredFeature& feature, std::int32_t originX,
+            std::int32_t originZ, std::int32_t baseY) {
+            for (const auto& mob : feature.mobs) {
+                const auto worldX = originX + mob.pos[0];
+                const auto worldZ = originZ + mob.pos[2];
+                if (blockToChunk(worldX) == cx && blockToChunk(worldZ) == cz)
+                    enqueuePendingMob(worldX, baseY + mob.pos[1], worldZ,
+                                      mob.mob, mob.count);
+            }
+            for (const auto& [position, lootTable] : feature.lootByPos) {
+                int localX = 0, localY = 0, localZ = 0;
+                if (sscanf(position.c_str(), "%d,%d,%d", &localX, &localY,
+                           &localZ) != 3)
+                    continue;
+                const auto worldX = originX + localX;
+                const auto worldZ = originZ + localZ;
+                if (blockToChunk(worldX) == cx && blockToChunk(worldZ) == cz)
+                    enqueuePendingLoot(worldX, baseY + localY, worldZ,
+                                       lootTable);
+            }
+        };
     if (placer_) {
         if (auto* pf = placer_->getPlaced("minecraft:stronghold")) {
             std::int32_t oCx, oCz;
@@ -1125,14 +1245,9 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
                 auto itv = cf->variants.find(pieceName);
                 std::unordered_map<std::string,std::string> pal = cf->palette;
                 if (itv != cf->variants.end()) for (auto& kv : itv->second) pal[kv.first] = kv.second;
-                // enqueue loot/mobs defined in JSON (defer)
                 int baseY = ground ? ground(at.originX+8, at.originZ+8) : 64;
-                for (auto& mb : cf->mobs) enqueuePendingMob(at.originX + mb.pos[0], baseY + mb.pos[1], at.originZ + mb.pos[2], mb.mob, mb.count);
-                for (auto& lb : cf->lootByPos) {
-                    // lb.first is "x,y,z"
-                    int lx=0, ly=0, lz=0;
-                    if (sscanf(lb.first.c_str(), "%d,%d,%d", &lx,&ly,&lz)==3) enqueuePendingLoot(at.originX+lx, baseY+ly, at.originZ+lz, lb.second);
-                }
+                enqueueEffectsOwnedByThisChunk(
+                    *cf, at.originX, at.originZ, baseY);
                 if (s.name.find("trial_chambers")!=std::string::npos || s.name.find("trial_chamber")!=std::string::npos) {
                     placeTrialChambersPalette(chunk, cx, cz, at.originX, at.originZ, pieceName, pal, (int)variant, ground);
                 } else {
@@ -1211,12 +1326,12 @@ void StructureManager::generate(Chunk& chunk, std::int32_t cx,
             std::unordered_map<std::string,std::string> pal = cf->palette;
             if (itv != cf->variants.end()) for (auto& kv : itv->second) pal[kv.first] = kv.second;
             int baseY = ground ? ground(originX+8, originZ+8) : 64;
-            for (auto& mb : cf->mobs) enqueuePendingMob(originX + mb.pos[0], baseY + mb.pos[1], originZ + mb.pos[2], mb.mob, mb.count);
-            for (auto& lb : cf->lootByPos) { int lx=0,ly=0,lz=0; if (sscanf(lb.first.c_str(), "%d,%d,%d",&lx,&ly,&lz)==3) enqueuePendingLoot(originX+lx, baseY+ly, originZ+lz, lb.second); }
+            enqueueEffectsOwnedByThisChunk(*cf, originX, originZ, baseY);
             if (pname.find("trial_chambers")!=std::string::npos) placeTrialChambersPalette(chunk, cx, cz, originX, originZ, pieceName, pal, variant, ground);
             else placeGenericPalette(chunk, cx, cz, originX, originZ, pieceName, pal, variant, ground);
         }
     }
+    commitBuildEffects(chunk, buildScope.context());
 }
 
 } // namespace cppfm::worldgen

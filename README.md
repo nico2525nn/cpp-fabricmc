@@ -28,7 +28,7 @@ main references are:
 
 | Area | Coverage |
 |---|---|
-| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, cookies, resource packs, transfer, plugin channels, and signed chat verification |
+| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, resource packs, transfer, plugin channels, and signed chat verification; cookie packet support is partial (responses are consumed but no outbound request/store flow is implemented) |
 | World and persistence | Anvil region files, `level.dat`, block entities, per-cell biomes, chunk loading/unloading, and interoperability with vanilla world data |
 | World generation | Multi-noise biomes, density functions, Nether and End terrain, ores, configured/placed features, and common structures |
 | Simulation | Block and fluid ticks, lighting, weather, redstone, pistons, rails, explosions, fire, portals, and world borders |

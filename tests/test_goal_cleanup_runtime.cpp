@@ -1,7 +1,9 @@
 #include "../src/brigadier/Arguments.hpp"
+#include "../src/brigadier/Tree.hpp"
 #include "../src/jvm/JavaObjectCache.hpp"
 #include "../src/jvm/NativeHandleTable.hpp"
 #include "../src/worldgen/StructurePlacer.hpp"
+#include "../src/game/BlockPredicate.hpp"
 
 #include <cstdint>
 #include <iostream>
@@ -39,6 +41,56 @@ void testNestedArguments() {
         rejected = true;
     }
     require(rejected, "unterminated NBT was accepted");
+
+    auto blockPredicate = cppfm::brigadier::args::blockPredicateArg();
+    cppfm::brigadier::StringReader tagReader(
+        "#minecraft:logs[axis=x,waterlogged=false]");
+    require(blockPredicate.parse(tagReader, context).asStr() ==
+                "#minecraft:logs[axis=x,waterlogged=false]" &&
+                tagReader.remainingLength() == 0,
+            "block-tag predicate did not preserve partial state properties");
+    bool malformedTagRejected = false;
+    try {
+        cppfm::brigadier::StringReader malformedTag(
+            "#minecraft:logs[axis=x");
+        (void)blockPredicate.parse(malformedTag, context);
+    } catch (const cppfm::brigadier::StringReader::ParseError&) {
+        malformedTagRejected = true;
+    }
+    require(malformedTagRejected,
+            "unterminated block-tag properties were accepted");
+
+    bool trailingPropertyRejected = false;
+    try {
+        (void)cppfm::block_predicate::parseBlockPredicate(
+            "minecraft:oak_log[axis=x,]");
+    } catch (const std::runtime_error&) {
+        trailingPropertyRejected = true;
+    }
+    require(trailingPropertyRejected,
+            "block predicate silently ignored an empty trailing property");
+}
+
+void testFailedCommandBranchRestoresArguments() {
+    using namespace cppfm::brigadier;
+    CommandDispatcher dispatcher;
+    auto incompleteBranch = CommandNode::argument(
+        "stale", args::stringWord());
+    incompleteBranch->then(CommandNode::literal("not-the-input"));
+    dispatcher.root->then(incompleteBranch);
+
+    bool sawStaleArgument = false;
+    auto validBranch = CommandNode::argument("selected", args::stringWord());
+    validBranch->executable = true;
+    validBranch->action = [&](CommandContext& context) {
+        sawStaleArgument = context.args.contains("stale");
+        return 1;
+    };
+    dispatcher.root->then(validBranch);
+
+    const auto result = dispatcher.execute("value", CommandSource{});
+    require(result.ok && !sawStaleArgument,
+            "failed argument branch leaked values into the selected command");
 }
 
 void testResourceLocations() {
@@ -146,6 +198,7 @@ void testJvmTables() {
 int main() {
     try {
         testNestedArguments();
+        testFailedCommandBranchRestoresArguments();
         testResourceLocations();
         testStructureOrigins();
         testJvmTables();

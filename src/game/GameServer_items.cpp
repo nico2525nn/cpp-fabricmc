@@ -1,4 +1,7 @@
 #include "GameServer.hpp"
+#include "BlockEntityDrops.hpp"
+#include "BlockEntityKinds.hpp"
+#include "EntitySupport.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/Fluids.hpp"
 #include "../physics/Redstone.hpp"
@@ -42,6 +45,41 @@ const char* projectileDamageType(ProjectileKind kind) noexcept {
 bool isWindCharge(ProjectileKind kind) noexcept {
     return kind == ProjectileKind::WindCharge ||
            kind == ProjectileKind::BreezeWindCharge;
+}
+
+std::optional<double> sweptEntitySupportY(World& world, double x, double z,
+                                           double previousY,
+                                           double currentY) {
+    const auto blockX = static_cast<std::int32_t>(std::floor(x));
+    const auto blockZ = static_cast<std::int32_t>(std::floor(z));
+    world.generateChunkIfMissing(blockX >> 4, blockZ >> 4);
+    const auto geometry = world.verticalGeometry();
+    const auto scanStartY = static_cast<std::int32_t>(std::clamp(
+        std::floor(previousY), static_cast<double>(geometry.minY),
+        static_cast<double>(geometry.maxY() - 1)));
+    // Entity vertical speed is capped below one block per tick. Three blocks
+    // cover the tallest modeled collision shapes without scanning the entire
+    // world column for every dropped item/orb on every tick.
+    const auto scanEndY = std::max(geometry.minY, scanStartY - 2);
+    std::optional<double> supportY;
+    world.withChunk(blockX >> 4, blockZ >> 4, [&](const Chunk& chunk) {
+        for (int y = scanStartY; y >= scanEndY; --y) {
+            const int storageY = geometry.storageY(y);
+            const auto state = chunk.blockAt(Chunk::index(
+                storageY >> 4, storageY & 15, blockZ & 15, blockX & 15));
+            const auto surface = entity_support::topCollisionSurfaceHeight(
+                state);
+            if (!surface) continue;
+            const double targetY = y + *surface + 0.25;
+            // Only resolve a downward crossing. A ceiling above an item cannot
+            // become a floor and teleport the entity upward through itself.
+            if (previousY >= targetY && currentY < targetY) {
+                supportY = targetY;
+                break;
+            }
+        }
+    });
+    return supportY;
 }
 
 } // namespace
@@ -322,27 +360,14 @@ void GameServer::craftersTickFor(std::int8_t dimension) {
                                std::int32_t z) -> BlockEntityStore::Owner {
         const auto key = posKey(x, y, z);
         if (auto existing = blockEntities.getShared(key)) return existing;
-        const auto* def = gen::blockByState(world.getBlock(x, y, z));
-        if (!def) return nullptr;
-        const std::string name(def->name);
-        BlockEntity::Kind kind;
-        if (name.find("chest") != std::string::npos &&
-            name.find("ender") == std::string::npos)
-            kind = BlockEntity::Kind::Chest;
-        else if (name == "minecraft:barrel") kind = BlockEntity::Kind::Barrel;
-        else if (name.find("shulker_box") != std::string::npos)
-            kind = BlockEntity::Kind::ShulkerBox;
-        else if (name == "minecraft:hopper") kind = BlockEntity::Kind::Hopper;
-        else if (name == "minecraft:dispenser") kind = BlockEntity::Kind::Dispenser;
-        else if (name == "minecraft:dropper") kind = BlockEntity::Kind::Dropper;
-        else if (name == "minecraft:furnace" ||
-                 name == "minecraft:blast_furnace" ||
-                 name == "minecraft:smoker")
-            kind = BlockEntity::Kind::Furnace;
-        else if (name == "minecraft:brewing_stand") kind = BlockEntity::Kind::Brewing;
-        else if (name == "minecraft:crafter") kind = BlockEntity::Kind::Crafter;
-        else return nullptr;
-        return blockEntities.createShared(key, kind);
+        const auto kind = blockEntityKindForBlockState(
+            world.getBlock(x, y, z));
+        if (!kind) return nullptr;
+        // Unknown item IDs/components keep their saved inventory opaque. A
+        // crafter facing such a container must treat it as a non-insertable
+        // target and drop any remaining output instead of letting an
+        // exception escape the server tick.
+        return blockEntities.tryCreateShared(key, *kind);
     };
 
     // Store keys, not BlockEntity values: each crafter owns mutable stacks and
@@ -353,6 +378,11 @@ void GameServer::craftersTickFor(std::int8_t dimension) {
     });
 
     for (const auto key : snapshot) {
+        // Acquire the World mutation gate before any block-entity owner lock.
+        // Container creation later in this tick re-enters the gate, and using
+        // the same lock order as block edits and chunk snapshots avoids an
+        // owner-lock -> World-gate cycle during concurrent chunk streaming.
+        auto mutationGate = world.lockMutationGate();
         auto beOwner = blockEntities.getShared(key);
         if (!beOwner) continue;
         std::unique_lock entityLock(*beOwner->stateMtx);
@@ -501,6 +531,7 @@ void GameServer::hoppersTick() {
 }
 
 void GameServer::hoppersTickFor(std::int8_t dimension) {
+    SimulationDispatchGuard simulationLock(simulationDispatchMtx_);
     dimension = canonicalDimension(dimension);
     // Keep the long-established hopper implementation readable while making
     // its world/store dependencies explicit at the boundary. All three
@@ -568,9 +599,10 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
         ItemStack* slots = be.generic.slots;
         const int count = be.kind == BlockEntity::Kind::Hopper ? 5 : 9;
 
-        auto mergeIntoFirstFit = [&](const ItemStack& src) -> bool {
-            for (int i = 0; i < count; ++i) {
-                auto& s = slots[i];
+        const auto mergeIntoSlots = [](ItemStack* destination, int slotCount,
+                                       const ItemStack& src) {
+            for (int i = 0; i < slotCount; ++i) {
+                auto& s = destination[i];
                 if (s.empty()) { s = src; return true; }
                 if (s.sameItemData(src) && s.count < 64) {
                     const int take = std::min<int>(64 - s.count, src.count);
@@ -583,32 +615,46 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
         auto extractOneFrom = [&](const BlockEntityStore::Owner& otherOwner) -> bool {
             if (!otherOwner) return false;
             std::lock_guard otherLock(*otherOwner->stateMtx);
-            BlockEntity* other = otherOwner.get();
+            BlockEntity sourceCandidate = *otherOwner;
             ItemStack* oslots = nullptr; int on = 0;
-            switch (other->kind) {
-            case BlockEntity::Kind::Chest: oslots = other->chest.slots; on = 27; break;
+            switch (sourceCandidate.kind) {
+            case BlockEntity::Kind::Chest: oslots = sourceCandidate.chest.slots; on = 27; break;
             case BlockEntity::Kind::Barrel:
             case BlockEntity::Kind::ShulkerBox:
-                oslots = other->chest.slots;
+                oslots = sourceCandidate.chest.slots;
                 on = 27;
                 break;
-            case BlockEntity::Kind::Hopper: oslots = other->generic.slots; on = 5; break;
-            case BlockEntity::Kind::Dispenser: oslots = other->generic.slots; on = 9; break;
-            case BlockEntity::Kind::Dropper: oslots = other->generic.slots; on = 9; break;
+            case BlockEntity::Kind::Hopper: oslots = sourceCandidate.generic.slots; on = 5; break;
+            case BlockEntity::Kind::Dispenser: oslots = sourceCandidate.generic.slots; on = 9; break;
+            case BlockEntity::Kind::Dropper: oslots = sourceCandidate.generic.slots; on = 9; break;
             case BlockEntity::Kind::Furnace:
-                oslots = other->furnace.slots + FurnaceData::kOutput;
+                oslots = sourceCandidate.furnace.slots + FurnaceData::kOutput;
                 on = 1;
                 break;
-            case BlockEntity::Kind::Brewing: oslots = other->brewing.slots; on = 3; break;
-            case BlockEntity::Kind::Crafter: oslots = other->crafter.slots; on = CrafterData::kSlots; break;
+            case BlockEntity::Kind::Brewing: oslots = sourceCandidate.brewing.slots; on = 3; break;
+            case BlockEntity::Kind::Crafter: oslots = sourceCandidate.crafter.slots; on = CrafterData::kSlots; break;
             default: return false;
             }
             for (int i = 0; i < on; ++i) {
                 auto& s = oslots[i];
                 if (s.empty()) continue;
                 ItemStack one = oneItem(s);
-                if (mergeIntoFirstFit(one)) {
+                BlockEntity destinationCandidate = be;
+                if (mergeIntoSlots(destinationCandidate.generic.slots,
+                                   count, one)) {
                     if (--s.count <= 0) s = ItemStack::air();
+                    const std::int64_t sourceKey = posKey(x, y + 1, z);
+                    std::vector<BlockEntityStore::SnapshotOverride> candidates;
+                    candidates.push_back({key, std::move(destinationCandidate)});
+                    candidates.push_back(
+                        {sourceKey, std::move(sourceCandidate)});
+                    if (!blockEntityCandidatesFitAnvilEntry(dimension,
+                                                            candidates)) {
+                        sourceCandidate = *otherOwner;
+                        continue;
+                    }
+                    be = candidates[0].entity;
+                    *otherOwner = candidates[1].entity;
                     dimensionBlockEntities.markDirty(posKey(x, y + 1, z));
                     dimensionBlockEntities.markDirty(key);
                     return true;
@@ -617,38 +663,58 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
             return false;
         };
 
+        if (be.kind == BlockEntity::Kind::Hopper) {
         // ---- pull from above
         if (auto otherOwner = dimensionBlockEntities.getShared(posKey(x, y + 1, z)))
             extractOneFrom(otherOwner);
         // ---- item entity pickup from the hopper cell itself
         WriteBuffer collected;
         bool collectedItem = false;
+        std::shared_ptr<ItemEntity> pickupCandidate;
+        BlockEntity pickupCandidateState = be;
         {
             std::lock_guard lk(entsMtx_);
             for (auto& e : itemDrops_) {
                 if (!e->collected && canonicalDimension(e->dimension) ==
-                        canonicalDimension(dimension) &&
+                    canonicalDimension(dimension) &&
                     std::abs(e->x - (x + .5)) < 0.8 &&
                     std::abs(e->z - (z + .5)) < 0.8 &&
                     e->y > y - 0.2 && e->y < y + 1.3) {
                     ItemStack one = oneItem(e->asStack());
                     if (one.empty()) continue;
-                    if (mergeIntoFirstFit(one)) {
-                        if (--e->count <= 0) {
-                            e->count = 0;
-                            e->collected = true;
-                            e->stack = ItemStack::air();
-                        } else if (!e->stack.empty()) {
-                            e->stack.count = e->count;
-                        }
-                        dimensionBlockEntities.markDirty(key);
-                        collected.varint(e->entityId);
-                        collected.varint(0);             // collector: hopper
-                        collected.varint(1);
-                        collectedItem = true;
+                    if (mergeIntoSlots(pickupCandidateState.generic.slots,
+                                       count, one)) {
+                        pickupCandidate = e;
                         break;
                     }
                 }
+            }
+        }
+        if (pickupCandidate) {
+            std::vector<BlockEntityStore::SnapshotOverride> candidates;
+            candidates.push_back({key, std::move(pickupCandidateState)});
+            if (blockEntityCandidatesFitAnvilEntry(dimension, candidates)) {
+                be = candidates.front().entity;
+                {
+                    std::lock_guard lk(entsMtx_);
+                    if (!pickupCandidate->collected &&
+                        pickupCandidate->count > 0) {
+                        if (--pickupCandidate->count <= 0) {
+                            pickupCandidate->count = 0;
+                            pickupCandidate->collected = true;
+                            pickupCandidate->stack = ItemStack::air();
+                        } else if (!pickupCandidate->stack.empty()) {
+                            pickupCandidate->stack.count =
+                                pickupCandidate->count;
+                        }
+                        collected.varint(pickupCandidate->entityId);
+                        collected.varint(0);             // collector: hopper
+                        collected.varint(1);
+                        collectedItem = true;
+                    }
+                }
+                if (collectedItem)
+                    dimensionBlockEntities.markDirty(key);
             }
         }
         if (collectedItem)
@@ -713,14 +779,31 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     auto& s = slots[i];
                     if (s.empty()) continue;
                     ItemStack one = oneItem(s);
-                    if (insertOneInto(below, one)) {
-                        if (--s.count <= 0) s = ItemStack::air();
+                    BlockEntity sourceCandidate = be;
+                    BlockEntity destinationCandidate = *below;
+                    auto& sourceStack = sourceCandidate.generic.slots[i];
+                    if (insertOneInto(&destinationCandidate, one)) {
+                        if (--sourceStack.count <= 0)
+                            sourceStack = ItemStack::air();
+                        const auto belowKey = posKey(x, y - 1, z);
+                        std::vector<BlockEntityStore::SnapshotOverride>
+                            candidates;
+                        candidates.push_back(
+                            {key, std::move(sourceCandidate)});
+                        candidates.push_back(
+                            {belowKey, std::move(destinationCandidate)});
+                        if (!blockEntityCandidatesFitAnvilEntry(
+                                dimension, candidates))
+                            break;
+                        be = candidates[0].entity;
+                        *belowOwner = candidates[1].entity;
                         dimensionBlockEntities.markDirty(key);
-                        dimensionBlockEntities.markDirty(posKey(x, y - 1, z));
+                        dimensionBlockEntities.markDirty(belowKey);
                     }
                     break;
                 }
             }
+        }
         }
 
         if (be.kind == BlockEntity::Kind::Dispenser ||
@@ -759,12 +842,38 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     double sy = y + .5 + dy * .7;
                     double sz = z + .5 + dz * .7;
                     std::string iname = s.name();
+                    bool rejectedByAnvilLimit = false;
 
                     auto doDropperInsert = [&]() -> bool {
                         auto targetOwner = dimensionBlockEntities.getShared(posKey(tx,ty,tz));
                         if(!targetOwner) return false;
                         std::lock_guard targetLock(*targetOwner->stateMtx);
-                        auto* beT = targetOwner.get();
+                        BlockEntity destinationCandidate = *targetOwner;
+                        auto* beT = &destinationCandidate;
+                        const auto commitInsertion = [&]() {
+                            BlockEntity sourceCandidate = be;
+                            auto& sourceStack =
+                                sourceCandidate.generic.slots[pick];
+                            if (--sourceStack.count <= 0)
+                                sourceStack = ItemStack::air();
+                            const auto targetKey = posKey(tx, ty, tz);
+                            std::vector<
+                                BlockEntityStore::SnapshotOverride> candidates;
+                            candidates.push_back(
+                                {key, std::move(sourceCandidate)});
+                            candidates.push_back(
+                                {targetKey, std::move(destinationCandidate)});
+                            if (!blockEntityCandidatesFitAnvilEntry(
+                                    dimension, candidates)) {
+                                rejectedByAnvilLimit = true;
+                                return false;
+                            }
+                            be = candidates[0].entity;
+                            *targetOwner = candidates[1].entity;
+                            dimensionBlockEntities.markDirty(key);
+                            dimensionBlockEntities.markDirty(targetKey);
+                            return true;
+                        };
                         std::string insertDir;
                         if(facing=="north") insertDir="south";
                         else if(facing=="south") insertDir="north";
@@ -780,12 +889,10 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                             auto &dst = beT->furnace.slots[trySlot];
                             if(dst.empty()){
                                 dst = one;
-                                dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
-                                return true;
+                                return commitInsertion();
                             } else if(dst.sameItemData(one) && dst.count<64){
                                 ++dst.count;
-                                dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
-                                return true;
+                                return commitInsertion();
                             } else return false;
                         }
                         if(beT->kind==BlockEntity::Kind::Brewing){
@@ -793,18 +900,16 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                 auto &dst = beT->brewing.slots[3];
                                 if(dst.empty()){
                                     dst = one;
-                                    dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
-                                    return true;
+                                    return commitInsertion();
                                 } else if(dst.sameItemData(one) && dst.count<64){
                                     ++dst.count;
-                                    dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
-                                    return true;
+                                    return commitInsertion();
                                 } else return false;
                             }
                             for(int idx : {0,1,2,4}){
                                 auto &d = beT->brewing.slots[idx];
-                                if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(d.sameItemData(one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.empty()){ d=one; return commitInsertion(); }
+                                if(d.sameItemData(one) && d.count<64){ ++d.count; return commitInsertion(); }
                             }
                             return false;
                         }
@@ -829,8 +934,8 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                                     beT->crafter.isSlotDisabled(j))
                                     continue;
                                 auto &d=oslots[j];
-                                if(d.empty()){ d=one; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
-                                if(d.sameItemData(one) && d.count<64){ ++d.count; dimensionBlockEntities.markDirty(posKey(tx,ty,tz)); return true; }
+                                if(d.empty()){ d=one; return commitInsertion(); }
+                                if(d.sameItemData(one) && d.count<64){ ++d.count; return commitInsertion(); }
                             }
                         }
                         return false;
@@ -839,39 +944,118 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
                     if(isDropper){
                         // Dropper: always try insert, else drop item (never projectile)
                         bool inserted = doDropperInsert();
+                        if (rejectedByAnvilLimit) {
+                            // Keep the source stack intact and retry when the
+                            // target chunk has enough durable Anvil capacity.
+                            was = false;
+                            continue;
+                        }
                         if(!inserted){
                             spawnItemDropStack(tx+0.5, ty+0.5, tz+0.5, oneItem(s), dx*0.25, 0.15, dz*0.25);
+                            if (--s.count <= 0) s = ItemStack::air();
+                            dimensionBlockEntities.markDirty(key);
                         }
-                        if (--s.count <= 0) s = ItemStack::air();
                         broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
-                        dimensionBlockEntities.markDirty(key);
                     } else {
                         bool handled = false;
                         if (iname.find("shulker_box") != std::string::npos) {
-                            uint16_t tSt = dimensionWorld.getBlock(tx,ty,tz);
-                            if (tSt==0) {
-                                uint16_t belowSt = dimensionWorld.getBlock(tx,ty-1,tz);
-                                std::string shulkerFacing = (belowSt==0 ? facing : "up");
-                                const gen::BlockDef* def = gen::blockByName(iname);
-                                if (!def) def = gen::blockByName("minecraft:shulker_box");
-                                if (def) {
-                                    uint16_t ns = static_cast<uint16_t>(gen::stateWithProps(*def, {{"facing", shulkerFacing}}));
-                                    dimensionWorld.setBlock(tx,ty,tz, ns);
-                                    broadcastBlockChange(tx,ty,tz, ns);
-                                    auto beNOwner = dimensionBlockEntities.getShared(posKey(tx,ty,tz));
-                                    if (!beNOwner)
-                                        beNOwner = dimensionBlockEntities.createShared(
-                                            posKey(tx,ty,tz), BlockEntity::Kind::ShulkerBox);
-                                    std::lock_guard beNLock(*beNOwner->stateMtx);
-                                    auto* beN = beNOwner.get();
-                                    if (beN->kind != BlockEntity::Kind::ShulkerBox) {
-                                        beN->kind = BlockEntity::Kind::ShulkerBox;
-                                        dimensionBlockEntities.markDirty(posKey(tx,ty,tz));
+                            // getBlock intentionally treats an unloaded chunk
+                            // as air. Resolve item data first, then acquire a
+                            // loaded-chunk mutation lease that retries if
+                            // eviction wins between loading and locking.
+                            const auto itemData = shulkerBoxDataFromItem(s);
+                            const gen::BlockDef* def =
+                                gen::blockByName(iname);
+                            if (!def)
+                                def = gen::blockByName(
+                                    "minecraft:shulker_box");
+                            if (def && itemData) {
+                                auto mutationGate =
+                                    dimensionWorld.lockLoadedChunkMutationGate(
+                                        tx >> 4, tz >> 4);
+                                if (mutationGate) {
+                                    const bool targetStillEmpty =
+                                        isAirBlockState(
+                                            dimensionWorld.getBlock(tx, ty,
+                                                                    tz)) &&
+                                        !dimensionBlockEntities.containsAt(
+                                            tx, ty, tz);
+                                    if (targetStillEmpty) {
+                                        const auto belowState =
+                                            dimensionWorld.getBlock(
+                                                tx, ty - 1, tz);
+                                        const std::string shulkerFacing =
+                                            isAirBlockState(belowState)
+                                                ? facing : "up";
+                                        const auto ns =
+                                            static_cast<std::uint16_t>(
+                                                gen::stateWithProps(
+                                                    *def,
+                                                    {{"facing", shulkerFacing}}));
+                                        const std::vector<World::BlockUpdate>
+                                            projectedBlocks{{tx, ty, tz, ns}};
+                                        auto savedEntity =
+                                            shulkerBoxBlockEntityNbt(
+                                                *itemData, tx, ty, tz);
+                                        if (dimensionWorld.setBlockIfAir(
+                                                tx, ty, tz, ns)) {
+                                            bool blockEntityInstalled = false;
+                                            try {
+                                                blockEntityInstalled =
+                                                    dimensionBlockEntities
+                                                        .replaceNbtAtIfAdmitted(
+                                                            tx, ty, tz,
+                                                            std::move(savedEntity),
+                                                            [this, dimension,
+                                                             &dimensionBlockEntities,
+                                                             &projectedBlocks](
+                                                                const BlockEntityStore::NbtReplacement& replacement) {
+                                                                const std::vector<BlockEntityStore::NbtReplacement>
+                                                                    projectedEntities{replacement};
+                                                                return dimensionBlockEntities
+                                                                           .canReplaceNbtBatch(projectedEntities) &&
+                                                                       blockMutationCandidatesFitAnvilEntries(
+                                                                           dimension,
+                                                                           projectedBlocks,
+                                                                           projectedEntities);
+                                                            });
+                                            } catch (const std::exception& error) {
+                                                std::fprintf(stderr,
+                                                    "[cppfm] shulker dispense rejected before block-entity publication: %s\n",
+                                                    error.what());
+                                            } catch (...) {
+                                                std::fprintf(stderr,
+                                                    "[cppfm] shulker dispense rejected before block-entity publication\n");
+                                            }
+                                            if (blockEntityInstalled) {
+                                                broadcastBlockChange(tx, ty, tz,
+                                                                     ns);
+                                                if (--s.count <= 0)
+                                                    s = ItemStack::air();
+                                                dimensionBlockEntities
+                                                    .markDirty(key);
+                                                broadcastSound(
+                                                    "minecraft:block.dispenser.dispense",
+                                                    x + .5, y + .5, z + .5,
+                                                    1.f, 1.f, "block");
+                                                handled = true;
+                                            } else if (
+                                                !dimensionBlockEntities
+                                                     .containsAt(tx, ty, tz)) {
+                                                if (dimensionWorld
+                                                        .setBlockIfState(
+                                                            tx, ty, tz, ns, 0))
+                                                    broadcastBlockChange(
+                                                        tx, ty, tz, 0);
+                                            } else {
+                                                // Another store owner won
+                                                // publication. Leave its
+                                                // record and the dispenser
+                                                // item untouched for a retry.
+                                                handled = true;
+                                            }
+                                        }
                                     }
-                                    if (--s.count <= 0) s = ItemStack::air();
-                                    dimensionBlockEntities.markDirty(key);
-                                    broadcastSound("minecraft:block.dispenser.dispense", x+.5,y+.5,z+.5,1.f,1.f,"block");
-                                    handled = true;
                                 }
                             }
                             if (!handled) {
@@ -1228,31 +1412,6 @@ void GameServer::hoppersTickFor(std::int8_t dimension) {
             }
             was = powered;
         }
-    }
-}
-ItemStack* GameServer::containerAt(std::int32_t x, std::int32_t y,
-                                   std::int32_t z, int& countOut,
-                                   BlockEntity::Kind& kindOut) {
-    return containerAtFor(0, x, y, z, countOut, kindOut);
-}
-ItemStack* GameServer::containerAtFor(std::int8_t dimension,
-                                      std::int32_t x, std::int32_t y,
-                                      std::int32_t z, int& countOut,
-                                      BlockEntity::Kind& kindOut) {
-    auto* be = blockEntitiesFor(dimension).getAt(x, y, z);
-    if (!be) return nullptr;
-    kindOut = be->kind;
-    switch (be->kind) {
-    case BlockEntity::Kind::Chest:
-    case BlockEntity::Kind::Barrel:
-    case BlockEntity::Kind::ShulkerBox: countOut = 27; return be->chest.slots;
-    case BlockEntity::Kind::Hopper: countOut = 5; return be->generic.slots;
-    case BlockEntity::Kind::Dispenser:
-    case BlockEntity::Kind::Dropper: countOut = 9; return be->generic.slots;
-    case BlockEntity::Kind::Crafter: countOut = CrafterData::kSlots; return be->crafter.slots;
-    case BlockEntity::Kind::Furnace: countOut = 3; return be->furnace.slots;
-    case BlockEntity::Kind::Brewing: countOut = 5; return be->brewing.slots;
-    default: return nullptr;
     }
 }
 const std::vector<TradeOffer>& GameServer::tradeTable() {
@@ -1688,38 +1847,8 @@ void GameServer::itemsTick() {
     };
     const auto addStackToInventory = [&](Player& player,
                                          const ItemStack& source) {
-        if (source.empty()) return 0;
-        int remaining = source.count;
-        const auto insertInto = [&](const int* slots, std::size_t slotCount) {
-            for (std::size_t n = 0; n < slotCount && remaining > 0; ++n) {
-                auto& destination = player.inv[slots[n]];
-                if (!destination.sameItemData(source) || destination.count >= 64)
-                    continue;
-                const int moved = std::min<int>(64 - destination.count,
-                                                remaining);
-                destination.count += static_cast<std::int16_t>(moved);
-                remaining -= moved;
-            }
-        };
-        const auto fillEmpty = [&](const int* slots, std::size_t slotCount) {
-            for (std::size_t n = 0; n < slotCount && remaining > 0; ++n) {
-                auto& destination = player.inv[slots[n]];
-                if (!destination.empty()) continue;
-                destination = source;
-                destination.count = static_cast<std::int16_t>(
-                    std::min(64, remaining));
-                remaining -= destination.count;
-            }
-        };
-        static constexpr int kHotbar[] = {36, 37, 38, 39, 40, 41, 42, 43, 44};
-        static constexpr int kMain[] = {9, 10, 11, 12, 13, 14, 15, 16, 17,
-                                        18, 19, 20, 21, 22, 23, 24, 25, 26,
-                                        27, 28, 29, 30, 31, 32, 33, 34, 35};
-        insertInto(kHotbar, std::size(kHotbar));
-        insertInto(kMain, std::size(kMain));
-        fillEmpty(kHotbar, std::size(kHotbar));
-        fillEmpty(kMain, std::size(kMain));
-        return static_cast<int>(source.count) - remaining;
+        return insertPlayerStackPartial(
+            player.inv, source, source.count, maxStackFor(source));
     };
     std::vector<Pickup> pickups;
     std::vector<Despawn> expired;
@@ -1750,36 +1879,25 @@ void GameServer::itemsTick() {
     // Keep world scans and player snapshots out of the entity-container lock.
     // Event/JVM callbacks can re-enter the server while an item is ticking.
     const auto players = playersSnapshot();
+    constexpr double kPlayerHalfWidth = 0.3;
+    constexpr double kPlayerHeight = 1.8;
+    constexpr double kItemHalfWidth = 0.125;
+    constexpr double kItemHeight = 0.25;
+    constexpr double kPickupReach = 1.0;
     for (const auto& e : active) {
         if (!e || e->collected) continue;
         World& world = worldFor(e->dimension);
         ++e->ageTicks;
         if (e->ageTicks > 6000) continue;
+        const double previousY = e->y;
         e->vy -= 0.04;
         if (e->vy < -0.5) e->vy = -0.5;
         e->y += e->vy;
         e->x += e->vx;
         e->z += e->vz;
-        world.generateChunkIfMissing(static_cast<std::int32_t>(e->x) >> 4,
-                                     static_cast<std::int32_t>(e->z) >> 4);
-        int col = 4;
-        world.withChunk(static_cast<std::int32_t>(e->x) >> 4,
-                        static_cast<std::int32_t>(e->z) >> 4,
-                        [&](const Chunk& c) {
-                            for (int ry = kSectionsPerChunk * 16 - 1;
-                                 ry >= 0; --ry) {
-                                if (c.blocks[Chunk::index(
-                                        ry >> 4, ry & 15,
-                                        static_cast<std::int32_t>(e->z) & 15,
-                                        static_cast<std::int32_t>(e->x) & 15)] != 0) {
-                                    col = ry + 1;
-                                    break;
-                                }
-                            }
-                        });
-        const double gy = kMinY + col + 0.25;
-        if (e->y < gy) {
-            e->y = gy;
+        if (const auto supportY = sweptEntitySupportY(
+                world, e->x, e->z, previousY, e->y)) {
+            e->y = *supportY;
             e->vy = 0;
             e->vx *= 0.6;
             e->vz *= 0.6;
@@ -1803,10 +1921,27 @@ void GameServer::itemsTick() {
             }
             if (!eligible || playerDimension !=
                                 canonicalDimension(e->dimension)) continue;
-            const double dx = playerX - e->x;
-            const double dy = (playerY + 0.9) - e->y;
-            const double dz = playerZ - e->z;
-            if (dx * dx + dy * dy + dz * dz < 2.0) {
+            // Item pickup is a player/item bounding-box collision, not a
+            // sphere around the player's eye/body center. Measure the gap
+            // between the two boxes and apply the one-block pickup reach;
+            // using playerY + 0.9 made items resting just below a player's
+            // feet unreachable even when their horizontal boxes overlapped.
+            const auto horizontalGap = [](double delta) {
+                return std::max(0.0, std::abs(delta) -
+                    (kPlayerHalfWidth + kItemHalfWidth));
+            };
+            const double dx = horizontalGap(playerX - e->x);
+            const double dz = horizontalGap(playerZ - e->z);
+            const double itemTop = e->y + kItemHeight;
+            const double playerTop = playerY + kPlayerHeight;
+            const double dy = itemTop < playerY
+                ? playerY - itemTop
+                : (e->y > playerTop ? e->y - playerTop : 0.0);
+            // This is an expanded-box test: the pickup radius is applied on
+            // each axis, not as a sphere. A diagonal item can therefore be
+            // inside the pickup bounds even when the 3D gap length is > 1.
+            if (dx < kPickupReach && dy < kPickupReach &&
+                dz < kPickupReach) {
                 pickups.push_back({e, pp});
                 break;
             }
@@ -1944,45 +2079,15 @@ void GameServer::broadcastItemMetadata(const ItemEntity& it) {
                                      pl::sc::SetEntityMetadata, md);
 }
 bool GameServer::addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count) {
+    return addStackToInventory(p, ItemStack::of(itemId), count);
+}
+bool GameServer::addStackToInventory(Player& p, const ItemStack& source,
+                                     std::uint16_t count) {
+    if (count == 0) return true;
+    if (source.empty()) return false;
+
     std::lock_guard playerLock(p.stateMtx);
-    // Treat the operation as atomic.  Several callers use the boolean result
-    // to decide whether to drop the original stack; mutating a few slots and
-    // then returning false would duplicate those items when the caller drops
-    // the unchanged source.
-    auto trial = p.inv;
-    // merge into existing stacks (hotbar 36..44, main 9..35)
-    for (int pass = 0; pass < 2; ++pass) {
-        // A conditional initializer_list only copies its non-owning view, so
-        // range-for's lifetime extension does not keep the selected backing
-        // array alive. Iterate the contiguous slot ranges directly instead.
-        const int firstSlot = pass == 0 ? 36 : 9;
-        const int pastLastSlot = pass == 0 ? 45 : 36;
-        for (int i = firstSlot; i < pastLastSlot; ++i) {
-            auto& s = trial[i];
-            if (pass == 0 && s.itemId == itemId && s.count > 0 && s.count < 64) {
-                const int take = std::min(64 - static_cast<int>(s.count),
-                                           static_cast<int>(count));
-                s.count = static_cast<std::int16_t>(s.count + take);
-                count = static_cast<std::uint16_t>(count -
-                                                   static_cast<std::uint16_t>(take));
-                if (count == 0) {
-                    p.inv = std::move(trial);
-                    return true;
-                }
-            } else if (pass == 1 && s.count == 0) {
-                s.itemId = itemId;
-                const int placed = std::min(64, static_cast<int>(count));
-                s.count = static_cast<std::int16_t>(placed);
-                count = static_cast<std::uint16_t>(count -
-                                                   static_cast<std::uint16_t>(placed));
-                if (count == 0) {
-                    p.inv = std::move(trial);
-                    return true;
-                }
-            }
-        }
-    }
-    return false;                                       // inventory full: stays on ground
+    return insertCompletePlayerStack(p.inv, source, count, maxStackFor(source));
 }
 void GameServer::resendInventory(Player& p) {
     std::shared_ptr<Connection> connection;
@@ -2243,7 +2348,7 @@ void GameServer::furnacesTickFor(std::int8_t dimension) {
                 auto out = recipe->result;
                 auto& dst = f.slots[FurnaceData::kOutput];
                 if (dst.empty()) dst = out;
-                else if (dst.itemId == out.itemId) dst.count += out.count;
+                else if (dst.sameItemData(out)) dst.count += out.count;
                 else { f.cookProgress = f.cookTotal; return; }
                 ItemStack& in = f.slots[FurnaceData::kInput];
                 if (--in.count <= 0) in = ItemStack::air();
@@ -2446,29 +2551,13 @@ void GameServer::xpOrbsTick() {
                                    e->entityId});
             continue;
         }
+        const double previousY = e->y;
         e->vy -= 0.03;
         if (e->vy < -0.4) e->vy = -0.4;
         e->y += e->vy;
-        world.generateChunkIfMissing(static_cast<std::int32_t>(e->x) >> 4,
-                                     static_cast<std::int32_t>(e->z) >> 4);
-        int col = 4;
-        world.withChunk(static_cast<std::int32_t>(e->x) >> 4,
-                        static_cast<std::int32_t>(e->z) >> 4,
-                        [&](const Chunk& c) {
-                            for (int ry = kSectionsPerChunk * 16 - 1;
-                                 ry >= 0; --ry) {
-                                if (c.blocks[Chunk::index(
-                                        ry >> 4, ry & 15,
-                                        static_cast<std::int32_t>(e->z) & 15,
-                                        static_cast<std::int32_t>(e->x) & 15)] != 0) {
-                                    col = ry + 1;
-                                    break;
-                                }
-                            }
-                        });
-        const double gy = kMinY + col + 0.25;
-        if (e->y < gy) {
-            e->y = gy;
+        if (const auto supportY = sweptEntitySupportY(
+                world, e->x, e->z, previousY, e->y)) {
+            e->y = *supportY;
             e->vy = 0;
         }
         if (e->ageTicks <= 10) continue;
@@ -2892,9 +2981,6 @@ void GameServer::projectilesTick() {
                             std::int8_t ownerDimension = dimension;
                             {
                                 std::lock_guard ownerLock(owner->stateMtx);
-                                owner->x = tx;
-                                owner->y = ty;
-                                owner->z = tz;
                                 owner->lastEnderPearlTick = tickNo_;
                                 ownerConnection = owner->conn;
                                 ownerEntityId = owner->entityId;
@@ -2902,16 +2988,9 @@ void GameServer::projectilesTick() {
                                 ownerPitch = owner->pitch;
                                 ownerDimension = canonicalDimension(owner->dimension);
                             }
-                            // teleport packet
-                            if (ownerConnection) {
-                                WriteBuffer tb;
-                                tb.varint(0); // teleport id not tracked for pearl? use 0
-                                tb.f64(tx); tb.f64(ty); tb.f64(tz);
-                                tb.f64(0); tb.f64(0); tb.f64(0);
-                                tb.f32(ownerYaw); tb.f32(ownerPitch);
-                                tb.u32(0);
-                                ownerConnection->trySendPacket(proto::pl::sc::PlayerPosition, tb);
-                            }
+                            // Route through the same confirmation sequence as
+                            // commands and session-originated corrections.
+                            teleportPlayer(*owner, tx, ty, tz);
                             // broadcast to others
                             {
                                 const WriteBuffer tp = makeEntityTeleportBody(
@@ -3087,7 +3166,7 @@ void GameServer::projectilesTick() {
                             else {
                                 // fallback: scan up to maxY for non-air
                                 bool blocked=false;
-                                for(int y2=ty+1; y2<kMaxY; ++y2){
+                                for(int y2=ty+1; y2<hitWorld.maxY(); ++y2){
                                     if(hitWorld.getBlock(tx, y2, tz)!=0){ blocked=true; break; }
                                 }
                                 canSeeSky = !blocked;
@@ -3159,7 +3238,10 @@ void GameServer::projectilesTick() {
             if (playerConnection)
                 playerConnection->trySendPacket(pl::sc::DamageEvent, de);
         } else if (h.mob) {
-            applyDamageToMob(*h.mob, h.dmg, damageType);
+            const bool damageApplied =
+                applyDamageToMob(*h.mob, h.dmg, damageType);
+            if (damageApplied && h.p->ownerIsPlayer)
+                noteMobHurt(h.mob->entityId, h.p->ownerId, 0);
             std::int32_t mobEntityId = 0;
             std::int8_t mobDimension = 0;
             double mobX = 0.0;
@@ -3167,6 +3249,7 @@ void GameServer::projectilesTick() {
             double mobZ = 0.0;
             MobKind mobKind = MobKind::Pig;
             bool mobDead = false;
+            bool mobOnFire = false;
             {
                 std::lock_guard mobLock(*h.mob->stateMtx);
                 mobDead = h.mob->dead;
@@ -3176,16 +3259,19 @@ void GameServer::projectilesTick() {
                 mobY = h.mob->y;
                 mobZ = h.mob->z;
                 mobKind = h.mob->kind;
+                mobOnFire = h.mob->onFireTicks > 0;
             }
-            if (mobDead) {
+            if (mobDead && h.mob->tryClaimDeathHandling()) {
                 WriteBuffer rm; rm.varint(1); rm.varint(mobEntityId);
                 broadcastPacketExceptInDimension(mobDimension, nullptr,
                                                  pl::sc::RemoveEntities, rm);
-                const auto drop = MobEntity::dropFor(mobKind);
-                if (drop.itemId)
-                    spawnItemDropFor(mobDimension, mobX,
-                                     mobY + .4, mobZ, drop.itemId,
-                                     drop.count);
+                auto lootContext = mobLootContextForDeath(
+                    mobEntityId, mobOnFire);
+                if (h.p->ownerIsPlayer) lootContext.wasKilledByPlayer = true;
+                spawnMobLootFor(mobKind, mobDimension, mobX,
+                                mobY + .4, mobZ, lootContext);
+                spawnXpOrbsFor(mobDimension, mobX, mobY + .5, mobZ,
+                               mobStats(mobKind).xpDrop, nullptr);
                 {
                     std::lock_guard lk(entsMtx_);
                     mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), h.mob),

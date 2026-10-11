@@ -2,6 +2,7 @@
 // boundary and valid values must retain their wire representation.
 
 #include "../src/api/EventBus.hpp"
+#include "../src/core/BitMath.hpp"
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/Json.hpp"
 #include "../src/core/NBT.hpp"
@@ -11,14 +12,17 @@
 #include "../src/game/ServerProperties.hpp"
 #include "../src/net/PacketDecoder.hpp"
 #include "../src/net/PacketEncoder.hpp"
+#include "../src/net/CookieResponse.hpp"
 #include "../src/net/Rcon.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -67,6 +71,13 @@ std::vector<std::uint8_t> nestedNetworkNbt(std::size_t depth) {
     return out.data;
 }
 
+void testBitMath() {
+    check(ceilLog2(0) == 0 && ceilLog2(1) == 0 && ceilLog2(2) == 1 &&
+              ceilLog2(3) == 2 && ceilLog2(256) == 8 &&
+              ceilLog2(std::numeric_limits<std::uint32_t>::max()) == 32,
+          "ceilLog2 handles boundaries without overflowing the shift width");
+}
+
 void testByteBuffer() {
     std::printf("\n[ByteBuffer boundary checks]\n");
     WriteBuffer out;
@@ -85,6 +96,51 @@ void testByteBuffer() {
     ReadBuffer javaVarLongInput(javaVarLongHighPayload);
     check(javaVarLongInput.varlong() == 0,
           "VarLong tenth-byte high payload bits follow Java long shift truncation");
+
+    const std::vector<std::uint8_t> skipPayload{0x11, 0x22, 0x33};
+    ReadBuffer skipInput(skipPayload);
+    skipInput.skip(2);
+    check(skipInput.remaining() == 1 && skipInput.u8() == 0x33,
+          "ReadBuffer skip advances without allocating a discarded payload");
+    expectThrow("ReadBuffer skip rejects lengths beyond the frame",
+                [&] { skipInput.skip(1); });
+
+    WriteBuffer cookieWithValue;
+    cookieWithValue.string("example:probe");
+    cookieWithValue.boolean(true);
+    cookieWithValue.varint(3);
+    cookieWithValue.u8(1);
+    cookieWithValue.u8(2);
+    cookieWithValue.u8(3);
+    ReadBuffer cookieValueInput(cookieWithValue.data);
+    net::consumeCookieResponseBody(cookieValueInput);
+    check(cookieValueInput.remaining() == 0,
+          "cookie response consumes its bounded byte-array without retaining it");
+
+    WriteBuffer cookieWithoutValue;
+    cookieWithoutValue.string("example:missing");
+    cookieWithoutValue.boolean(false);
+    ReadBuffer cookieMissingInput(cookieWithoutValue.data);
+    net::consumeCookieResponseBody(cookieMissingInput);
+    check(cookieMissingInput.remaining() == 0,
+          "cookie response without a value consumes only its optional marker");
+
+    WriteBuffer negativeCookieLength;
+    negativeCookieLength.string("example:invalid");
+    negativeCookieLength.boolean(true);
+    negativeCookieLength.varint(-1);
+    ReadBuffer negativeCookieInput(negativeCookieLength.data);
+    expectThrow("cookie response rejects a negative value length",
+                [&] { net::consumeCookieResponseBody(negativeCookieInput); });
+
+    WriteBuffer truncatedCookieValue;
+    truncatedCookieValue.string("example:truncated");
+    truncatedCookieValue.boolean(true);
+    truncatedCookieValue.varint(2);
+    truncatedCookieValue.u8(1);
+    ReadBuffer truncatedCookieInput(truncatedCookieValue.data);
+    expectThrow("cookie response rejects a value extending past the packet",
+                [&] { net::consumeCookieResponseBody(truncatedCookieInput); });
 
     WriteBuffer position;
     position.position(-12345, -2048, 54321);
@@ -173,6 +229,26 @@ void testNbt() {
               values->elemType() == nbt::Int && values->list.size() == 2 &&
               values->list[1].i == 9,
           "named NBT list preserves element type and values");
+
+    WriteBuffer oversizedList;
+    oversizedList.u8(nbt::Compound);
+    oversizedList.u16(0);
+    oversizedList.u8(nbt::List);
+    oversizedList.u16(4);
+    oversizedList.raw("huge", 4);
+    oversizedList.u8(nbt::Byte);
+    oversizedList.i32(1'000'000);
+    oversizedList.u8(nbt::End);
+    bool allocationBudgetRejected = false;
+    try {
+        ReadBuffer budgetInput(oversizedList.data);
+        nbt::Parser budgetParser(budgetInput, 4096);
+        (void)budgetParser.readFileRoot();
+    } catch (const std::length_error&) {
+        allocationBudgetRejected = true;
+    }
+    check(allocationBudgetRejected,
+          "NBT parser checks cumulative allocation budget before reserving a declared list");
 
     nbt::Value emptyEndList = nbt::Value::makeList(nbt::End);
     root.set("empty", emptyEndList);
@@ -302,6 +378,14 @@ void testRegionFile() {
         expectThrow("Anvil rejects local coordinates outside a region", [&] {
             region.store(32, 0, bytes);
         });
+        const auto truncatedPath = path.parent_path() / "r.short.mca";
+        {
+            std::ofstream truncated(truncatedPath, std::ios::binary);
+            truncated.put('\0');
+        }
+        expectThrow("Anvil rejects a truncated existing region instead of treating it as empty", [&] {
+            (void)RegionFile(truncatedPath.string()).load(0, 0);
+        });
     } catch (const std::exception& e) {
         check(false, e.what());
     }
@@ -394,6 +478,7 @@ void testWhitelist() {
 } // namespace
 
 int main() {
+    testBitMath();
     testByteBuffer();
     testJson();
     testConfigurationAndEncoding();

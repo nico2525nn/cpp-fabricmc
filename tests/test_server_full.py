@@ -64,7 +64,7 @@ VANILLA_COMMANDS: list[tuple[str,str,str,str]] = [
     ("fill",        "fill 0 -61 0 1 -61 1 minecraft:stone", "fill", "bulk setBlock"),
     ("forceload",   "forceload query", "forceload add foo bar", "ForcedChunks"),
     ("function",    "function minecraft:test_noop", "function", "FunctionEvaluator"),
-    ("gamemode",    "gamemode survival @s", "gamemode", "GameEvent 4 + Abilities"),
+    ("gamemode",    "gamemode survival @s", "gamemode", "GameEvent 3 + Abilities"),
     ("gamerule",    "gamerule doDaylightCycle", "gamerule not_a_rule", "37 rules validated"),
     ("give",        "give @s minecraft:stone 1", "give @s", "ContainerSetSlot 0x15"),
     ("help",        "help", "help foo bar", "help tree"),

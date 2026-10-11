@@ -1,6 +1,7 @@
 // Stats & Advancements implementation.
 #include "Stats.hpp"
 #include "Items.hpp"
+#include "platform/StorageFileOps.hpp"
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -47,22 +48,36 @@ void writeProgressJson(const std::filesystem::path& path, const json::Value& roo
     if (encoded.size() > kMaxProgressFileBytes)
         throw std::length_error("serialized progress file exceeds size limit");
 
-    std::filesystem::create_directories(path.parent_path());
-    const std::filesystem::path temporary = path.string() + ".new";
+    const auto parent = path.parent_path();
+    if (!parent.empty()) {
+        std::error_code directoryError;
+        if (!storage_file_ops::createDirectoriesDurably(
+                parent, directoryError))
+            throw std::filesystem::filesystem_error(
+                "create durable progress directory", parent,
+                directoryError);
+    }
+    const std::filesystem::path temporaryBase = path.string() + ".new";
+    std::filesystem::path temporary;
+    bool temporaryOwned = false;
     try {
-        {
-            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-            if (!file) throw std::runtime_error("could not open progress temporary file");
-            file.write(encoded.data(), static_cast<std::streamsize>(encoded.size()));
-            file.flush();
-            if (!file) throw std::runtime_error("could not write progress temporary file");
-        }
+        std::error_code writeError;
+        if (!storage_file_ops::writeFileToNewSibling(
+                temporaryBase, encoded.data(), encoded.size(), temporary,
+                writeError, &temporaryOwned, 0666))
+            throw std::system_error(writeError,
+                                    "create progress temporary file");
         std::error_code renameError;
-        std::filesystem::rename(temporary, path, renameError);
-        if (renameError) throw std::system_error(renameError, "replace progress file");
+        if (!storage_file_ops::replaceFile(temporary, path, renameError))
+            throw std::system_error(renameError, "replace progress file");
+        temporaryOwned = false;
+        if (!storage_file_ops::syncDirectory(parent))
+            throw std::runtime_error("could not sync progress directory");
     } catch (...) {
-        std::error_code cleanupError;
-        std::filesystem::remove(temporary, cleanupError);
+        if (temporaryOwned) {
+            std::error_code cleanupError;
+            std::filesystem::remove(temporary, cleanupError);
+        }
         throw;
     }
 }

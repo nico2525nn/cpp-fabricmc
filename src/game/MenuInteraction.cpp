@@ -11,10 +11,10 @@ namespace cppfm {
 namespace {
 
 bool sameItemLocal(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId;
+    return !a.empty() && !b.empty() && a.sameItemData(b);
 }
 bool sameItem(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId &&
+    return !a.empty() && !b.empty() && a.sameItemData(b) &&
            a.components.empty() && b.components.empty() &&
            a.removedComponents.empty() && b.removedComponents.empty();
 }
@@ -194,7 +194,7 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
             changed = mergeInto(cursor, *target, 1);
         }
     }
-    if (changed && m.blockKey != -1 && m.type != MenuType::Crafting)
+    if (changed && m.blockKey && m.type != MenuType::Crafting)
         io.blockEntityChanged(m.blockKey);
     return changed;
 }
@@ -416,7 +416,7 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
             dropped.count = 1;
             if (--src->count <= 0) *src = ItemStack::air();
         }
-        if (m.blockKey != -1) io.blockEntityChanged(m.blockKey);
+        if (m.blockKey) io.blockEntityChanged(m.blockKey);
     }
     io.dropFromPlayer(p, dropped, true);
     return !dropped.empty();
@@ -447,7 +447,7 @@ bool ClickLogic::pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
             }
         }
     }
-    if (collected && m.blockKey != -1) io.blockEntityChanged(m.blockKey);
+    if (collected && m.blockKey) io.blockEntityChanged(m.blockKey);
     return collected > 0;
 }
 

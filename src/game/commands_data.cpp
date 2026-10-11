@@ -1,5 +1,10 @@
 #include "CommandModule.hpp"
+#include "BlockContainerSlot.hpp"
+#include "BlockEntityKinds.hpp"
 #include "GameServerHelpers.hpp"
+#include <cstdio>
+#include <exception>
+#include <utility>
 namespace cppfm {
 
 namespace {
@@ -29,6 +34,40 @@ ItemStack* itemCommandPlayerSlot(Player& player, const std::string& slot) {
         }
     }
     return nullptr;
+}
+
+ItemStack* blockContainerCandidateSlot(BlockEntity& entity,
+                                       std::size_t slotIndex) {
+    if (entity.kind == BlockEntity::Kind::Chest ||
+        entity.kind == BlockEntity::Kind::Barrel ||
+        entity.kind == BlockEntity::Kind::ShulkerBox) {
+        if (slotIndex >= ChestData::kSlots) return nullptr;
+        return &entity.chest.slots[slotIndex];
+    }
+    if (slotIndex >= GenericContainerData::kMaxSlots) return nullptr;
+    return &entity.generic.slots[slotIndex];
+}
+
+bool blockEntityCandidateFits(GameServer& server, std::int8_t dimension,
+                              const BlockEntityStore::SnapshotOverride& candidate) {
+    return server.blockEntityCandidatesFitAnvilEntry(
+        dimension, std::vector<BlockEntityStore::SnapshotOverride>{candidate});
+}
+
+template <typename Mutate>
+bool applyBlockContainerCandidate(
+    GameServer& server, std::int8_t dimension,
+    const brigadier::BlockPosI& pos, BlockContainerSlotAccess& target,
+    Mutate&& mutate) {
+    const auto key = posKey(pos.x, pos.y, pos.z);
+    auto& store = server.blockEntitiesFor(dimension);
+    const bool applied = store.applyCandidateIfAdmitted(
+        key, target.owner, std::forward<Mutate>(mutate),
+        [&server, dimension](const auto& candidate) {
+            return blockEntityCandidateFits(server, dimension, candidate);
+        });
+    target.releaseLocks();
+    return applied;
 }
 
 } // namespace
@@ -170,21 +209,64 @@ void GameServer::initDataDatapackCommands() {
         enName->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&){
             return datapackManager_.listAvailable();
         };
-        enName->executable = true;
-        enName->action = [this](CommandContext& c){
-            Player* src=static_cast<Player*>(c.source.player);
-            std::string n=c.arg("name").asStr();
-            if(datapackManager_.enablePack(n)){
-                refreshDatapackConsumers();
-                for (auto& pp : playersSnapshot())
-                    if (pp->inPlay) sendAdvancementsTo(*pp, true);
-                sendFeedback(src,"Enabled datapack "+n);
-                return 1;
-            } else {
-                sendFeedback(src,"Datapack "+n+" already enabled or unknown");
+        const auto enablePack = [this](CommandContext& c,
+                                       DatapackManager::PackPosition position,
+                                       const std::string& reference) {
+            Player* src = static_cast<Player*>(c.source.player);
+            const std::string name = c.arg("name").asStr();
+            bool enabled = false;
+            try {
+                enabled = datapackManager_.enablePack(name, position, reference);
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "[datapack] cannot enable %s: %s\n",
+                             name.c_str(), error.what());
+                sendFeedback(src, "Cannot enable datapack " + name +
+                                  ": " + error.what());
                 return 0;
             }
+            if (enabled) {
+                refreshDatapackConsumers();
+                for (auto& player : playersSnapshot())
+                    if (player->inPlay) sendAdvancementsTo(*player, true);
+                sendFeedback(src, "Enabled datapack " + name);
+                return 1;
+            }
+            sendFeedback(src,
+                "Cannot enable datapack " + name +
+                " (unknown, already enabled, or invalid priority target)");
+            return 0;
         };
+        enName->executable = true;
+        enName->action = [enablePack](CommandContext& c) {
+            return enablePack(c, DatapackManager::PackPosition::Last, {});
+        };
+        for (const auto& [keyword, position] : {
+                 std::pair{"first", DatapackManager::PackPosition::First},
+                 std::pair{"last", DatapackManager::PackPosition::Last}}) {
+            auto mode = CommandNode::literal(keyword);
+            mode->executable = true;
+            mode->action = [enablePack, position](CommandContext& c) {
+                return enablePack(c, position, {});
+            };
+            enName->then(mode);
+        }
+        for (const auto& [keyword, position] : {
+                 std::pair{"before", DatapackManager::PackPosition::Before},
+                 std::pair{"after", DatapackManager::PackPosition::After}}) {
+            auto mode = CommandNode::literal(keyword);
+            auto reference = CommandNode::argument(
+                "existing", args::stringWord());
+            reference->suggestions = [this](brigadier::StringReader&,
+                                            brigadier::ParseCtx&) {
+                return datapackManager_.listEnabled();
+            };
+            reference->executable = true;
+            reference->action = [enablePack, position](CommandContext& c) {
+                return enablePack(c, position, c.arg("existing").asStr());
+            };
+            mode->then(reference);
+            enName->then(mode);
+        }
         enable->then(enName);
         auto disable = CommandNode::literal("disable");
         auto disName = CommandNode::argument("name", args::stringWord());
@@ -195,7 +277,17 @@ void GameServer::initDataDatapackCommands() {
         disName->action = [this](CommandContext& c){
             Player* src=static_cast<Player*>(c.source.player);
             std::string n=c.arg("name").asStr();
-            if(datapackManager_.disablePack(n)){
+            bool disabled = false;
+            try {
+                disabled = datapackManager_.disablePack(n);
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "[datapack] cannot disable %s: %s\n",
+                             n.c_str(), error.what());
+                sendFeedback(src, "Cannot disable datapack " + n +
+                                  ": " + error.what());
+                return 0;
+            }
+            if(disabled){
                 refreshDatapackConsumers();
                 for (auto& pp : playersSnapshot())
                     if (pp->inPlay) sendAdvancementsTo(*pp, true);
@@ -219,27 +311,17 @@ void GameServer::initDataReloadCommands() {
         reload->executable = true;
         reload->action = [this](CommandContext& c){
             Player* src = static_cast<Player*>(c.source.player);
-            datapackManager_.advancements.clear();
-            datapackManager_.predicates.clear();
-            datapackManager_.itemModifiers.clear();
-            datapackManager_.functions.clear();
-            datapackManager_.tagManager.itemTags.clear();
-            datapackManager_.tagManager.blockTags.clear();
-            datapackManager_.lootTables.clear();
-            datapackManager_.availablePacks.clear();
-            datapackManager_.enabledPacks.clear();
-            datapackManager_.availablePacks.insert("vanilla");
-            datapackManager_.enabledPacks.insert("vanilla");
-            datapackManager_.availablePacks.insert("cppfm");
-            datapackManager_.enabledPacks.insert("cppfm");
-            datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
-            tagManager_ = datapackManager_.tagManager;
-            lootTables_ = datapackManager_.lootTables;
-            {
-                std::lock_guard lk(advMergeMtx_);
-                cachedMergedAdv_.clear();
-                cachedAdvRawSize_ = 0;
+            try {
+                datapackManager_.loadAll(
+                    recipes_, "assets/data", cfg_.worldDir + "/datapacks");
+            } catch (const std::exception& error) {
+                std::fprintf(stderr, "[datapack] reload rejected: %s\n",
+                             error.what());
+                sendFeedback(src, std::string("Reload failed: ") +
+                                  error.what());
+                return 0;
             }
+            refreshDatapackConsumers();
             for (auto& pp : playersSnapshot()) if (pp->inPlay) sendAdvancementsTo(*pp, true);
             sendFeedback(src, "Reload complete");
             return 1;
@@ -525,29 +607,16 @@ void GameServer::initDataLootCommands() {
             gTable->action=[this](CommandContext& c){
                 const auto sel=c.arg("lootTargets").asSelector();
                 std::string tbl=c.arg("lootTable").asStr();
-                // resolve loot: try LootTables, fallback to simple item
+                const auto evaluated = lootTables_.evaluateRegisteredTable(tbl);
+                if (!evaluated) {
+                    sendFeedback(static_cast<Player*>(c.source.player),
+                                 "Unable to evaluate loot table " + tbl);
+                    return 0;
+                }
                 int given=0;
                 for(auto &n: sel.playerNames) if(Player* p=findPlayer(*this,n)){
-                    // try evaluate as block loot table first
-                    std::string base = tbl;
-                    // normalize minecraft:chests/simple_dungeon etc -> try as given, also try blocks prefix
-                    std::vector<ItemStack> drops;
-                    auto* found = lootTables_.find(tbl);
-                    if(found){
-                        // use evaluate via block name derived from table id
-                        std::string bn = tbl;
-                        auto slash = bn.rfind('/'); if(slash!=std::string::npos) bn = bn.substr(slash+1);
-                        drops = lootTables_.evaluate("minecraft:"+bn, {});
-                    }
-                    if(drops.empty()){
-                        // fallback: give cod / diamond etc based on table name hash
-                        std::string itemName = "minecraft:diamond";
-                        if(tbl.find("fishing")!=std::string::npos) itemName="minecraft:cod";
-                        else if(tbl.find("chest")!=std::string::npos) itemName="minecraft:iron_ingot";
-                        auto it=gen::itemIdByName().find(itemName);
-                        if(it!=gen::itemIdByName().end()) drops.push_back(ItemStack::of(it->second,1));
-                    }
-                    for(auto &st: drops){ addToInventory(*p, st.itemId, st.count); }
+                    for(const auto& st: *evaluated)
+                        if(!st.empty()) addStackToInventory(*p, st, st.count);
                     resendInventory(*p);
                     ++given;
                 }
@@ -568,21 +637,19 @@ void GameServer::initDataLootCommands() {
             sTable->action=[this](CommandContext& c){
                 brigadier::Vec3d p=c.arg("lootPos").asVec3();
                 std::string tbl=c.arg("lootTable").asStr();
-                std::vector<ItemStack> drops;
-                auto* found = lootTables_.find(tbl);
-                if(found){
-                    std::string bn=tbl; auto slash=bn.rfind('/'); if(slash!=std::string::npos) bn=bn.substr(slash+1);
-                    drops=lootTables_.evaluate("minecraft:"+bn,{});
-                }
-                if(drops.empty()){
-                    auto it=gen::itemIdByName().find("minecraft:diamond");
-                    if(it!=gen::itemIdByName().end()) drops.push_back(ItemStack::of(it->second,1));
+                const auto evaluated = lootTables_.evaluateRegisteredTable(tbl);
+                if (!evaluated) {
+                    sendFeedback(static_cast<Player*>(c.source.player),
+                                 "Unable to evaluate loot table " + tbl);
+                    return 0;
                 }
                 Player* src=static_cast<Player*>(c.source.player);
-                for(auto &st: drops)
-                    spawnItemDropFor(commandDimension(c.source), p.x,p.y,p.z,st);
+                for(const auto& st: *evaluated)
+                    if(!st.empty())
+                        spawnItemDropFor(commandDimension(c.source),
+                                         p.x, p.y, p.z, st);
                 sendFeedback(src,"Spawned loot "+tbl+" at "+std::to_string((int)p.x));
-                return (int)drops.size();
+                return static_cast<int>(evaluated->size());
             };
             sPos->then(sTable);
             spawnLit->then(sPos);
@@ -1014,11 +1081,23 @@ void GameServer::initDataItemCommands() {
         auto slotToBlockStack = [this](std::int8_t dimension,
                                        const brigadier::BlockPosI& pos,
                                        const std::string& slot)
-            -> BlockEntityStore::SlotRef {
-            auto owner = blockEntitiesFor(dimension).getShared(
-                posKey(pos.x, pos.y, pos.z));
+            -> BlockContainerSlotAccess {
+            auto& world = worldFor(dimension);
+            auto worldMutationLock = world.lockMutationGate();
+            const auto state = world.getBlock(pos.x, pos.y, pos.z);
+            const auto expectedKind = blockEntityKindForBlockState(state);
+            if (!expectedKind) return {};
+
+            auto& store = blockEntitiesFor(dimension);
+            const auto key = posKey(pos.x, pos.y, pos.z);
+            auto owner = store.getShared(key);
+            if (!owner) owner = store.tryCreateShared(key, *expectedKind);
             if (!owner) return {};
+
             std::unique_lock entityLock(*owner->stateMtx);
+            if (owner->kind != *expectedKind ||
+                !store.hasCurrentKind(key, *expectedKind))
+                return {};
             if (slot.rfind("container.", 0) == 0) {
                 try {
                     const int idx = std::stoi(slot.substr(10));
@@ -1032,7 +1111,10 @@ void GameServer::initDataItemCommands() {
                         stack = &owner->generic.slots[idx];
                     }
                     if (stack)
-                        return {std::move(owner), stack, std::move(entityLock)};
+                        return {std::move(owner), stack,
+                                static_cast<std::size_t>(idx),
+                                std::move(worldMutationLock),
+                                std::move(entityLock)};
                 } catch (...) {
                 }
             }
@@ -1058,7 +1140,7 @@ void GameServer::initDataItemCommands() {
     d.root->then(item);
 }
 
-void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLit, const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack, const std::function<BlockEntityStore::SlotRef(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack, const std::function<ItemStack(const std::string&, int)>& parseItemStack) {
+void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLit, const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack, const std::function<BlockContainerSlotAccess(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack, const std::function<ItemStack(const std::string&, int)>& parseItemStack) {
             // replace block <pos> <slot> with <item> [count]
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
@@ -1081,9 +1163,22 @@ void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLi
                                                      : "No block inventory at "+std::to_string(pos.x)+" or invalid slot "+slot);
                     return 0;
                 }
-                *tgt = stack;
-                tgt.lock.unlock();
-                blockEntitiesFor(commandDimension(c.source)).markDirty(posKey(pos.x,pos.y,pos.z));
+                const auto dimension = commandDimension(c.source);
+                const bool applied = applyBlockContainerCandidate(
+                    *this, dimension, pos, tgt,
+                    [&stack, slotIndex = tgt.slotIndex](BlockEntity& candidate) {
+                        auto* target = blockContainerCandidateSlot(candidate,
+                                                                  slotIndex);
+                        if (!target) return false;
+                        *target = stack;
+                        return true;
+                    });
+                if (!applied) {
+                    Player* src = static_cast<Player*>(c.source.player);
+                    sendFeedback(src,
+                        "Block inventory change rejected because it could not be safely saved");
+                    return 0;
+                }
                 Player* src=static_cast<Player*>(c.source.player);
                 sendFeedback(src, "Replaced block "+(explicitCount ? std::string() : std::to_string(pos.x)+" ")+
                                   "slot "+slot+" with "+itemStr+
@@ -1147,7 +1242,7 @@ void GameServer::initDataItemReplaceCommands(const brigadier::NodePtr& replaceLi
             replaceLit->then(entityLit);
 }
 
-void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit, const std::function<BlockEntityStore::SlotRef(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
+void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit, const std::function<BlockContainerSlotAccess(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
             // modify block <pos> <slot> <modifier>
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
@@ -1167,18 +1262,34 @@ void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit,
                 if(mod.find(':')==std::string::npos) mod="minecraft:"+mod;
                 auto tgt = slotToBlockStack(commandDimension(c.source), pos, slot);
                 if(!tgt || tgt->empty()){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No item in block slot to modify"); return 0; }
-                bool ok = datapackManager_.applyItemModifier(mod, *tgt);
-                if(!ok){
-                    // fallback: just set count to 2 as visible modification
-                    if(tgt->count<64) tgt->count+=1;
+                const auto dimension = commandDimension(c.source);
+                bool modifierApplied = false;
+                const bool applied = applyBlockContainerCandidate(
+                    *this, dimension, pos, tgt,
+                    [this, &mod, &modifierApplied,
+                     slotIndex = tgt.slotIndex](BlockEntity& candidate) {
+                        auto* target = blockContainerCandidateSlot(candidate,
+                                                                  slotIndex);
+                        if (!target || target->empty()) return false;
+                        modifierApplied =
+                            datapackManager_.applyItemModifier(mod, *target);
+                        if (!modifierApplied && target->count < 64)
+                            target->count += 1;
+                        return true;
+                    });
+                if (!applied) {
+                    Player* src = static_cast<Player*>(c.source.player);
+                    sendFeedback(src,
+                        "Block inventory change rejected because it could not be safely saved");
+                    return 0;
+                }
+                if(!modifierApplied){
                     Player* src=static_cast<Player*>(c.source.player);
                     sendFeedback(src, "Applied modifier "+mod+" (fallback)");
                 } else {
                     Player* src=static_cast<Player*>(c.source.player);
                     sendFeedback(src, "Applied modifier "+mod+" to block slot "+slot);
                 }
-                tgt.lock.unlock();
-                blockEntitiesFor(commandDimension(c.source)).markDirty(posKey(pos.x,pos.y,pos.z));
                 return 1;
             };
             slotArg->then(modArg);
@@ -1222,7 +1333,7 @@ void GameServer::initDataItemModifyCommands(const brigadier::NodePtr& modifyLit,
             modifyLit->then(entityLit);
 }
 
-void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit, const std::function<BlockEntityStore::SlotRef(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
+void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit, const std::function<BlockContainerSlotAccess(std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack) {
             auto blockLit = CommandNode::literal("block");
             auto posArg = CommandNode::argument("pos", args::blockPos());
             auto slotArg = CommandNode::argument("slot", args::stringWord());
@@ -1232,9 +1343,22 @@ void GameServer::initDataItemRemoveCommands(const brigadier::NodePtr& removeLit,
                 std::string slot=c.arg("slot").asStr();
                 auto tgt = slotToBlockStack(commandDimension(c.source), pos, slot);
                 if(!tgt){ Player* src=static_cast<Player*>(c.source.player); sendFeedback(src, "No block slot "+slot); return 0; }
-                *tgt = ItemStack::air();
-                tgt.lock.unlock();
-                blockEntitiesFor(commandDimension(c.source)).markDirty(posKey(pos.x,pos.y,pos.z));
+                const auto dimension = commandDimension(c.source);
+                const bool applied = applyBlockContainerCandidate(
+                    *this, dimension, pos, tgt,
+                    [slotIndex = tgt.slotIndex](BlockEntity& candidate) {
+                        auto* target = blockContainerCandidateSlot(candidate,
+                                                                  slotIndex);
+                        if (!target) return false;
+                        *target = ItemStack::air();
+                        return true;
+                    });
+                if (!applied) {
+                    Player* src = static_cast<Player*>(c.source.player);
+                    sendFeedback(src,
+                        "Block inventory change rejected because it could not be safely saved");
+                    return 0;
+                }
                 Player* src=static_cast<Player*>(c.source.player);
                 sendFeedback(src, "Removed item from block slot "+slot);
                 return 1;
@@ -1279,25 +1403,18 @@ void GameServer::initDataLootSourceCommands() {
         gTable->action = [this](CommandContext& c) {
             const auto sel = c.arg("lootTargets2").asSelector();
             std::string tbl = c.arg("lootTable2").asStr();
+            const auto evaluated = lootTables_.evaluateRegisteredTable(tbl);
+            if (!evaluated) {
+                sendFeedback(static_cast<Player*>(c.source.player),
+                             "Unable to evaluate loot table " + tbl);
+                return 0;
+            }
             int given = 0;
-            for (auto& nm : sel.playerNames)
+                for (auto& nm : sel.playerNames)
                 if (Player* p = findPlayer(*this, nm)) {
-                    std::vector<ItemStack> drops;
-                    auto* found = lootTables_.find(tbl);
-                    if (found) {
-                        std::string bn = tbl;
-                        auto slash = bn.rfind('/');
-                        if (slash != std::string::npos) bn = bn.substr(slash + 1);
-                        drops = lootTables_.evaluate("minecraft:" + bn, {});
-                    }
-                    if (drops.empty()) {
-                        std::string itemName = "minecraft:diamond";
-                        if (tbl.find("fishing") != std::string::npos) itemName = "minecraft:cod";
-                        else if (tbl.find("chest") != std::string::npos) itemName = "minecraft:iron_ingot";
-                        auto it = gen::itemIdByName().find(itemName);
-                        if (it != gen::itemIdByName().end()) drops.push_back(ItemStack::of(it->second, 1));
-                    }
-                    for (auto& st : drops) addToInventory(*p, st.itemId, st.count);
+                    for (const auto& st : *evaluated)
+                        if (!st.empty())
+                            addStackToInventory(*p, st, st.count);
                     resendInventory(*p);
                     ++given;
                 }

@@ -161,14 +161,17 @@ int main(int argc, char** argv) {
     try {
         server.init();
     } catch (const std::exception& e) {
-        std::fprintf(stderr, "[cppfm] asset load failed: %s\n", e.what());
+        std::fprintf(stderr, "[cppfm] initialization failed: %s\n", e.what());
         return 1;
     }
 
     // A console signal can arrive while the resource/world/JVM bootstrap is
     // still running.  Do not enter runForever() after that early stop request
     // or the request would be lost when the listener is created.
-    if (g_stopRequested.load(std::memory_order_acquire)) return 0;
+    if (g_stopRequested.load(std::memory_order_acquire)) {
+        server.stop();
+        return server.shutdownPersistenceSucceeded() ? 0 : 1;
+    }
 
     std::printf("[cppfm] CppFabricMC starting: port=%u view=%d biome=%s world=%s level=%s\n",
                 cfg.port, cfg.viewDistance, cfg.worldBiome.c_str(), cfg.worldDir.c_str(),
@@ -177,6 +180,12 @@ int main(int argc, char** argv) {
         server.runForever();
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[cppfm] fatal: %s\n", e.what());
+        return 1;
+    }
+    server.stop();
+    if (!server.shutdownPersistenceSucceeded()) {
+        std::fprintf(stderr,
+                     "[cppfm] shutdown incomplete: one or more world changes were not persisted\n");
         return 1;
     }
     std::printf("[cppfm] bye\n");

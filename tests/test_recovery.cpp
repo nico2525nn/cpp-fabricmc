@@ -10,12 +10,21 @@
 #include "../src/game/SessionLock.hpp"
 #include "../src/game/PlayerDataRecovery.hpp"
 #include "../src/game/RegionFile.hpp"
+#include "../src/core/NBT.hpp"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <new>
+#include <stdexcept>
 #include <string>
+#include <system_error>
+#include <thread>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -95,10 +104,396 @@ int main() {
         CHECK(w.seed() == 12345ULL, "happy: random seed round-trips");
     }
 
+    // -- 1a) floating-point integral fields must reject +2^63 --------------
+    {
+        std::string dir = mkTmp("int64-double-overflow");
+        const auto good = saveGoodLevel(dir);
+        ReadBuffer input(good);
+        nbt::Parser parser(input);
+        auto root = parser.readFileRoot();
+        auto* data = root.get("Data");
+        CHECK(data != nullptr, "int64 boundary fixture has a Data compound");
+        if (data) {
+            data->set("RandomSeed", nbt::Value::makeDouble(0x1p63));
+            WriteBuffer encoded;
+            nbt::writeFileRoot(encoded, root);
+            writeFile(dir + "/level.dat", encoded.data);
+            World world = makeWorld();
+            WorldDataManager manager(dir);
+            std::string difficulty = "normal";
+            double diameter = 59999968.0, centerX = 0, centerZ = 0;
+            const bool loaded = manager.tryLoadFile(
+                dir + "/level.dat", world, difficulty, diameter,
+                centerX, centerZ);
+            CHECK(!loaded && world.seed() == 12345ULL,
+                  "RandomSeed +2^63 is rejected before narrowing or mutating the world");
+        }
+    }
+
+    // -- 1aa) rejected recovery candidates cannot leak partially applied state
+    {
+        const std::string dir = mkTmp("rejected-level-candidate-state");
+        const auto good = saveGoodLevel(dir);
+
+        auto makeRoot = [&](const std::vector<std::uint8_t>& bytes) {
+            ReadBuffer input(bytes);
+            nbt::Parser parser(input);
+            return parser.readFileRoot();
+        };
+        auto writeRoot = [&](const std::string& path, const nbt::Value& root) {
+            WriteBuffer encoded;
+            nbt::writeFileRoot(encoded, root);
+            writeFile(path, encoded.data);
+        };
+        const auto eraseDataKeys = [](nbt::Value& data,
+                                      const std::vector<std::string>& keys) {
+            data.comp.erase(
+                std::remove_if(data.comp.begin(), data.comp.end(),
+                    [&](const auto& entry) {
+                        return std::find(keys.begin(), keys.end(), entry.first) != keys.end();
+                    }),
+                data.comp.end());
+        };
+
+        auto rejectedRoot = makeRoot(good);
+        auto* rejectedData = rejectedRoot.get("Data");
+        CHECK(rejectedData != nullptr, "recovery candidate fixture has Data");
+        if (rejectedData) {
+            rejectedData->set("RandomSeed", nbt::Value::makeLong(987654321));
+            rejectedData->set("SpawnX", nbt::Value::makeInt(110));
+            rejectedData->set("SpawnY", nbt::Value::makeInt(111));
+            rejectedData->set("SpawnZ", nbt::Value::makeInt(112));
+            rejectedData->set("SpawnAngle", nbt::Value::makeFloat(33.0f));
+            rejectedData->set("Difficulty", nbt::Value::makeByte(3));
+            auto poisonedBorder = nbt::Value::makeCompound();
+            poisonedBorder.set("CenterX", nbt::Value::makeDouble(1001.0));
+            poisonedBorder.set("CenterZ", nbt::Value::makeDouble(1002.0));
+            poisonedBorder.set("Size", nbt::Value::makeDouble(1003.0));
+            poisonedBorder.set("SizeLerpTarget", nbt::Value::makeDouble(1004.0));
+            poisonedBorder.set("SizeLerpTime", nbt::Value::makeLong(1005));
+            rejectedData->set("WorldBorder", std::move(poisonedBorder));
+            auto poisonedForced = nbt::Value::makeList(nbt::Long);
+            poisonedForced.list.push_back(
+                nbt::Value::makeLong(chunkKey(20, 21)));
+            rejectedData->set("ForcedChunks", std::move(poisonedForced));
+        }
+        writeRoot(dir + "/level.dat", rejectedRoot);
+
+        auto fallbackRoot = makeRoot(good);
+        auto* fallbackData = fallbackRoot.get("Data");
+        CHECK(fallbackData != nullptr, "fallback candidate fixture has Data");
+        if (fallbackData) {
+            // The .new candidate intentionally omits every field poisoned in
+            // level.dat. If the rejected primary mutates live state, its
+            // values must not survive acceptance of this fallback.
+            eraseDataKeys(*fallbackData,
+                {"RandomSeed", "SpawnX", "SpawnY", "SpawnZ", "SpawnAngle",
+                 "Difficulty", "WorldBorder", "ForcedChunks"});
+        }
+        writeRoot(dir + "/level.dat.new", fallbackRoot);
+
+        World world = makeWorld();
+        const World::SpawnPoint originalSpawn{1, 2, 3, 4.0f};
+        world.setSpawnPoint(originalSpawn);
+        world.setChunkForced(5, 6, true);
+        world.markChunkLoadStarted();
+        std::string difficulty = "peaceful";
+        double diameter = 10.0, centerX = 20.0, centerZ = 30.0;
+        double lerpTarget = 40.0;
+        std::int64_t lerpMs = 50;
+        int consumeCount = 0;
+        WorldDataManager manager(dir);
+        manager.setLevelStateProvider({}, [&](const nbt::Value&) { ++consumeCount; });
+        RecoveryResult recovery;
+        const bool loaded = manager.loadWithRecovery(
+            world, difficulty, diameter, centerX, centerZ,
+            &lerpTarget, &lerpMs, recovery);
+        const auto spawn = world.spawnPoint();
+        const auto forced = world.forcedChunkKeys();
+        CHECK(loaded && recovery.ok && recovery.src == LevelSource::DatNew,
+              "seed-rejected primary falls back to the valid .new candidate");
+        CHECK(world.seed() == 12345ULL && spawn.x == originalSpawn.x &&
+                  spawn.y == originalSpawn.y && spawn.z == originalSpawn.z &&
+                  spawn.angle == originalSpawn.angle && difficulty == "peaceful" &&
+                  diameter == 10.0 && centerX == 20.0 && centerZ == 30.0 &&
+                  lerpTarget == 40.0 && lerpMs == 50 &&
+                  forced == std::vector<std::int64_t>{chunkKey(5, 6)} &&
+                  consumeCount == 1,
+              "rejected primary leaves seed, spawn, difficulty, border, forced chunks, and consumer untouched");
+    }
+
+    // -- 1ab) commit failures are fatal, never another candidate rejection --
+    {
+        const std::string dir = mkTmp("accepted-level-commit-failure");
+        const auto good = saveGoodLevel(dir);
+        writeFile(dir + "/level.dat.new", good);
+
+        World world = makeWorld();
+        WorldDataManager manager(dir);
+        int consumeCalls = 0;
+        manager.setLevelStateProvider({}, [&](const nbt::Value&) {
+            ++consumeCalls;
+            throw std::runtime_error("injected level-state consumer failure");
+        });
+        std::string difficulty = "normal";
+        double diameter = 59999968.0, centerX = 0.0, centerZ = 0.0;
+        RecoveryResult recovery;
+        bool propagated = false;
+        try {
+            (void)manager.loadWithRecovery(
+                world, difficulty, diameter, centerX, centerZ,
+                nullptr, nullptr, recovery);
+        } catch (const std::runtime_error&) {
+            propagated = true;
+        }
+        CHECK(propagated && consumeCalls == 1,
+              "post-commit consumer failure escapes instead of retrying another level candidate");
+        CHECK(fs::exists(dir + "/level.dat") &&
+                  fs::exists(dir + "/level.dat.new") &&
+                  !fs::exists(dir + "/level.dat.corrupt"),
+              "fatal commit failure leaves both original recovery files untouched");
+    }
+
+    // -- 1b) unknown level metadata survives repeated save cycles ------------
+    {
+        std::string dir = mkTmp("opaque-level-tags");
+        const auto good = saveGoodLevel(dir);
+        ReadBuffer input(good);
+        nbt::Parser parser(input);
+        auto root = parser.readFileRoot();
+        root.set("example:root_metadata",
+                 nbt::Value::makeString("keep root marker"));
+        auto* data = root.get("Data");
+        CHECK(data != nullptr, "opaque level fixture has a Data compound");
+        if (data) {
+            data->set("example:data_metadata",
+                      nbt::Value::makeString("keep data marker"));
+            data->set("GameType", nbt::Value::makeInt(1));
+            auto worldGenSettings = nbt::Value::makeCompound();
+            worldGenSettings.set("seed", nbt::Value::makeLong(987654321));
+            data->set("WorldGenSettings", std::move(worldGenSettings));
+            auto wanderingTraderId = nbt::Value::makeCompound();
+            wanderingTraderId.set("example:uuid",
+                                  nbt::Value::makeString("retained trader"));
+            data->set("WanderingTraderId",
+                      std::move(wanderingTraderId));
+            auto dragonFight = nbt::Value::makeCompound();
+            dragonFight.set("DragonKilled", nbt::Value::makeByte(1));
+            dragonFight.set("example:progress", nbt::Value::makeString("kept"));
+            data->set("DragonFight", std::move(dragonFight));
+            if (auto* border = data->get("WorldBorder"))
+                border->set("example:border_metadata",
+                            nbt::Value::makeString("keep border marker"));
+            WriteBuffer encoded;
+            nbt::writeFileRoot(encoded, root);
+            writeFile(dir + "/level.dat", encoded.data);
+
+            World world = makeWorld();
+            WorldDataManager manager(dir);
+            manager.setLevelStateProvider(
+                [](nbt::Value& level) {
+                    level.set("WanderingTraderSpawnDelay",
+                              nbt::Value::makeInt(300));
+                    level.set("WanderingTraderSpawnChance",
+                              nbt::Value::makeInt(35));
+                    // Match the server's modeled fields: the existing UUID
+                    // is opaque here and must not be reset to an empty value.
+                }, {});
+            std::string difficulty = "normal";
+            double diameter = 59999968.0, centerX = 0, centerZ = 0;
+            RecoveryResult recovery;
+            const bool loaded = manager.loadWithRecovery(
+                world, difficulty, diameter, centerX, centerZ,
+                nullptr, nullptr, recovery);
+            const bool firstSaved = manager.saveLevelDataWithProviders(
+                300, 3000, world, difficulty, diameter, centerX, centerZ);
+            const bool secondSaved = manager.saveLevelDataWithProviders(
+                400, 4000, world, difficulty, diameter, centerX, centerZ);
+
+            const auto savedBytes = readFile(dir + "/level.dat");
+            ReadBuffer savedInput(savedBytes);
+            nbt::Parser savedParser(savedInput);
+            const auto savedRoot = savedParser.readFileRoot();
+            const auto* savedData = savedRoot.get("Data");
+            const auto* rootMarker =
+                savedRoot.get("example:root_metadata");
+            const auto* dataMarker = savedData
+                ? savedData->get("example:data_metadata") : nullptr;
+            const auto* savedGameType = savedData
+                ? savedData->get("GameType") : nullptr;
+            const auto* savedWorldGen = savedData
+                ? savedData->get("WorldGenSettings") : nullptr;
+            const auto* savedDragon = savedData
+                ? savedData->get("DragonFight") : nullptr;
+            const auto* savedTrader = savedData
+                ? savedData->get("WanderingTraderId") : nullptr;
+            const auto* traderMarker = savedTrader
+                ? savedTrader->get("example:uuid") : nullptr;
+            const auto* savedBorder = savedData
+                ? savedData->get("WorldBorder") : nullptr;
+            const auto* borderMarker = savedBorder
+                ? savedBorder->get("example:border_metadata") : nullptr;
+            const auto* dragonKilled = savedDragon
+                ? savedDragon->get("DragonKilled") : nullptr;
+            CHECK(loaded && firstSaved && secondSaved && rootMarker &&
+                      rootMarker->tag == nbt::String &&
+                      rootMarker->str == "keep root marker" && dataMarker &&
+                      dataMarker->tag == nbt::String &&
+                      dataMarker->str == "keep data marker" &&
+                      savedGameType && savedGameType->tag == nbt::Int &&
+                      savedGameType->i == 1 && savedWorldGen &&
+                      savedWorldGen->tag == nbt::Compound && savedTrader &&
+                      savedTrader->tag == nbt::Compound && traderMarker &&
+                      traderMarker->tag == nbt::String &&
+                      traderMarker->str == "retained trader" && savedDragon &&
+                      dragonKilled && dragonKilled->tag == nbt::Byte &&
+                      dragonKilled->b == 1 && borderMarker &&
+                      borderMarker->tag == nbt::String &&
+                      borderMarker->str == "keep border marker",
+                  "level.dat saves preserve unknown root/data tags and unmodeled world state across repeated writes");
+        }
+    }
+
+    // -- 1c) switching directories detaches the previous world's template ---
+    {
+        const std::string firstDir = mkTmp("metadata-template-first");
+        const std::string secondDir = mkTmp("metadata-template-second");
+        const auto firstBytes = saveGoodLevel(firstDir);
+        ReadBuffer firstInput(firstBytes);
+        nbt::Parser firstParser(firstInput);
+        auto firstRoot = firstParser.readFileRoot();
+        firstRoot.set("example:world_owner",
+                      nbt::Value::makeString("first world"));
+        WriteBuffer firstEncoded;
+        nbt::writeFileRoot(firstEncoded, firstRoot);
+        writeFile(firstDir + "/level.dat", firstEncoded.data);
+        fs::create_directories(secondDir);
+
+        WorldDataManager manager(firstDir);
+        World firstWorld = makeWorld();
+        std::string difficulty = "normal";
+        double diameter = 59999968.0, centerX = 0, centerZ = 0;
+        RecoveryResult recovery;
+        const bool loadedFirst = manager.loadWithRecovery(
+            firstWorld, difficulty, diameter, centerX, centerZ,
+            nullptr, nullptr, recovery);
+        manager.setDirectory(secondDir);
+        World secondWorld = makeWorld();
+        const bool savedSecond = manager.saveLevelDataWithProviders(
+            10, 100, secondWorld, difficulty, diameter, centerX, centerZ);
+
+        const auto secondBytes = readFile(secondDir + "/level.dat");
+        ReadBuffer secondInput(secondBytes);
+        nbt::Parser secondParser(secondInput);
+        const auto secondRoot = secondParser.readFileRoot();
+        const auto* owner = secondRoot.get("example:world_owner");
+        CHECK(loadedFirst && savedSecond && owner == nullptr,
+              "changing world directories clears opaque metadata from the previous save template");
+    }
+
+    // -- 1d) directory changes cannot split an in-flight metadata save ------
+    {
+        const std::string sourceDir = mkTmp("metadata-save-source");
+        const std::string destinationDir = mkTmp("metadata-save-destination");
+        const auto sourceBytes = saveGoodLevel(sourceDir);
+        ReadBuffer sourceInput(sourceBytes);
+        nbt::Parser sourceParser(sourceInput);
+        auto sourceRoot = sourceParser.readFileRoot();
+        sourceRoot.set("example:world_owner",
+                       nbt::Value::makeString("source world"));
+        WriteBuffer sourceEncoded;
+        nbt::writeFileRoot(sourceEncoded, sourceRoot);
+        writeFile(sourceDir + "/level.dat", sourceEncoded.data);
+
+        WorldDataManager manager(sourceDir);
+        World sourceWorld = makeWorld();
+        std::string difficulty = "normal";
+        double diameter = 59999968.0, centerX = 0, centerZ = 0;
+        const bool loadedSource = manager.tryLoadFile(
+            sourceDir + "/level.dat", sourceWorld, difficulty,
+            diameter, centerX, centerZ);
+
+        std::mutex mutex;
+        std::condition_variable changed;
+        bool providerEntered = false;
+        bool releaseProvider = false;
+        bool switchAttempted = false;
+        bool switchCompleted = false;
+        bool savedSource = false;
+        manager.setLevelStateProvider(
+            [&](nbt::Value&) {
+                std::unique_lock lock(mutex);
+                providerEntered = true;
+                changed.notify_all();
+                changed.wait(lock, [&] { return releaseProvider; });
+            }, {});
+        World saveWorld = makeWorld();
+        std::thread saving([&] {
+            savedSource = manager.saveLevelDataWithProviders(
+                20, 200, saveWorld, difficulty, diameter, centerX, centerZ);
+        });
+        bool entered = false;
+        {
+            std::unique_lock lock(mutex);
+            entered = changed.wait_for(lock, std::chrono::seconds(5),
+                                       [&] { return providerEntered; });
+        }
+        std::thread switching;
+        if (entered) {
+            switching = std::thread([&] {
+                {
+                    std::lock_guard lock(mutex);
+                    switchAttempted = true;
+                }
+                changed.notify_all();
+                manager.setDirectory(destinationDir);
+                {
+                    std::lock_guard lock(mutex);
+                    switchCompleted = true;
+                }
+                changed.notify_all();
+            });
+        }
+        bool attempted = false;
+        bool switchedBeforeSaveCommitted = false;
+        if (entered) {
+            std::unique_lock lock(mutex);
+            attempted = changed.wait_for(lock, std::chrono::seconds(5),
+                                         [&] { return switchAttempted; });
+            lock.unlock();
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            lock.lock();
+            switchedBeforeSaveCommitted = switchCompleted;
+            releaseProvider = true;
+            lock.unlock();
+            changed.notify_all();
+        } else {
+            std::lock_guard lock(mutex);
+            releaseProvider = true;
+            changed.notify_all();
+        }
+        saving.join();
+        if (switching.joinable()) switching.join();
+
+        const auto savedSourceBytes = readFile(sourceDir + "/level.dat");
+        ReadBuffer savedSourceInput(savedSourceBytes);
+        nbt::Parser savedSourceParser(savedSourceInput);
+        const auto savedSourceRoot = savedSourceParser.readFileRoot();
+        const auto* owner = savedSourceRoot.get("example:world_owner");
+        CHECK(loadedSource && entered && attempted &&
+                  !switchedBeforeSaveCommitted && switchCompleted &&
+                  savedSource && owner && owner->tag == nbt::String &&
+                  owner->str == "source world" &&
+                  !fs::exists(destinationDir + "/level.dat"),
+              "changing directories waits until the in-flight metadata save commits to its original world");
+    }
+
     // -- 1b) a complete .new is the most recent committed save candidate ----
     {
         std::string dir = mkTmp("dat_new");
         const auto good = saveGoodLevel(dir);
+        const std::vector<std::uint8_t> olderQuarantine{0x51, 0x52, 0x53};
+        writeFile(dir + "/level.dat.corrupt", olderQuarantine);
         writeFile(dir + "/level.dat.new", good);
         corruptTruncate(dir + "/level.dat");
         World w = makeWorld();
@@ -109,13 +504,76 @@ int main() {
         const bool ok = m.loadWithRecovery(w, diff, dia, cx, cz, nullptr, nullptr, r);
         CHECK(ok && r.ok && r.src == LevelSource::DatNew,
               "dat.new: valid temporary file is recovered");
-        CHECK(fs::exists(dir + "/level.dat.corrupt") &&
+        CHECK(readFile(dir + "/level.dat.corrupt") == olderQuarantine &&
+                  fs::exists(dir + "/level.dat.corrupt.1") &&
                   fs::exists(dir + "/level.dat") &&
                   !fs::exists(dir + "/level.dat.new"),
-              "dat.new: corrupt primary is quarantined and candidate promoted");
+              "dat.new: quarantine collision preserves older evidence and promotes candidate");
+        CHECK(readFile(dir + "/level.dat.corrupt.1").size() == 12,
+              "dat.new: corrupt primary bytes move to the next unused quarantine name");
         CHECK(readFile(dir + "/level.dat") == good,
               "dat.new: promoted bytes are unchanged");
         CHECK(diff == "normal", "dat.new: difficulty round-trips");
+    }
+
+    // -- 1c) an unquarantinable primary must not be overwritten by .new ----
+    {
+        std::string dir = mkTmp("dat_new_quarantine_full");
+        const auto good = saveGoodLevel(dir);
+        auto corruptPrimary = good;
+        if (corruptPrimary.size() > 12) corruptPrimary.resize(12);
+        writeFile(dir + "/level.dat", corruptPrimary);
+        writeFile(dir + "/level.dat.new", good);
+        for (std::size_t suffix = 0; suffix < 10000; ++suffix) {
+            const auto candidate = dir + "/level.dat.corrupt" +
+                (suffix == 0 ? std::string{} : "." + std::to_string(suffix));
+            writeFile(candidate, std::vector<std::uint8_t>{0xA5});
+        }
+
+        World w = makeWorld();
+        WorldDataManager m(dir);
+        std::string diff = "x";
+        double dia = 1, cx = 9, cz = 9;
+        RecoveryResult r;
+        const bool ok = m.loadWithRecovery(w, diff, dia, cx, cz,
+                                           nullptr, nullptr, r);
+        CHECK(ok && r.ok && r.src == LevelSource::DatNew,
+              "dat.new remains a usable in-memory source when quarantine names are exhausted");
+        CHECK(readFile(dir + "/level.dat") == corruptPrimary &&
+                  readFile(dir + "/level.dat.new") == good,
+              "failed quarantine never replaces the corrupt primary or consumes the valid temporary candidate");
+        std::error_code stageError;
+        const bool foreignStagePathCreated = fs::create_directory(
+            dir + "/level.dat.new.tmp", stageError);
+        std::error_code backupError;
+        const auto oldBackup = dir + "/level.dat_old";
+        fs::remove(oldBackup, backupError);
+        backupError.clear();
+        const bool backupPathBlocked = fs::create_directory(
+            oldBackup, backupError);
+        const bool saveAfterRecovery = foreignStagePathCreated &&
+            backupPathBlocked && m.saveLevelDataWithProviders(
+                300, 3000, w, diff, dia, cx, cz);
+        const auto publishedCandidate = readFile(dir + "/level.dat.new");
+        bool candidateIsValid = false;
+        try {
+            ReadBuffer candidateInput(publishedCandidate);
+            nbt::Parser candidateParser(candidateInput);
+            const auto candidateRoot = candidateParser.readFileRoot();
+            candidateIsValid = candidateRoot.get("Data") != nullptr;
+        } catch (...) {
+        }
+        CHECK(foreignStagePathCreated && backupPathBlocked &&
+                  !saveAfterRecovery && candidateIsValid &&
+                  readFile(dir + "/level.dat") == corruptPrimary,
+              "backup failure preserves the corrupt primary and already-published valid candidate");
+        CHECK(fs::is_directory(dir + "/level.dat.new.tmp") &&
+                  fs::is_directory(oldBackup),
+              "collision-safe staging and failed backup preserve caller-owned paths");
+        std::error_code cleanupError;
+        fs::remove_all(dir, cleanupError);
+        CHECK(!cleanupError,
+              "dat.new quarantine exhaustion test removes its isolated temporary world");
     }
 
     // -- 2) corruption matrix: dat bad × {truncate,bitflip,empty}, old good ---
@@ -163,9 +621,11 @@ int main() {
         fs::create_directories(dir);
         // 4a: missing file -> false, no quarantine
         {
+            bool unsafe = true;
             bool ok = loadPlayerDataIsolated(dir + "/nobody.dat",
-                                             [](const std::string&) { return true; });
-            CHECK(!ok && !fs::exists(dir + "/nobody.dat.corrupt"), "playerdata: missing -> false, no quarantine");
+                                             [](const std::string&) { return true; },
+                                             nullptr, nullptr, &unsafe);
+            CHECK(!ok && !unsafe && !fs::exists(dir + "/nobody.dat.corrupt"), "playerdata: missing -> false, no quarantine");
         }
         // 4b: corrupt file -> false + quarantine
         {
@@ -177,7 +637,61 @@ int main() {
             CHECK(!ok && fs::exists(p + ".corrupt") && !fs::exists(p), "playerdata: corrupt -> quarantined");
             CHECK(!q.empty(), "playerdata: quarantine path reported");
         }
-        // 4c: good file -> true, untouched
+        // 4c: existing quarantine is preserved; the new recovery copy gets a suffix.
+        {
+            const std::string p = dir + "/collision.dat";
+            const std::string priorQuarantine = p + ".corrupt";
+            const std::vector<std::uint8_t> sourceBytes{0x02, 0x03, 0x04};
+            const std::vector<std::uint8_t> priorBytes{0x09, 0x08};
+            writeFile(p, sourceBytes);
+            writeFile(priorQuarantine, priorBytes);
+            std::string q;
+            bool unsafe = false;
+            const bool ok = loadPlayerDataIsolated(
+                p, [](const std::string&) { return false; }, &q, nullptr,
+                &unsafe);
+            std::ifstream priorFile(priorQuarantine, std::ios::binary);
+            const std::vector<std::uint8_t> retainedPrior(
+                (std::istreambuf_iterator<char>(priorFile)),
+                std::istreambuf_iterator<char>());
+            std::ifstream quarantineFile(q, std::ios::binary);
+            const std::vector<std::uint8_t> retainedSource(
+                (std::istreambuf_iterator<char>(quarantineFile)),
+                std::istreambuf_iterator<char>());
+            CHECK(!ok && !unsafe && q == priorQuarantine + ".1" &&
+                      !fs::exists(p) && retainedPrior == priorBytes &&
+                      retainedSource == sourceBytes,
+                  "playerdata: quarantine collisions never replace older recovery data");
+        }
+        // 4d: a non-file at the active path cannot be quarantined; callers must fail closed.
+        {
+            const std::string p = dir + "/not-a-file.dat";
+            fs::create_directories(p);
+            bool unsafe = false;
+            const bool ok = loadPlayerDataIsolated(
+                p, [](const std::string&) { return false; }, nullptr, nullptr,
+                &unsafe);
+            CHECK(!ok && unsafe && fs::is_directory(p),
+                  "playerdata: quarantine failure is reported unsafe and retains the active source");
+        }
+        // 4e: an unsupported source remains active and is reported unsafe.
+        {
+            const std::string p = dir + "/unsupported.dat";
+            const std::vector<std::uint8_t> sourceBytes{0x0A, 0x01, 0x02};
+            writeFile(p, sourceBytes);
+            bool unsupported = false;
+            bool unsafe = false;
+            const bool ok = loadPlayerDataIsolated(
+                p,
+                [&](const std::string&) {
+                    unsupported = true;
+                    return false;
+                }, nullptr, &unsupported, &unsafe);
+            CHECK(!ok && unsupported && unsafe && fs::exists(p) &&
+                      !fs::exists(p + ".corrupt") && readFile(p) == sourceBytes,
+                  "playerdata: unsupported content stays at its active path and blocks fresh-state saves");
+        }
+        // 4f: good file -> true, untouched
         {
             const std::string p = dir + "/good.dat";
             writeFile(p, std::vector<std::uint8_t>{0x0A, 0x00});
@@ -185,7 +699,7 @@ int main() {
                                              [](const std::string&) { return true; });
             CHECK(ok && fs::exists(p) && !fs::exists(p + ".corrupt"), "playerdata: good -> true, untouched");
         }
-        // 4d: loader throws -> false + quarantine
+        // 4g: loader throws -> false + quarantine
         {
             const std::string p = dir + "/throw.dat";
             writeFile(p, std::vector<std::uint8_t>{0x00});
@@ -193,6 +707,213 @@ int main() {
                 throw std::runtime_error("boom");
             });
             CHECK(!ok && fs::exists(p + ".corrupt"), "playerdata: throwing loader -> quarantined");
+        }
+        // Operational/resource failures are not evidence that the source is
+        // corrupt. The production loader marks these failures explicitly so
+        // admission fails closed without moving the active player file.
+        for (const bool allocationFailure : {false, true}) {
+            const std::string p = dir +
+                (allocationFailure ? "/allocation-failure.dat"
+                                   : "/io-failure.dat");
+            const std::vector<std::uint8_t> sourceBytes{0x0A, 0x0B, 0x0C};
+            writeFile(p, sourceBytes);
+            bool preserveOriginal = false;
+            bool unsafe = false;
+            const bool ok = loadPlayerDataIsolated(
+                p,
+                [&](const std::string&) {
+                    try {
+                        if (allocationFailure) throw std::bad_alloc();
+                        throw std::system_error(
+                            std::make_error_code(std::errc::io_error),
+                            "injected player-data read failure");
+                    } catch (const std::bad_alloc&) {
+                        preserveOriginal = true;
+                        return false;
+                    } catch (const std::system_error&) {
+                        preserveOriginal = true;
+                        return false;
+                    }
+                }, nullptr, &preserveOriginal, &unsafe);
+            CHECK(!ok && preserveOriginal && unsafe && fs::exists(p) &&
+                      !fs::exists(p + ".corrupt") && readFile(p) == sourceBytes,
+                  allocationFailure
+                      ? "playerdata: allocation failure preserves the active source and blocks admission"
+                      : "playerdata: transient I/O failure preserves the active source and blocks admission");
+        }
+        // 4h: quarantine bytes and its directory entry are synced before the
+        // source is removed; the unlink is then followed by another dir sync.
+        {
+            const std::string p = dir + "/sync-order.dat";
+            const std::vector<std::uint8_t> sourceBytes{0x10, 0x20, 0x30, 0x40};
+            writeFile(p, sourceBytes);
+            std::string q;
+            std::vector<std::string> syncOrder;
+            std::vector<bool> sourceExistsAtDirectorySync;
+            const std::vector<std::string> expectedSyncOrder{
+                "file", "directory", "directory"};
+            const std::vector<bool> expectedSourcePresence{true, false};
+            const bool ok = loadPlayerDataIsolatedWithSync(
+                p, [](const std::string&) { return false; },
+                [&](const fs::path& syncedPath) {
+                    syncOrder.emplace_back("file");
+                    CHECK(syncedPath == fs::path(q) && fs::exists(p),
+                          "playerdata: quarantine file sync precedes source removal");
+                    return readFile(syncedPath.string()) == sourceBytes;
+                },
+                [&](const fs::path&) {
+                    syncOrder.emplace_back("directory");
+                    sourceExistsAtDirectorySync.push_back(fs::exists(p));
+                    return true;
+                },
+                &q);
+            CHECK(!ok && q == p + ".corrupt" && !fs::exists(p) &&
+                      readFile(q) == sourceBytes,
+                  "playerdata: durable quarantine replaces the active source");
+            CHECK(syncOrder == expectedSyncOrder &&
+                      sourceExistsAtDirectorySync == expectedSourcePresence,
+                  "playerdata: quarantine entry synced before unlink and directory synced afterward");
+        }
+        // 4i: failure to sync the quarantine contents or its new directory
+        // entry must leave the active source in place and block fresh saves.
+        for (const bool failFileSync : {true, false}) {
+            const std::string p = dir + (failFileSync ? "/file-sync-fail.dat"
+                                                       : "/entry-sync-fail.dat");
+            const std::vector<std::uint8_t> sourceBytes{0x51, 0x62, 0x73};
+            writeFile(p, sourceBytes);
+            std::string q;
+            bool unsafe = false;
+            int fileSyncCalls = 0;
+            int directorySyncCalls = 0;
+            const bool ok = loadPlayerDataIsolatedWithSync(
+                p, [](const std::string&) { return false; },
+                [&](const fs::path&) {
+                    ++fileSyncCalls;
+                    return !failFileSync;
+                },
+                [&](const fs::path&) {
+                    ++directorySyncCalls;
+                    return failFileSync;
+                },
+                &q, nullptr, &unsafe);
+            CHECK(!ok && unsafe && fs::exists(p) && readFile(p) == sourceBytes &&
+                      !q.empty() && fs::exists(q) && readFile(q) == sourceBytes,
+                  failFileSync
+                      ? "playerdata: file sync failure retains original source"
+                      : "playerdata: pre-unlink directory sync failure retains original source");
+            CHECK(fileSyncCalls == 1 &&
+                      directorySyncCalls == (failFileSync ? 0 : 1),
+                  "playerdata: failed pre-unlink durability gate stops before source removal");
+        }
+        // 4j: if syncing the unlink fails, retain the already-durable backup,
+        // restore the active name best-effort, and report unsafe either way.
+        {
+            const std::string p = dir + "/unlink-sync-fail.dat";
+            const std::vector<std::uint8_t> sourceBytes{0xA1, 0xB2, 0xC3};
+            writeFile(p, sourceBytes);
+            std::string q;
+            bool unsafe = false;
+            int directorySyncCalls = 0;
+            int fileSyncCalls = 0;
+            const bool ok = loadPlayerDataIsolatedWithSync(
+                p, [](const std::string&) { return false; },
+                [&](const fs::path& syncedPath) {
+                    ++fileSyncCalls;
+                    return (syncedPath == fs::path(q) && fileSyncCalls == 1) ||
+                           (syncedPath == fs::path(p) && fileSyncCalls == 2);
+                },
+                [&](const fs::path&) {
+                    ++directorySyncCalls;
+                    return directorySyncCalls != 2;
+                },
+                &q, nullptr, &unsafe);
+            CHECK(!ok && unsafe && fs::exists(p) && readFile(p) == sourceBytes &&
+                      fs::exists(q) && readFile(q) == sourceBytes,
+                  "playerdata: failed post-unlink directory sync restores source and retains durable quarantine");
+            CHECK(fileSyncCalls == 2 && directorySyncCalls == 3,
+                  "playerdata: failed unlink sync triggers source file and directory resync");
+        }
+        // 4k: model the Windows write-through move strategy. The source is
+        // flushed first, a colliding destination is never replaced, and the
+        // no-replace move installs a quarantine name while removing the source
+        // atomically. The directory-sync callback must not be used as a stand-in
+        // for MOVEFILE_WRITE_THROUGH.
+        {
+            const std::string p = dir + "/write-through-move.dat";
+            const std::string priorQuarantine = p + ".corrupt";
+            const std::vector<std::uint8_t> sourceBytes{0xD1, 0xD2, 0xD3};
+            const std::vector<std::uint8_t> priorBytes{0xE1, 0xE2};
+            writeFile(p, sourceBytes);
+            writeFile(priorQuarantine, priorBytes);
+            std::string q;
+            bool unsafe = false;
+            int directorySyncCalls = 0;
+            int moveCalls = 0;
+            std::vector<std::string> operations;
+            const std::vector<std::string> expectedOperations{
+                "sync-source", "durable-move", "durable-move"};
+            const bool ok = loadPlayerDataIsolatedWithDurableMove(
+                p, [](const std::string&) { return false; },
+                [&](const fs::path& syncedPath) {
+                    operations.emplace_back("sync-source");
+                    return syncedPath == fs::path(p) &&
+                           readFile(p) == sourceBytes;
+                },
+                [&](const fs::path&) {
+                    ++directorySyncCalls;
+                    return false;
+                },
+                [&](const fs::path& source, const fs::path& destination) {
+                    operations.emplace_back("durable-move");
+                    ++moveCalls;
+                    CHECK(source == fs::path(p) && fs::exists(source) &&
+                              readFile(source.string()) == sourceBytes,
+                          "playerdata: source remains until durable move operation");
+                    if (fs::exists(destination))
+                        return PlayerDataQuarantineMoveResult::DestinationExists;
+                    std::error_code moveError;
+                    fs::rename(source, destination, moveError);
+                    return moveError ? PlayerDataQuarantineMoveResult::Failed
+                                     : PlayerDataQuarantineMoveResult::Moved;
+                },
+                &q, nullptr, &unsafe);
+            CHECK(!ok && !unsafe && q == priorQuarantine + ".1" &&
+                      !fs::exists(p) && readFile(q) == sourceBytes &&
+                      readFile(priorQuarantine) == priorBytes,
+                  "playerdata: durable move uses unused quarantine name and preserves prior quarantine");
+            CHECK(operations == expectedOperations && moveCalls == 2 &&
+                      directorySyncCalls == 0,
+                  "playerdata: durable-move strategy flushes source and never relies on directory-sync no-op");
+        }
+        // 4l: when the write-through move cannot be confirmed, fail closed and
+        // leave the original active file untouched.
+        {
+            const std::string p = dir + "/write-through-fail.dat";
+            const std::vector<std::uint8_t> sourceBytes{0xF1, 0xF2};
+            writeFile(p, sourceBytes);
+            bool unsafe = false;
+            int directorySyncCalls = 0;
+            int moveCalls = 0;
+            const bool ok = loadPlayerDataIsolatedWithDurableMove(
+                p, [](const std::string&) { return false; },
+                [&](const fs::path& syncedPath) {
+                    return syncedPath == fs::path(p);
+                },
+                [&](const fs::path&) {
+                    ++directorySyncCalls;
+                    return true;
+                },
+                [&](const fs::path& source, const fs::path&) {
+                    ++moveCalls;
+                    CHECK(fs::exists(source),
+                          "playerdata: failed durable move leaves source present");
+                    return PlayerDataQuarantineMoveResult::Failed;
+                },
+                nullptr, nullptr, &unsafe);
+            CHECK(!ok && unsafe && fs::exists(p) && readFile(p) == sourceBytes,
+                  "playerdata: unconfirmed durable move retains active source and fails closed");
+            CHECK(moveCalls == 1 && directorySyncCalls == 0,
+                  "playerdata: failed durable move does not claim directory durability");
         }
     }
 

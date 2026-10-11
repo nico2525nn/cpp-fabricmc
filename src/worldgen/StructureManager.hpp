@@ -1,9 +1,12 @@
 // Data-driven structure-set loading and deterministic chunk-local generation.
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
+#include <limits>
+#include <mutex>
 #include <string>
 #include <vector>
 #include <memory>
@@ -11,7 +14,7 @@
 #include "MultiNoise.hpp"
 #include "StructurePlacer.hpp"
 
-namespace cppfm { struct Chunk; }
+namespace cppfm { class ChunkBuildWriter; }
 
 namespace cppfm::worldgen {
 
@@ -187,7 +190,7 @@ public:
     const std::vector<SMStructureSet>& sets() const { return sets_; }
     void clear() { sets_.clear(); }
 
-    void generate(Chunk& chunk, std::int32_t cx, std::int32_t cz, const GroundFn& ground) const;
+    void generate(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz, const GroundFn& ground) const;
 
     StructurePlacer& placer() { return *placer_; }
     const StructurePlacer& placer() const { return *placer_; }
@@ -195,84 +198,129 @@ public:
     void setBiomeSource(std::shared_ptr<MultiNoiseBiomeSource> b) { biomes_ = std::move(b); }
 
     struct PendingMob { std::array<int,3> pos; std::string mob; int count=1; };
-    struct PendingLoot { std::array<int,3> pos; std::string lootTable; };
+    struct PendingLoot {
+        std::array<int,3> pos;
+        std::string lootTable;
+        std::int64_t retryAfterTick = 0;
+    };
     void drainPendingMobs(std::vector<PendingMob>& out) const;
-    void drainPendingLoot(std::vector<PendingLoot>& out) const;
+    void drainPendingLoot(
+        std::vector<PendingLoot>& out,
+        std::int64_t currentTick = std::numeric_limits<std::int64_t>::max()) const;
+    bool hasPendingLootInChunk(std::int32_t cx,
+                               std::int32_t cz) const;
+    std::size_t pendingLootCount() const;
+    std::vector<std::pair<std::int32_t, std::int32_t>>
+    pendingLootChunks() const;
+    void requeuePendingLoot(PendingLoot pending,
+                            std::int64_t retryAfterTick) const;
 
 private:
-    void villagePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    struct PendingQueues {
+        std::mutex mutex;
+        std::vector<PendingMob> mobs;
+        std::vector<PendingLoot> loot;
+    };
+    struct BuildContext {
+        const StructureManager* owner;
+        ChunkBuildWriter* writer;
+        BuildContext* previous;
+        std::vector<PendingMob> mobs;
+        std::vector<PendingLoot> loot;
+    };
+    inline static thread_local BuildContext* activeBuildContext_ = nullptr;
+
+    class BuildContextScope final {
+    public:
+        BuildContextScope(const StructureManager* owner,
+                          ChunkBuildWriter* writer)
+            : context_{owner, writer, activeBuildContext_, {}, {}} {
+            activeBuildContext_ = &context_;
+        }
+        ~BuildContextScope() { activeBuildContext_ = context_.previous; }
+        BuildContextScope(const BuildContextScope&) = delete;
+        BuildContextScope& operator=(const BuildContextScope&) = delete;
+        BuildContext& context() noexcept { return context_; }
+
+    private:
+        BuildContext context_;
+    };
+
+    void commitBuildEffects(ChunkBuildWriter& writer,
+                            BuildContext& context) const;
+    void villagePiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
-    void villageJigsaw(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void villageJigsaw(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t ox, std::int32_t oz, int depth,
                        const GroundFn& ground) const;
-    void villageHouse(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void villageHouse(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t bx, std::int32_t bz, int gy) const;
-    void villageFarm(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void villageFarm(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                      std::int32_t bx, std::int32_t bz, int gy) const;
-    void villageChurch(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void villageChurch(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t bx, std::int32_t bz, int gy) const;
-    void strongholdPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void strongholdPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                          std::int32_t originX, std::int32_t originZ,
                          const GroundFn& ground) const;
-    void mineshaftPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void mineshaftPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                         std::int32_t originX, std::int32_t originZ,
                         const GroundFn& ground) const;
-    void pyramidPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void pyramidPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
-    void outpostPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void outpostPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
-    void jungleTemplePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void jungleTemplePiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                            std::int32_t originX, std::int32_t originZ,
                            const GroundFn& ground) const;
-    void iglooPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void iglooPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                     std::int32_t originX, std::int32_t originZ,
                     const GroundFn& ground) const;
-    void swampHutPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void swampHutPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t originX, std::int32_t originZ,
                        const GroundFn& ground) const;
-    void monumentPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void monumentPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t originX, std::int32_t originZ,
                        const GroundFn& ground) const;
-    void mansionPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void mansionPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
-    void trialChambersPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void trialChambersPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                             std::int32_t originX, std::int32_t originZ,
                             const GroundFn& ground) const;
-    void endCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void endCityPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                       std::int32_t originX, std::int32_t originZ,
                       const GroundFn& ground) const;
-    void ancientCityPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void ancientCityPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                          std::int32_t originX, std::int32_t originZ,
                          const GroundFn& ground) const;
-    void ruinedPortalPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void ruinedPortalPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                           std::int32_t originX, std::int32_t originZ,
                           const GroundFn& ground) const;
-    void shipwreckPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void shipwreckPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                        std::int32_t originX, std::int32_t originZ,
                        const GroundFn& ground) const;
-    void oceanRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void oceanRuinsPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                         std::int32_t originX, std::int32_t originZ,
                         const GroundFn& ground) const;
-    void netherFossilPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void netherFossilPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                           std::int32_t originX, std::int32_t originZ,
                           const GroundFn& ground) const;
-    void buriedTreasurePiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void buriedTreasurePiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                             std::int32_t originX, std::int32_t originZ,
                             const GroundFn& ground) const;
-    void trailRuinsPiece(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void trailRuinsPiece(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                         std::int32_t originX, std::int32_t originZ,
                         const GroundFn& ground) const;
 
-    void placeTrialChambersPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void placeTrialChambersPalette(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                                    std::int32_t originX, std::int32_t originZ,
                                    const std::string& pieceName,
                                    const std::unordered_map<std::string,std::string>& palette,
                                    int variant, const GroundFn& ground) const;
-    void placeGenericPalette(Chunk& chunk, std::int32_t cx, std::int32_t cz,
+    void placeGenericPalette(ChunkBuildWriter& chunk, std::int32_t cx, std::int32_t cz,
                              std::int32_t originX, std::int32_t originZ,
                              const std::string& pieceName,
                              const std::unordered_map<std::string,std::string>& palette,
@@ -284,9 +332,8 @@ private:
     std::shared_ptr<MultiNoiseBiomeSource> biomes_;
     std::vector<SMStructureSet> sets_;
     std::unique_ptr<StructurePlacer> placer_;
-    mutable std::mutex pendingMtx_;
-    mutable std::vector<PendingMob> pendingMobs_;
-    mutable std::vector<PendingLoot> pendingLoot_;
+    std::shared_ptr<PendingQueues> pendingQueues_ =
+        std::make_shared<PendingQueues>();
 };
 
 } // namespace cppfm::worldgen

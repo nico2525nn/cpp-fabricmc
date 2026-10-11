@@ -8,6 +8,7 @@
 #include "../src/net/PacketBatcher.hpp"
 #include "../src/net/RateLimiter.hpp"
 #include "../src/proto/Ids.hpp"
+#include "../src/game/PacketOrder.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -156,6 +157,139 @@ void testVarints() {
         encryptedHighPayload.data(), encryptedHighPayload.size(), highDecoder, highConsumed);
     check(highDecoded == 0 && highConsumed == encryptedHighPayload.size(),
           "encrypted VarInt accepts vanilla fifth-byte payload truncation");
+}
+
+void testChunkPacketOrderingClassification() {
+    check(requiresChunkPacketOrdering(proto::pl::sc::LevelChunkWithLight),
+          "chunk snapshots use the ordered chunk output lane");
+    check(requiresChunkPacketOrdering(proto::pl::sc::UpdateLight),
+          "UpdateLight cannot overtake a pending chunk snapshot");
+    check(requiresChunkPacketOrdering(proto::pl::sc::BlockUpdate) &&
+              requiresChunkPacketOrdering(proto::pl::sc::BlockEntityData) &&
+              requiresChunkPacketOrdering(proto::pl::sc::BundleDelimiter) &&
+              requiresChunkPacketOrdering(proto::pl::sc::MultiBlockChange),
+          "block, entity, bundle, and section deltas share the chunk output lane");
+    check(!requiresChunkPacketOrdering(proto::pl::sc::KeepAlive) &&
+              !requiresChunkPacketOrdering(proto::pl::sc::SystemChat),
+          "keepalive and chat remain eligible to overtake bulk chunk streaming");
+}
+
+bool createTestSocketPair(platform::socket_t (&sockets)[2]) {
+#ifdef _WIN32
+    if (!platform::initializeSockets()) return false;
+    const auto listener = platform::createTcpSocket();
+    if (!platform::isValid(listener)) return false;
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (platform::bindSocket(listener,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+        platform::listenSocket(listener, 1) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+    platform::socket_length_t addressLength = sizeof(address);
+    if (::getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                      &addressLength) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+
+    const auto client = platform::createTcpSocket();
+    if (!platform::isValid(client) ||
+        ::connect(client, reinterpret_cast<const sockaddr*>(&address),
+                  sizeof(address)) != 0) {
+        if (platform::isValid(client)) platform::closeSocket(client);
+        platform::closeSocket(listener);
+        return false;
+    }
+    const auto server = platform::acceptSocket(listener, nullptr, nullptr);
+    platform::closeSocket(listener);
+    if (!platform::isValid(server)) {
+        platform::closeSocket(client);
+        return false;
+    }
+    sockets[0] = client;
+    sockets[1] = server;
+    return true;
+#else
+    return ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0;
+#endif
+}
+
+void testChunkSnapshotAndLightQueueOrder() {
+    platform::socket_t sockets[2]{platform::invalid_socket,
+                                   platform::invalid_socket};
+    if (!createTestSocketPair(sockets)) {
+        check(false, "local stream socket pair available for chunk/light ordering regression");
+        return;
+    }
+    int sendBufferSize = 1024;
+    (void)platform::setSocketOption(
+        sockets[0], SOL_SOCKET, SO_SNDBUF, &sendBufferSize,
+        static_cast<platform::socket_length_t>(sizeof(sendBufferSize)));
+    Connection sender(sockets[0]);
+    Connection receiver(sockets[1]);
+    WriteBuffer body;
+    body.data.assign(64u * 1024u, 0x5A);
+    const std::vector<std::uint8_t> queuedIds{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+        proto::pl::sc::KeepAlive,
+    };
+    ++activeSimulationDispatchDepth;
+    bool queued = true;
+    try {
+        for (const auto id : queuedIds) {
+            if (requiresChunkPacketOrdering(id))
+                sender.sendPacketLowPriority(id, body);
+            else
+                sender.sendPacket(id, body);
+        }
+    } catch (...) {
+        queued = false;
+    }
+    --activeSimulationDispatchDepth;
+
+    std::vector<std::uint8_t> received;
+    bool readAll = queued;
+    if (queued) {
+        for (std::size_t i = 0; i < queuedIds.size(); ++i) {
+            try {
+                const auto frame = receiver.readFrameWithTimeout(
+                    std::chrono::seconds(3));
+                if (frame.empty()) {
+                    readAll = false;
+                    break;
+                }
+                received.push_back(frame.front());
+            } catch (...) {
+                readAll = false;
+                break;
+            }
+        }
+    }
+    std::vector<std::uint8_t> orderedChunkPackets;
+    for (const auto id : received)
+        if (requiresChunkPacketOrdering(id)) orderedChunkPackets.push_back(id);
+    const std::vector<std::uint8_t> expectedChunkOrder{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+    };
+    check(readAll && orderedChunkPackets == expectedChunkOrder,
+          "chunk snapshot, UpdateLight, and deltas retain enqueue order on plaintext connections");
+    sender.close();
+    receiver.close();
 }
 
 void testFixedWidthAndPositionVectors() {
@@ -693,6 +827,8 @@ void testProtocolBoundariesAndLimitations() {
 
 int main() {
     testVarints();
+    testChunkPacketOrderingClassification();
+    testChunkSnapshotAndLightQueueOrder();
     testCompressionAndFraming();
     testEncryptionAndLifecycle();
     testLimiterAndAuthEdges();

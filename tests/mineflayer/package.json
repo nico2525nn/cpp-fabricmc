@@ -1,0 +1,15 @@
+{
+  "name": "cpp-fabricmc-mineflayer-tests",
+  "private": true,
+  "description": "Pinned dependencies for the opt-in Minecraft 1.21.4 Mineflayer live probe",
+  "scripts": {
+    "test": "node --test test_rcon_client.cjs",
+    "live-smoke": "node run.cjs"
+  },
+  "devDependencies": {
+    "minecraft-data": "3.117.0",
+    "mineflayer": "4.25.0",
+    "prismarine-nbt": "2.8.0",
+    "vec3": "0.1.10"
+  }
+}

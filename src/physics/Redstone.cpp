@@ -13,6 +13,7 @@
 #include <mutex>
 #include <string>
 #include <limits>
+#include <stdexcept>
 
 namespace cppfm {
 
@@ -21,6 +22,74 @@ std::int64_t redstoneTick(const std::int64_t* plain,
                           const std::atomic<std::int64_t>* atomic) {
     if (atomic) return atomic->load(std::memory_order_relaxed);
     return plain ? *plain : 0;
+}
+
+void appendPistonUpdate(std::vector<World::BlockUpdate>& updates,
+                        std::int32_t x, std::int32_t y, std::int32_t z,
+                        std::uint16_t state) {
+    const auto existing = std::find_if(
+        updates.begin(), updates.end(), [&](const World::BlockUpdate& update) {
+            return update.x == x && update.y == y && update.z == z;
+        });
+    if (existing != updates.end()) {
+        existing->state = state;
+        return;
+    }
+    updates.push_back({x, y, z, state});
+}
+
+// World::setBlockBatch prepares all affected chunks before applying edits, but
+// its final write loop can still report a failure after earlier writes. Keep a
+// snapshot so piston moves can restore the entire batch before retrying.
+bool applyPistonUpdates(World& world,
+                        const std::vector<World::BlockUpdate>& updates,
+                        std::vector<std::pair<std::int32_t, std::int32_t>>&
+                            changedChunks) {
+    changedChunks.clear();
+    if (updates.empty()) return true;
+
+    const auto geometry = world.verticalGeometry();
+    for (std::size_t i = 0; i < updates.size(); ++i) {
+        const auto& update = updates[i];
+        if (!geometry.containsY(update.y) ||
+            gen::blockByState(update.state) == nullptr)
+            return false;
+        for (std::size_t j = 0; j < i; ++j) {
+            if (updates[j].x == update.x && updates[j].y == update.y &&
+                updates[j].z == update.z)
+                return false;
+        }
+    }
+    for (const auto& update : updates) {
+        if (!world.generateChunkIfMissing(update.x >> 4, update.z >> 4))
+            return false;
+    }
+
+    std::vector<World::BlockUpdate> previous;
+    previous.reserve(updates.size());
+    for (const auto& update : updates) {
+        previous.push_back({update.x, update.y, update.z,
+                            world.getBlock(update.x, update.y, update.z)});
+    }
+
+    if (world.setBlockBatch(updates)) {
+        for (std::size_t i = 0; i < updates.size(); ++i) {
+            if (previous[i].state == updates[i].state) continue;
+            const std::pair chunk{updates[i].x >> 4, updates[i].z >> 4};
+            if (std::find(changedChunks.begin(), changedChunks.end(), chunk) ==
+                changedChunks.end())
+                changedChunks.push_back(chunk);
+        }
+        return true;
+    }
+
+    if (!world.setBlockBatch(previous)) {
+        // A failed batch is exceptional; make a best-effort reverse rollback
+        // as a final guard against a partially applied World batch.
+        for (auto it = previous.rbegin(); it != previous.rend(); ++it)
+            world.setBlock(it->x, it->y, it->z, it->state);
+    }
+    return false;
 }
 }
 
@@ -180,12 +249,13 @@ static bool isConductiveBlock(std::uint16_t st) {
 
 int RedstoneEngine::analogOutputAt(std::int32_t x, std::int32_t y, std::int32_t z) {
     if (!beStore_) return 0;
-    BlockEntity* be = beStore_->getAt(x,y,z);
+    const auto be = beStore_->getAt(x, y, z);
     if (!be) {
         // also check if block is chest etc without BE? Try to treat as empty
         return 0;
     }
-    return analogOutputForContainer(be);
+    std::lock_guard lock(*be->stateMtx);
+    return analogOutputForContainer(be.get());
 }
 
 int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -223,14 +293,9 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
         int directContainerSig = analogOutputAt(bx,by,bz);
-        BlockEntity* rearBE = beStore_ ? beStore_->getAt(bx,by,bz) : nullptr;
-        bool hasDirectContainer = (rearBE != nullptr && directContainerSig>=0) ? true : (rearBE!=nullptr);
-        // actually analogOutputAt returns 0 both for empty container and no container, so check BE presence
-        if (rearBE && directContainerSig==0) {
-            // distinguish empty container (filled==0) vs no container: analogOutputForContainer returns 0 for empty, but BE exists -> treat as container present with signal 0
-        } else if (!rearBE) {
-            hasDirectContainer = false;
-        }
+        const auto rearBE = beStore_ ? beStore_->getAt(bx, by, bz)
+                                     : BlockEntityStore::Owner{};
+        const bool hasDirectContainer = static_cast<bool>(rearBE);
         int containerSig = directContainerSig;
         uint16_t rearSt = world_.getBlock(bx,by,bz);
         bool rearConductive = isConductiveBlock(rearSt);
@@ -240,7 +305,8 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
             int dx = bx - x, dy = by - y, dz = bz - z;
             int bx2 = bx + dx, by2 = by + dy, bz2 = bz + dz;
             int sig2 = analogOutputAt(bx2,by2,bz2);
-            BlockEntity* be2 = beStore_ ? beStore_->getAt(bx2,by2,bz2) : nullptr;
+            const auto be2 = beStore_ ? beStore_->getAt(bx2, by2, bz2)
+                                      : BlockEntityStore::Owner{};
             if (be2) {
                 containerSig = sig2;
                 // check overpower: if conductive block is powered to 15, output 15 irrespective of analog
@@ -330,7 +396,7 @@ bool RedstoneEngine::isPoweredHereImpl(std::int32_t x, std::int32_t y,
     constexpr std::int32_t kMinCoord = -(1 << 25);
     constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
     if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
-        y < kMinY || y >= kMaxY) return false;
+        y < world_.minY() || y >= world_.maxY()) return false;
     // A directly powered input (notably a redstone block) is power at this
     // position.  The old query only inspected neighbours, so repeaters fed
     // directly by a source never latched.
@@ -362,16 +428,9 @@ bool RedstoneEngine::isPoweredHereImpl(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
-    constexpr std::int32_t kMinCoord = -(1 << 25);
-    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
-    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
-        y < kMinY || y >= kMaxY) return;
+    if (!enqueueBlockChanged(x, y, z)) return;
     {
         std::lock_guard<std::mutex> notificationLock(notificationMutex_);
-        pendingBlockChanges_.insert(posKey(x, y, z));
-        // A World::setBlock callback must only enqueue.  The operation that
-        // caused the callback owns operationMutex_ and will drain this set
-        // after its current world mutation returns.
         if (processingBlockChanges_) return;
     }
 
@@ -389,6 +448,17 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
         std::lock_guard<std::mutex> notificationLock(notificationMutex_);
         processingBlockChanges_ = false;
     }
+}
+
+bool RedstoneEngine::enqueueBlockChanged(std::int32_t x, std::int32_t y,
+                                         std::int32_t z) {
+    constexpr std::int32_t kMinCoord = -(1 << 25);
+    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
+    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
+        y < world_.minY() || y >= world_.maxY()) return false;
+    std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+    pendingBlockChanges_.insert(posKey(x, y, z));
+    return true;
 }
 
 void RedstoneEngine::drainBlockChanges() {
@@ -800,6 +870,10 @@ static PistonExtension collectPistonExtension(
     World& world, int x, int y, int z, int dx, int dy, int dz,
     bool checkBeyond) {
     PistonExtension result;
+    const auto geometry = world.verticalGeometry();
+    // The head occupies the adjacent position even when there are no blocks
+    // to push. Reject before an extension can be queued or published.
+    if (!geometry.containsY(y + dy)) return result;
     bool fail = false;
     for (int i = 1; i <= 12; ++i) {
         const int px = x + dx * i;
@@ -859,6 +933,11 @@ static PistonExtension collectPistonExtension(
                 const int nx = position.x + dx;
                 const int ny = position.y + dy;
                 const int nz = position.z + dz;
+                if (!geometry.containsY(position.y) ||
+                    !geometry.containsY(ny)) {
+                    fail = true;
+                    break;
+                }
                 if (world.getBlock(nx, ny, nz) != 0 &&
                     !result.occupied.count(pistonPositionKey(nx, ny, nz))) {
                     fail = true;
@@ -1059,103 +1138,408 @@ void RedstoneEngine::setBroadcastFn(std::function<void(std::int32_t,std::int32_t
     broadcastFn_ = std::move(fn);
 }
 
-void RedstoneEngine::processPendingPistonCommits(
-    std::int64_t now,
-    std::optional<std::pair<std::int32_t, std::int32_t>> chunk) {
-    for (auto it = pendingPistonCommits_.begin(); it != pendingPistonCommits_.end(); ) {
-        if (chunk) {
-            const auto [cx, cz] = *chunk;
-            bool touchesChunk = (it->pistonX >> 4) == cx && (it->pistonZ >> 4) == cz;
-            if (!touchesChunk) {
-                for (const auto& entry : it->entries) {
-                    const bool sourceInChunk = (entry.x >> 4) == cx &&
-                                               (entry.z >> 4) == cz;
-                    const bool destinationInChunk =
-                        ((entry.x + it->dx) >> 4) == cx &&
-                        ((entry.z + it->dz) >> 4) == cz;
-                    if (sourceInChunk || destinationInChunk) {
-                        touchesChunk = true;
-                        break;
-                    }
-                }
+void RedstoneEngine::setPistonChunkDirtyFn(
+    std::function<void(std::int32_t, std::int32_t)> fn) {
+    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
+    pistonChunkDirtyFn_ = std::move(fn);
+}
+
+void RedstoneEngine::notifyPistonChunksDirty(
+    const std::vector<std::pair<std::int32_t, std::int32_t>>& chunks) {
+    if (!pistonChunkDirtyFn_) return;
+    for (const auto& [chunkX, chunkZ] : chunks)
+        pistonChunkDirtyFn_(chunkX, chunkZ);
+}
+
+bool RedstoneEngine::pistonQueueActionTouchesChunk(
+    const PistonEntity& action,
+    const std::pair<std::int32_t, std::int32_t>& chunk) const {
+    const auto isInChunk = [&chunk](std::int32_t x, std::int32_t z) {
+        return (x >> 4) == chunk.first && (z >> 4) == chunk.second;
+    };
+    if (isInChunk(action.x, action.z)) return true;
+
+    const std::uint16_t state = world_.getBlock(action.x, action.y, action.z);
+    const Comp piston = classify(state);
+    if (piston != Comp::Piston && piston != Comp::StickyPiston) return false;
+
+    bool currentlyExtended = false;
+    int dx = 0, dy = 0, dz = 0;
+    for (const auto& [key, value] : gen::propsOf(state)) {
+        if (key == "extended") currentlyExtended = value == "true";
+        else if (key == "facing") {
+            if (value == "down") dy = -1;
+            else if (value == "up") dy = 1;
+            else if (value == "north") dz = -1;
+            else if (value == "south") dz = 1;
+            else if (value == "west") dx = -1;
+            else if (value == "east") dx = 1;
+        }
+    }
+    if (currentlyExtended == action.extended) return false;
+
+    const std::int32_t headX = action.x + dx;
+    const std::int32_t headZ = action.z + dz;
+    if (isInChunk(headX, headZ)) return true;
+
+    if (action.extended) {
+        const PistonExtension extension = collectPistonExtension(
+            world_, action.x, action.y, action.z, dx, dy, dz, false);
+        if (!extension.valid) return false;
+        for (const auto& block : extension.blocks) {
+            if (isInChunk(block.x, block.z) ||
+                isInChunk(block.x + dx, block.z + dz))
+                return true;
+        }
+        return false;
+    }
+
+    if (piston != Comp::StickyPiston) return false;
+
+    // Sticky retraction can pull a connected group in any horizontal
+    // direction. The pull is capped at 12 blocks; including a 13-block
+    // horizontal envelope also covers the head-side starting cell and the
+    // one-block pull destination. This intentionally errs toward flushing a
+    // nearby chunk rather than allowing a cross-chunk pull to race its save.
+    constexpr std::int64_t kStickyPullEnvelope = 13;
+    const auto chunkIntersectsAxis = [kStickyPullEnvelope](
+        std::int32_t chunkCoordinate, std::int32_t center) {
+        const std::int64_t minimum =
+            static_cast<std::int64_t>(chunkCoordinate) * 16;
+        const std::int64_t maximum = minimum + 15;
+        const std::int64_t reach = kStickyPullEnvelope;
+        return maximum >= static_cast<std::int64_t>(center) - reach &&
+               minimum <= static_cast<std::int64_t>(center) + reach;
+    };
+    return chunkIntersectsAxis(chunk.first, action.x) &&
+           chunkIntersectsAxis(chunk.second, action.z);
+}
+
+bool RedstoneEngine::pendingPistonCommitTouchesChunk(
+    const PendingPistonCommit& commit,
+    const std::pair<std::int32_t, std::int32_t>& chunk) const {
+    const auto isInChunk = [&chunk](std::int32_t x, std::int32_t z) {
+        return (x >> 4) == chunk.first && (z >> 4) == chunk.second;
+    };
+    if (isInChunk(commit.pistonX, commit.pistonZ) ||
+        isInChunk(commit.hx, commit.hz))
+        return true;
+    for (const auto& entry : commit.entries) {
+        if (isInChunk(entry.x, entry.z) ||
+            (commit.extend && isInChunk(entry.x + commit.dx,
+                                         entry.z + commit.dz)))
+            return true;
+    }
+    for (const auto& entry : commit.pullEntries) {
+        if (isInChunk(entry.x, entry.z) ||
+            isInChunk(entry.x - commit.dx, entry.z - commit.dz))
+            return true;
+    }
+    return false;
+}
+
+bool RedstoneEngine::hasPistonWorkForChunk(
+    const std::pair<std::int32_t, std::int32_t>& chunk) const {
+    return std::any_of(pistonQueue_.begin(), pistonQueue_.end(),
+                       [&](const PistonEntity& action) {
+                           return pistonQueueActionTouchesChunk(action, chunk);
+                       }) ||
+           std::any_of(pendingPistonCommits_.begin(),
+                       pendingPistonCommits_.end(),
+                       [&](const PendingPistonCommit& commit) {
+                           return pendingPistonCommitTouchesChunk(commit, chunk);
+                       });
+}
+
+void RedstoneEngine::preparePendingPistonExpectations(
+    PendingPistonCommit& commit) {
+    const auto affectedCount = commit.extend
+        ? commit.entries.size() : commit.pullEntries.size();
+    commit.expectedCells.clear();
+    commit.expectedCells.reserve(2 + affectedCount * 2);
+    const auto add = [&](std::int32_t x, std::int32_t y, std::int32_t z) {
+        const auto existing = std::find_if(
+            commit.expectedCells.begin(), commit.expectedCells.end(),
+            [=](const PendingPistonCommit::ExpectedCell& cell) {
+                return cell.x == x && cell.y == y && cell.z == z;
+            });
+        if (existing == commit.expectedCells.end()) {
+            PendingPistonCommit::ExpectedCell cell;
+            cell.x = x;
+            cell.y = y;
+            cell.z = z;
+            commit.expectedCells.push_back(std::move(cell));
+        }
+    };
+
+    add(commit.pistonX, commit.pistonY, commit.pistonZ);
+    add(commit.hx, commit.hy, commit.hz);
+    if (commit.extend) {
+        for (const auto& entry : commit.entries) {
+            add(entry.x, entry.y, entry.z);
+            add(entry.x + commit.dx, entry.y + commit.dy,
+                entry.z + commit.dz);
+        }
+    } else {
+        for (const auto& entry : commit.pullEntries) {
+            add(entry.x, entry.y, entry.z);
+            add(entry.x - commit.dx, entry.y - commit.dy,
+                entry.z - commit.dz);
+        }
+    }
+}
+
+void RedstoneEngine::capturePendingPistonExpectations(
+    PendingPistonCommit& commit) {
+    for (auto& cell : commit.expectedCells) {
+        cell.state = world_.getBlock(cell.x, cell.y, cell.z);
+        cell.owner = beStore_
+            ? beStore_->getShared(posKey(cell.x, cell.y, cell.z))
+            : BlockEntityStore::Owner{};
+        if (cell.owner) {
+            std::lock_guard ownerLock(*cell.owner->stateMtx);
+            cell.ownerKind = cell.owner->kind;
+            if (*cell.ownerKind == BlockEntity::Kind::MovingPiston) {
+                cell.movingState = cell.owner->movingPiston.state;
+                cell.movingFacing = cell.owner->movingPiston.facing;
+                cell.movingExtending = cell.owner->movingPiston.extending;
+                cell.movingSource = cell.owner->movingPiston.source;
+                cell.movingFinishTick = cell.owner->movingPiston.finishTick;
             }
-            if (!touchesChunk) { ++it; continue; }
+        }
+    }
+}
+
+bool RedstoneEngine::pendingPistonOwnerMatches(
+    const PendingPistonCommit::ExpectedCell& cell) const {
+    const auto currentOwner = beStore_
+        ? beStore_->getShared(posKey(cell.x, cell.y, cell.z))
+        : BlockEntityStore::Owner{};
+    if (currentOwner != cell.owner) return false;
+    if (!currentOwner) return !cell.ownerKind;
+
+    std::lock_guard ownerLock(*currentOwner->stateMtx);
+    if (!cell.ownerKind || currentOwner->kind != *cell.ownerKind)
+        return false;
+    if (*cell.ownerKind != BlockEntity::Kind::MovingPiston) return true;
+    const auto& moving = currentOwner->movingPiston;
+    return moving.state == cell.movingState &&
+        moving.facing == cell.movingFacing &&
+        moving.extending == cell.movingExtending &&
+        moving.source == cell.movingSource &&
+        moving.finishTick == cell.movingFinishTick;
+}
+
+bool RedstoneEngine::pendingPistonExpectationsMatch(
+    const PendingPistonCommit& commit) const {
+    for (const auto& cell : commit.expectedCells) {
+        if (world_.getBlock(cell.x, cell.y, cell.z) != cell.state)
+            return false;
+        if (!pendingPistonOwnerMatches(cell)) return false;
+    }
+    return true;
+}
+
+bool RedstoneEngine::cancelPendingPistonCommit(
+    PendingPistonCommit& commit) {
+    std::vector<World::BlockUpdate> updates;
+    updates.reserve(commit.entries.size() + 1);
+    std::vector<std::pair<std::int64_t, BlockEntityStore::Owner>> ownersToRemove;
+    ownersToRemove.reserve(commit.entries.size());
+
+    const auto expectedAt = [&](std::int32_t x, std::int32_t y,
+                                std::int32_t z)
+        -> const PendingPistonCommit::ExpectedCell* {
+        const auto found = std::find_if(
+            commit.expectedCells.begin(), commit.expectedCells.end(),
+            [=](const PendingPistonCommit::ExpectedCell& cell) {
+                return cell.x == x && cell.y == y && cell.z == z;
+            });
+        return found == commit.expectedCells.end() ? nullptr : &*found;
+    };
+    const auto movingState = gen::blockNameToState().find(
+        "minecraft:moving_piston");
+    const bool hasMovingState =
+        movingState != gen::blockNameToState().end();
+    const auto restoreOwnedMovingBlock = [&](const PendingPistonCommit::Entry& entry) {
+        if (!beStore_ || !hasMovingState) return;
+        const auto* expected = expectedAt(entry.x, entry.y, entry.z);
+        if (!expected || !expected->owner ||
+            expected->state != movingState->second ||
+            world_.getBlock(entry.x, entry.y, entry.z) !=
+                movingState->second ||
+            expected->ownerKind != BlockEntity::Kind::MovingPiston ||
+            !pendingPistonOwnerMatches(*expected))
+            return;
+        appendPistonUpdate(updates, entry.x, entry.y, entry.z,
+                           entry.state);
+        ownersToRemove.emplace_back(
+            posKey(entry.x, entry.y, entry.z), expected->owner);
+    };
+
+    const auto* expectedHead = expectedAt(commit.hx, commit.hy, commit.hz);
+    const bool headUnchanged = expectedHead &&
+        world_.getBlock(commit.hx, commit.hy, commit.hz) ==
+            expectedHead->state &&
+        pendingPistonOwnerMatches(*expectedHead);
+
+    if (commit.extend) {
+        for (const auto& entry : commit.entries)
+            restoreOwnedMovingBlock(entry);
+    } else if (!commit.entries.empty()) {
+        // Retraction only animates the piston head. Pulled source blocks stay
+        // in place until the delayed transaction commits.
+        restoreOwnedMovingBlock(commit.entries.front());
+    }
+
+    const auto currentPistonState = world_.getBlock(
+        commit.pistonX, commit.pistonY, commit.pistonZ);
+    if (currentPistonState == commit.stagedPistonState &&
+        (commit.extend || headUnchanged))
+        appendPistonUpdate(updates, commit.pistonX, commit.pistonY,
+                           commit.pistonZ, commit.originalPistonState);
+
+    std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+    if (!applyPistonUpdates(world_, updates, changedChunks)) return false;
+    notifyPistonChunksDirty(changedChunks);
+    if (broadcastFn_) {
+        for (const auto& update : updates)
+            broadcastFn_(update.x, update.y, update.z, update.state);
+    }
+    for (const auto& [key, owner] : ownersToRemove) {
+        const auto x = posKeyUnpackX(key);
+        const auto y = posKeyUnpackY(key);
+        const auto z = posKeyUnpackZ(key);
+        const auto* expected = expectedAt(x, y, z);
+        if (beStore_ && expected && expected->owner == owner &&
+            pendingPistonOwnerMatches(*expected))
+            beStore_->removeAfterWorldBlockReplacement(key);
+    }
+    return true;
+}
+
+std::size_t RedstoneEngine::processPendingPistonCommits(
+    std::int64_t now,
+    std::optional<std::pair<std::int32_t, std::int32_t>> chunk,
+    std::size_t budget,
+    bool updateMovingProgress) {
+    // A delayed piston completion updates World blocks and block-entity
+    // owners as one transaction. Keep save snapshots and chunk publication
+    // outside the interval between those two representations.
+    auto mutationGate = world_.lockMutationGate();
+    std::size_t processed = 0;
+    for (auto it = pendingPistonCommits_.begin(); it != pendingPistonCommits_.end(); ) {
+        if (chunk && !pendingPistonCommitTouchesChunk(*it, *chunk)) {
+            ++it;
+            continue;
         }
         if (it->dueTick > now) { ++it; continue; }
+        if (processed == budget) break;
+        ++processed;
+        if (!pendingPistonExpectationsMatch(*it)) {
+            // Another world edit won the animation window. Never apply the
+            // saved destination layout over that newer edit; resolve only
+            // placeholders still owned by this exact delayed operation.
+            if (!cancelPendingPistonCommit(*it)) {
+                ++it;
+                continue;
+            }
+            it = pendingPistonCommits_.erase(it);
+            continue;
+        }
         // finalize extend
         if (it->extend) {
-            // clear moving_piston blocks (their BEs still hold state)
-            for (auto &e : it->entries) {
-                if (beStore_) beStore_->remove(posKey(e.x,e.y,e.z));
-                // ensure block is cleared before placing shifted (already moving_piston)
-                setBlockAndBroadcast(e.x,e.y,e.z, 0);
-            }
-            // place shifted blocks farthest first entries are original positions; shifted = entry + delta
-            std::vector<typename PendingPistonCommit::Entry> sorted = it->entries;
-            std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
-                int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
-                int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
-                return da>db;
-            });
-            for (auto &e : sorted) {
-                int nx=e.x+it->dx, ny=e.y+it->dy, nz=e.z+it->dz;
-                setBlockAndBroadcast(nx,ny,nz, e.state);
-            }
             // piston head
+            const auto geometry = world_.verticalGeometry();
             const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
-            if (headDef) {
-                std::vector<std::pair<std::string_view,std::string_view>> hp;
-                hp.emplace_back("facing", it->facing);
-                hp.emplace_back("type", it->isSticky?"sticky":"normal");
-                hp.emplace_back("short", "false");
-                std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hp));
-                setBlockAndBroadcast(it->hx,it->hy,it->hz, headSt);
+            if (!geometry.containsY(it->pistonY) ||
+                !geometry.containsY(it->hy) || !headDef) {
+                ++it;
+                continue;
+            }
+
+            std::vector<std::pair<std::string_view,std::string_view>> hp;
+            hp.emplace_back("facing", it->facing);
+            hp.emplace_back("type", it->isSticky?"sticky":"normal");
+            hp.emplace_back("short", "false");
+            const auto headState = static_cast<std::uint16_t>(
+                gen::stateWithProps(*headDef, hp));
+            std::vector<World::BlockUpdate> updates;
+            updates.reserve(it->entries.size() * 2 + 1);
+            bool destinationsFit = true;
+            for (const auto& entry : it->entries) {
+                const auto destinationY = entry.y + it->dy;
+                if (!geometry.containsY(entry.y) ||
+                    !geometry.containsY(destinationY)) {
+                    destinationsFit = false;
+                    break;
+                }
+                appendPistonUpdate(updates, entry.x, entry.y, entry.z, 0);
+                appendPistonUpdate(updates, entry.x + it->dx, destinationY,
+                                   entry.z + it->dz, entry.state);
+            }
+            if (!destinationsFit) {
+                ++it;
+                continue;
+            }
+            appendPistonUpdate(updates, it->hx, it->hy, it->hz, headState);
+
+            // Apply the entire final layout as one checked batch. If World
+            // rejects any edit, applyPistonUpdates restores the pre-commit
+            // snapshot and this delayed commit remains available for retry.
+            std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+            if (!applyPistonUpdates(world_, updates, changedChunks)) {
+                ++it;
+                continue;
+            }
+            notifyPistonChunksDirty(changedChunks);
+            if (beStore_) {
+                for (const auto& entry : it->entries)
+                    beStore_->remove(posKey(entry.x, entry.y, entry.z));
+            }
+            if (broadcastFn_) {
+                for (const auto& update : updates)
+                    broadcastFn_(update.x, update.y, update.z, update.state);
             }
         } else {
+            const auto geometry = world_.verticalGeometry();
+            if (!geometry.containsY(it->pistonY) ||
+                !geometry.containsY(it->hy)) {
+                ++it;
+                continue;
+            }
+            std::vector<World::BlockUpdate> updates;
+            updates.reserve(it->pullEntries.size() * 2 + 1);
+            bool destinationsFit = true;
+            appendPistonUpdate(updates, it->hx, it->hy, it->hz, 0);
+            for (const auto& entry : it->pullEntries) {
+                const auto destinationY = entry.y - it->dy;
+                if (!geometry.containsY(entry.y) ||
+                    !geometry.containsY(destinationY)) {
+                    destinationsFit = false;
+                    break;
+                }
+                appendPistonUpdate(updates, entry.x, entry.y, entry.z, 0);
+                appendPistonUpdate(updates, entry.x - it->dx, destinationY,
+                                   entry.z - it->dz, entry.state);
+            }
+            std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+            if (!destinationsFit ||
+                !applyPistonUpdates(world_, updates, changedChunks)) {
+                ++it;
+                continue;
+            }
+            notifyPistonChunksDirty(changedChunks);
             if (beStore_) beStore_->remove(posKey(it->hx,it->hy,it->hz));
-            setBlockAndBroadcast(it->hx,it->hy,it->hz, 0);
-            // handle sticky pull entries (original pullEntries holds original positions+states)
-            if (!it->pullEntries.empty()) {
-                // clear originals
-                for (auto &e : it->pullEntries) {
-                    setBlockAndBroadcast(e.x,e.y,e.z, 0);
-                }
-                // sort by distance farthest first for moving toward piston
-                std::vector<typename PendingPistonCommit::Entry> sorted = it->pullEntries;
-                std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
-                    int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
-                    int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
-                    return da>db;
-                });
-                for (auto &e : sorted) {
-                    int nx=e.x - it->dx, ny=e.y - it->dy, nz=e.z - it->dz;
-                    // create briefly moving_piston then finalize to state (2-tick handled by keeping same tick? we finalize directly after 2t)
-                    if (beStore_) {
-                        auto mvIt = gen::blockNameToState().find("minecraft:moving_piston");
-                        if (mvIt != gen::blockNameToState().end()) {
-                            uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
-                            // transient moving for completeness (will be immediately replaced, but preserves BE tick logic)
-                            BlockEntity* be2 = beStore_->getAt(nx,ny,nz);
-                            if(!be2) be2 = &beStore_->create(posKey(nx,ny,nz), BlockEntity::Kind::MovingPiston);
-                            else be2->kind = BlockEntity::Kind::MovingPiston;
-                            be2->movingPiston.state = e.state;
-                            be2->movingPiston.facing = it->face;
-                            be2->movingPiston.extending = false;
-                            be2->movingPiston.progress = 0.f;
-                            setBlockAndBroadcast(nx,ny,nz, mvSt);
-                            setBlockAndBroadcast(nx,ny,nz, e.state);
-                            beStore_->remove(posKey(nx,ny,nz));
-                            continue;
-                        }
-                    }
-                    setBlockAndBroadcast(nx,ny,nz, e.state);
-                }
+            if (broadcastFn_) {
+                for (const auto& update : updates)
+                    broadcastFn_(update.x, update.y, update.z, update.state);
             }
         }
         it = pendingPistonCommits_.erase(it);
     }
     // also tick existing moving_piston BEs progress (0->1 over 2 ticks) for strict audit visibility
-    if (beStore_ && (tickRef_ || atomicTickRef_)) {
+    if (updateMovingProgress && beStore_ && (tickRef_ || atomicTickRef_)) {
         beStore_->forEach([&](std::int64_t, BlockEntity& be) {
             if (be.kind != BlockEntity::Kind::MovingPiston) return;
             if (be.movingPiston.finishTick==0) return;
@@ -1167,8 +1551,14 @@ void RedstoneEngine::processPendingPistonCommits(
             be.movingPiston.progress = prog;
         });
     }
+    return processed;
 }
 void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow) {
+    // Moving-piston owners are staged before the block batch so allocation or
+    // persistence admission failure can reject the whole operation. The World
+    // gate prevents a chunk save from observing that staged side data before
+    // the matching block-state batch commits.
+    auto mutationGate = world_.lockMutationGate();
     std::uint16_t st = world_.getBlock(x,y,z);
     Comp c = classify(st);
     if (c!=Comp::Piston && c!=Comp::StickyPiston) return;
@@ -1183,25 +1573,24 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
     for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
     props.emplace_back("extended", extendNow?"true":"false");
     std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-    setBlockAndBroadcast(x,y,z, ns);
     int dx=0,dy=0,dz=0;
     if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
     int face=0;
     if(facing=="down") face=0; else if(facing=="up") face=1; else if(facing=="north") face=2; else if(facing=="south") face=3; else if(facing=="west") face=4; else if(facing=="east") face=5;
     std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
     std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
+    const auto geometry = world_.verticalGeometry();
     if (extendNow) {
+        if (!geometry.containsY(y) || !geometry.containsY(hy)) return;
         const PistonExtension extension =
             collectPistonExtension(world_, x, y, z, dx, dy, dz, false);
-        if (!extension.valid) {
-            // revert piston state and abort
-            setBlockAndBroadcast(x,y,z, st);
-            return;
-        }
+        if (!extension.valid) return;
         const auto& toPush = extension.blocks;
         PendingPistonCommit commit;
         commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
         commit.hx=hx; commit.hy=hy; commit.hz=hz;
+        commit.originalPistonState=st;
+        commit.stagedPistonState=ns;
         commit.extend=true;
         commit.face=face;
         commit.facing=facing;
@@ -1210,35 +1599,85 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
         commit.dueTick = now + 2;
         commit.entries.reserve(toPush.size());
         for (auto &p: toPush) {
+            if (!geometry.containsY(p.y) || !geometry.containsY(p.y + dy))
+                return;
             uint16_t s = world_.getBlock(p.x,p.y,p.z);
             commit.entries.push_back({p.x,p.y,p.z, s});
         }
-        if(beStore_){
-            auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
-            if(mvIt!=gen::blockNameToState().end()){
-                uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
-                for(auto &e: commit.entries){
-                    BlockEntity* be = beStore_->getAt(e.x,e.y,e.z);
-                    if(!be) be = &beStore_->create(posKey(e.x,e.y,e.z), BlockEntity::Kind::MovingPiston);
-                    else be->kind = BlockEntity::Kind::MovingPiston;
-                    be->movingPiston.state = e.state;
+        preparePendingPistonExpectations(commit);
+        const auto movingState =
+            gen::blockNameToState().find("minecraft:moving_piston");
+        const bool movingBEsEnabled =
+            beStore_ && movingState != gen::blockNameToState().end() &&
+            gen::blockByState(static_cast<std::uint16_t>(movingState->second));
+        std::vector<World::BlockUpdate> updates;
+        updates.reserve(commit.entries.size() + 1);
+        appendPistonUpdate(updates, x, y, z, ns);
+        if (movingBEsEnabled) {
+            const auto movingBlock =
+                static_cast<std::uint16_t>(movingState->second);
+            for (const auto& entry : commit.entries)
+                appendPistonUpdate(updates, entry.x, entry.y, entry.z,
+                                   movingBlock);
+        }
+        pendingPistonCommits_.reserve(pendingPistonCommits_.size() + 1);
+
+        std::vector<BlockEntityStore::Owner> movingOwners;
+        if (movingBEsEnabled && !commit.entries.empty()) {
+            std::vector<std::int64_t> keys;
+            keys.reserve(commit.entries.size());
+            for (const auto& entry : commit.entries)
+                keys.push_back(posKey(entry.x, entry.y, entry.z));
+            auto batch = beStore_->tryCreateSharedBatch(
+                keys, BlockEntity::Kind::MovingPiston);
+            if (!batch) return;
+            movingOwners = std::move(*batch);
+        }
+
+        if (movingBEsEnabled) {
+            for (std::size_t i = 0; i < commit.entries.size(); ++i) {
+                const auto& entry = commit.entries[i];
+                auto& be = movingOwners[i];
+                {
+                    std::lock_guard lock(*be->stateMtx);
+                    be->movingPiston.state = entry.state;
                     be->movingPiston.facing = face;
                     be->movingPiston.extending = true;
+                    be->movingPiston.source = false;
                     be->movingPiston.progress = 0.f;
                     be->movingPiston.finishTick = now + 2;
-                    setBlockAndBroadcast(e.x,e.y,e.z, mvSt);
                 }
             }
+        }
+
+        // Do not mutate or publish until destination bounds and the complete
+        // BE/resource batch have passed preflight.
+        std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+        if (!applyPistonUpdates(world_, updates, changedChunks)) {
+            if (beStore_) {
+                for (const auto& entry : commit.entries)
+                    beStore_->remove(posKey(entry.x, entry.y, entry.z));
+            }
+            return;
+        }
+        capturePendingPistonExpectations(commit);
+        notifyPistonChunksDirty(changedChunks);
+        if (broadcastFn_) {
+            for (const auto& update : updates)
+                broadcastFn_(update.x, update.y, update.z, update.state);
         }
         pendingPistonCommits_.push_back(std::move(commit));
     } else {
         std::uint16_t head = world_.getBlock(hx,hy,hz);
         const gen::BlockDef* hb = gen::blockByState(head);
         if (hb && hb->name=="minecraft:piston_head") {
+            if (!geometry.containsY(y) || !geometry.containsY(hy)) return;
             // Create moving_piston at head for 2-tick animation, defer removal/pull
             PendingPistonCommit commit;
             commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
             commit.hx=hx; commit.hy=hy; commit.hz=hz;
+            commit.originalPistonState=st;
+            commit.stagedPistonState=ns;
             commit.extend=false;
             commit.face=face;
             commit.facing=facing;
@@ -1246,21 +1685,6 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
             commit.isSticky = (c==Comp::StickyPiston);
             commit.dueTick = now + 2;
             commit.entries.push_back({hx,hy,hz, head});
-            if(beStore_){
-                auto mvItR = gen::blockNameToState().find("minecraft:moving_piston");
-                if(mvItR!=gen::blockNameToState().end()){
-                    uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
-                    BlockEntity* be = beStore_->getAt(hx,hy,hz);
-                    if(!be) be = &beStore_->create(posKey(hx,hy,hz), BlockEntity::Kind::MovingPiston);
-                    else be->kind = BlockEntity::Kind::MovingPiston;
-                    be->movingPiston.state = head;
-                    be->movingPiston.facing = face;
-                    be->movingPiston.extending = false;
-                    be->movingPiston.progress = 0.f;
-                    be->movingPiston.finishTick = now + 2;
-                    setBlockAndBroadcast(hx,hy,hz, mvSt);
-                }
-            }
             if (c==Comp::StickyPiston) {
                 std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
                 std::uint16_t frontSt = world_.getBlock(px,py,pz);
@@ -1324,16 +1748,73 @@ void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::
                     } else {
                         if((int)toPull.size()>12){
                             // 12 overflow -> piston fails to retract (vanilla: sticky pull >12 -> no movement)
-                            setBlockAndBroadcast(x,y,z, st);
-                            if(beStore_) beStore_->remove(posKey(hx,hy,hz));
-                            setBlockAndBroadcast(hx,hy,hz, head);
                             return;
                         }
                         commit.pullEntries.clear();
                     }
                 }
             }
+
+            for (const auto& entry : commit.pullEntries) {
+                if (!geometry.containsY(entry.y) ||
+                    !geometry.containsY(entry.y - dy))
+                    return;
+            }
+            preparePendingPistonExpectations(commit);
+
+            const auto movingState =
+                gen::blockNameToState().find("minecraft:moving_piston");
+            const bool movingHeadEnabled =
+                beStore_ && movingState != gen::blockNameToState().end() &&
+                gen::blockByState(
+                    static_cast<std::uint16_t>(movingState->second));
+            std::vector<World::BlockUpdate> updates;
+            updates.reserve(commit.pullEntries.size() * 2 + 2);
+            appendPistonUpdate(updates, x, y, z, ns);
+            if (movingHeadEnabled)
+                appendPistonUpdate(
+                    updates, hx, hy, hz,
+                    static_cast<std::uint16_t>(movingState->second));
+            pendingPistonCommits_.reserve(pendingPistonCommits_.size() + 1);
+
+            BlockEntityStore::Owner movingOwner;
+            if (movingHeadEnabled) {
+                auto batch = beStore_->tryCreateSharedBatch(
+                    {posKey(hx, hy, hz)}, BlockEntity::Kind::MovingPiston);
+                if (!batch) return;
+                movingOwner = std::move(batch->front());
+            }
+
+            if (movingOwner) {
+                std::lock_guard lock(*movingOwner->stateMtx);
+                movingOwner->movingPiston.state = head;
+                movingOwner->movingPiston.facing = face;
+                movingOwner->movingPiston.extending = false;
+                movingOwner->movingPiston.source = true;
+                movingOwner->movingPiston.progress = 0.f;
+                movingOwner->movingPiston.finishTick = now + 2;
+            }
+
+            // Retraction also waits until its moving-head BE fits before
+            // changing either piston block or publishing its delayed commit.
+            std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+            if (!applyPistonUpdates(world_, updates, changedChunks)) {
+                if (movingOwner) beStore_->remove(posKey(hx, hy, hz));
+                return;
+            }
+            capturePendingPistonExpectations(commit);
+            notifyPistonChunksDirty(changedChunks);
+            if (broadcastFn_) {
+                for (const auto& update : updates)
+                    broadcastFn_(update.x, update.y, update.z, update.state);
+            }
             pendingPistonCommits_.push_back(std::move(commit));
+        } else {
+            const std::vector<World::BlockUpdate> updates{{x, y, z, ns}};
+            std::vector<std::pair<std::int32_t, std::int32_t>> changedChunks;
+            if (!applyPistonUpdates(world_, updates, changedChunks)) return;
+            notifyPistonChunksDirty(changedChunks);
+            if (broadcastFn_) broadcastFn_(x, y, z, ns);
         }
     }
 }
@@ -1349,12 +1830,58 @@ void RedstoneEngine::processPistonQueue(std::int64_t now) {
             // don't advance: the slot at i now holds the next entry (or new end)
         } else ++i;
     }
-    processPendingPistonCommits(now);
+    processPendingPistonCommits(now, std::nullopt,
+                                std::numeric_limits<std::size_t>::max(), true);
 }
 void RedstoneEngine::flushPendingPistons(std::int32_t chunkX, std::int32_t chunkZ) {
     std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
-    processPendingPistonCommits(std::numeric_limits<std::int64_t>::max(),
-                                std::make_pair(chunkX, chunkZ));
+    // Persistence invokes this barrier before taking World::lockMutationGate.
+    // Drain queued World-hook notifications now, under the established
+    // operation -> World lock order. World callbacks only enqueue, avoiding
+    // the inverse World -> operation order that deadlocks concurrent edits.
+    drainBlockChanges();
+    const std::pair chunk{chunkX, chunkZ};
+    constexpr std::size_t kMaxPistonWorkItemsPerBarrier = 256;
+    std::size_t work = 0;
+
+    while (work < kMaxPistonWorkItemsPerBarrier) {
+        work += processPendingPistonCommits(
+            std::numeric_limits<std::int64_t>::max(), chunk,
+            kMaxPistonWorkItemsPerBarrier - work, false);
+        if (work == kMaxPistonWorkItemsPerBarrier) break;
+
+        const auto scheduled = std::find_if(
+            pistonQueue_.begin(), pistonQueue_.end(),
+            [&](const PistonEntity& action) {
+                return pistonQueueActionTouchesChunk(action, chunk);
+            });
+        if (scheduled == pistonQueue_.end()) {
+            if (hasPistonWorkForChunk(chunk))
+                throw std::runtime_error(
+                    "piston save barrier could not complete animation work "
+                    "for chunk " + std::to_string(chunkX) + "," +
+                    std::to_string(chunkZ));
+            break;
+        }
+
+        const PistonEntity action = *scheduled;
+        pistonQueue_.erase(scheduled);
+        ++work;
+        // A persistence barrier deliberately forces this already-scheduled
+        // operation through its ordinary start path, then the next iteration
+        // drains its animation commit before the snapshot may proceed.
+        handlePistonScheduled(action.x, action.y, action.z,
+                              action.extended);
+    }
+
+    processPendingPistonCommits(
+        std::numeric_limits<std::int64_t>::max(), chunk,
+        kMaxPistonWorkItemsPerBarrier - work, true);
+    if (hasPistonWorkForChunk(chunk))
+        throw std::runtime_error(
+            "piston save barrier exceeded its work-item budget for "
+            "chunk " + std::to_string(chunkX) + "," +
+            std::to_string(chunkZ));
 }
 
 void RedstoneEngine::tick(std::int64_t now) {
@@ -1368,7 +1895,8 @@ void RedstoneEngine::tick(std::int64_t now) {
     // set and are drained after the current World mutation returns.
     drainBlockChanges();
     processPistonQueue(now);
-    processPendingPistonCommits(now);
+    processPendingPistonCommits(now, std::nullopt,
+                                std::numeric_limits<std::size_t>::max(), true);
     int budget = 4096;
     while (!queue_.empty() && queue_.top().dueTick <= now && --budget > 0) {
         const RedstoneTick t = queue_.top();

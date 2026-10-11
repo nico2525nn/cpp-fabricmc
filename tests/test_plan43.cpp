@@ -18,6 +18,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <string_view>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -44,6 +45,53 @@ static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
     return false;
 }
 
+static bool nbtContainsString(const nbt::Reader::Value& value,
+                              std::string_view expected) {
+    if (value.tag == nbt::String && value.str.find(expected) != std::string::npos)
+        return true;
+    for (const auto& child : value.list)
+        if (nbtContainsString(child, expected)) return true;
+    for (const auto& [name, child] : value.comp) {
+        (void)name;
+        if (nbtContainsString(child, expected)) return true;
+    }
+    return false;
+}
+
+static bool chunkContainsSignText(const Packet& packet, int x, int y, int z,
+                                  std::string_view expected) {
+    if (packet.id != proto::pl::sc::LevelChunkWithLight) return false;
+    try {
+        ReadBuffer input(packet.body);
+        const auto chunkX = input.i32();
+        const auto chunkZ = input.i32();
+        if (chunkX != (x >> 4) || chunkZ != (z >> 4)) return false;
+
+        nbt::Reader(input).skipRoot(); // heightmaps
+        const auto sectionDataLength = input.varint();
+        if (sectionDataLength < 0) return false;
+        input.bytes(static_cast<std::size_t>(sectionDataLength));
+
+        const auto blockEntityCount = input.varint();
+        if (blockEntityCount < 0) return false;
+        const auto localX = static_cast<std::uint8_t>((x % 16 + 16) % 16);
+        const auto localZ = static_cast<std::uint8_t>((z % 16 + 16) % 16);
+        for (std::int32_t index = 0; index < blockEntityCount; ++index) {
+            const auto packedXZ = input.u8();
+            const auto entityY = input.i16();
+            const auto type = input.varint();
+            auto updateTag = nbt::Reader(input).readNamedValue();
+            if (type == 7 && (packedXZ >> 4) == localX &&
+                (packedXZ & 0x0f) == localZ && entityY == y &&
+                nbtContainsString(updateTag, expected))
+                return true;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    return false;
+}
+
 // last sc Abilities 0x3A flags byte (-1 if none yet)
 static int lastAbilitiesFlags(TestClient& c) {
     const auto recent = c.recentSnapshot();
@@ -60,6 +108,29 @@ static bool waitAbilitiesFlags(TestClient& c, int want, int ms=5000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return lastAbilitiesFlags(c) == want;
+}
+
+static int lastGameEventMode(TestClient& c) {
+    const auto recent = c.recentSnapshot();
+    for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
+        if (it->id != proto::pl::sc::GameEvent || it->body.size() < 5)
+            continue;
+        ReadBuffer body(it->body);
+        // Protocol 769 uses event reason 3 for change_game_mode; reason 4 is
+        // the distinct game-won event.
+        if (body.u8() == 3) return static_cast<int>(std::lround(body.f32()));
+    }
+    return -1;
+}
+
+static bool waitGameEventMode(TestClient& c, int want, int ms=5000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (lastGameEventMode(c) == want) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return lastGameEventMode(c) == want;
 }
 
 // --- W-03: signed command ----------------------------------------------------
@@ -307,7 +378,8 @@ static void tAbilities(ServerProc& srv) {
     SECTION("W-06 abilities 0x3A gamemode-linked + cs 0x26");
     TestClient c;
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Abil"), "W-06 join");
-    CHECK(waitAbilitiesFlags(c, 0x01 | 0x04 | 0x08, 5000), "W-06 creative join flags 0x0D");
+    CHECK(waitAbilitiesFlags(c, 0x00, 5000),
+          "W-06 vanilla-default survival join flags 0x00");
     c.sendChatCommand("gamemode survival");
     CHECK(waitAbilitiesFlags(c, 0x00, 5000), "W-06 survival flags 0x00 (no invuln/fly/creative)");
     c.sendChatCommand("gamemode creative");
@@ -318,6 +390,26 @@ static void tAbilities(ServerProc& srv) {
     c.sendAbilitiesFlags(0x02); // claim flying without permission
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
     CHECK(c.alive(), "W-06 abilities 0x26 received without kick [liveness]");
+
+    TestClient target;
+    const bool targetJoined = target.connect("127.0.0.1", srv.port) &&
+                              target.join("P43Target");
+    CHECK(targetJoined, "W-06 target client joins");
+    if (targetJoined) {
+        CHECK(waitInitialChunks(target), "W-06 target receives initial chunks");
+        c.sendChatCommand("gamemode creative P43Target");
+        CHECK(waitGameEventMode(target, 1),
+              "W-06 targeted creative sends change_game_mode event reason 3");
+        CHECK(waitAbilitiesFlags(target, 0x01 | 0x04 | 0x08),
+              "W-06 targeted creative sends matching Abilities flags");
+        c.sendChatCommand("gamemode survival P43Target");
+        CHECK(waitGameEventMode(target, 0),
+              "W-06 targeted survival sends change_game_mode event reason 3");
+        CHECK(waitAbilitiesFlags(target, 0x00),
+              "W-06 targeted survival clears creative Abilities flags");
+        CHECK(target.alive(), "W-06 target remains connected after mode changes [liveness]");
+        target.close();
+    }
     c.close();
 }
 
@@ -346,29 +438,20 @@ static void tSign(ServerProc& srv) {
         CHECK(raw.find("P43-L1") != std::string::npos, "W-07 0x07 carries line 1 text");
     } else CHECK(false, "W-07 0x07 carries line 1 text");
     c.close();
-    // relogin persistence: same offline uuid -> move to trigger chunk
-    // (re)stream (chunks only stream on movement), then the chunk-load 0x07
-    // resend must still carry the text
+    // Relogin must receive the persisted sign in the initial chunk's block-
+    // entity records. A separate BlockEntityData packet is not required when
+    // the entity is serialized directly into LevelChunkWithLight.
     TestClient d;
     CHECK(d.connect("127.0.0.1", srv.port) && d.join("P43Sign"), "W-07 relogin join");
-    for (int i = 0; i < 4; ++i) {
-        const auto relogPosition = d.positionSnapshot();
-        d.sendMovePlayerFlags(relogPosition.x, relogPosition.y, relogPosition.z, 0x01);
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    }
+    CHECK(waitInitialChunks(d), "W-07 relogin initial chunk batch complete");
     bool persist = false;
-    {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
-        while (std::chrono::steady_clock::now() < deadline && !persist) {
-            for (const auto& q : d.recentSnapshot()) {
-                if (q.id != proto::pl::sc::BlockEntityData) continue;
-                std::string raw(reinterpret_cast<const char*>(q.body.data()), q.body.size());
-                if (raw.find("P43-L1") != std::string::npos) { persist = true; break; }
-            }
-            if (!persist) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+    for (const auto& packet : d.recentSnapshot()) {
+        if (chunkContainsSignText(packet, sx, sy, sz, "P43-L1")) {
+            persist = true;
+            break;
         }
     }
-    CHECK(persist, "W-07 sign text persists across relogin (4/4 via chunk resend)");
+    CHECK(persist, "W-07 relogin chunk contains persisted sign text at its position");
     d.close();
 }
 

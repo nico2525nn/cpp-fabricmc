@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -34,6 +35,73 @@ PLAY_RESPAWN = 0x4C
 PLAY_GAME_EVENT = 0x23
 PLAY_PLAYER_POSITION = 0x42
 PLAY_REMOVE_ENTITIES = 0x47
+PLAY_LEVEL_CHUNK_WITH_LIGHT = 0x28
+PLAY_SET_CENTER_CHUNK = 0x58
+
+
+def wait_for_chunk_view(client: LiveClient, packet_start: int,
+                        expected_center: tuple[int, int],
+                        expected_chunk: tuple[int, int],
+                        minimum_chunks: int,
+                        description: str,
+                        timeout_seconds: float = 30.0,
+                        settle_seconds: float = 1.0) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    centers: set[tuple[int, int]] = set()
+    chunk_counts: Counter[tuple[int, int]] = Counter()
+    packet_cursor = packet_start
+    last_view_packet_at: float | None = None
+    view_ready = False
+    while time.monotonic() < deadline:
+        while packet_cursor < len(client.packet_payloads):
+            packet_id, payload = client.packet_payloads[packet_cursor]
+            packet_cursor += 1
+            if packet_id == PLAY_SET_CENTER_CHUNK:
+                center_x, offset = read_varint(payload, 0)
+                center_z, offset = read_varint(payload, offset)
+                if offset != len(payload):
+                    raise AssertionError("SetCenterChunk has trailing bytes")
+                centers.add((center_x, center_z))
+                last_view_packet_at = time.monotonic()
+            elif packet_id == PLAY_LEVEL_CHUNK_WITH_LIGHT:
+                if len(payload) < 8:
+                    raise AssertionError("LevelChunkWithLight is truncated")
+                chunk_counts[struct.unpack(">ii", payload[:8])] += 1
+                last_view_packet_at = time.monotonic()
+
+        duplicates = {position: count for position, count in chunk_counts.items()
+                      if count > 1}
+        if duplicates:
+            raise AssertionError(
+                f"{description} sent duplicate chunk packets: {duplicates}")
+        if client.disconnected:
+            raise AssertionError(
+                f"{description} disconnected while collecting its chunk view")
+
+        if (expected_center in centers and expected_chunk in chunk_counts and
+                len(chunk_counts) >= minimum_chunks):
+            view_ready = True
+        now = time.monotonic()
+        if (view_ready and last_view_packet_at is not None and
+                now - last_view_packet_at >= settle_seconds):
+            return {
+                "center": expected_center,
+                "destination_chunk": expected_chunk,
+                "chunks_received": sum(chunk_counts.values()),
+                "unique_chunks": len(chunk_counts),
+                "duplicate_chunk_packets": 0,
+                "settle_seconds": settle_seconds,
+            }
+        client.pump(0.25)
+
+    raise AssertionError(
+        f"{description} did not publish and settle its destination chunk view: "
+        f"expected center={expected_center}, chunk={expected_chunk}, "
+        f"minimum_chunks={minimum_chunks}, centers={sorted(centers)}, "
+        f"received_chunks={sum(chunk_counts.values())}, "
+        f"unique_chunks={len(chunk_counts)}, view_ready={view_ready}, "
+        f"disconnected={client.disconnected}"
+    )
 
 
 def skip_slot(payload: bytes, offset: int) -> int:
@@ -138,7 +206,29 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             raise AssertionError("live Login entity id was not observed")
 
         client.command("gamemode creative", "Set own game mode to creative")
+        # Drain and acknowledge the initial 7x7 view first, so a later chunk
+        # batch acknowledgement cannot mask a missing teleport-ack refresh.
+        initial_view = wait_for_chunk_view(
+            client, 0, (0, 0), (0, 0), 49,
+            "initial spawn chunk view")
+
+        teleport_start = len(client.packet_payloads)
+        client.command("tp @s 1000 -60 1000", "Teleported 1 entity")
+        far_view = wait_for_chunk_view(
+            client, teleport_start, (62, 62), (62, 62), 49,
+            "teleport-ack-only far chunk refresh")
+
+        return_start = len(client.packet_payloads)
         client.command("tp @s 40 -60 40", "Teleported 1 entity")
+        return_view = wait_for_chunk_view(
+            client, return_start, (2, 2), (2, 2), 49,
+            "teleport-ack-only return chunk refresh")
+        observations["teleport_chunk_refresh"] = {
+            "initial_view": initial_view,
+            "far_view": far_view,
+            "return_view": return_view,
+            "movement_packets_sent": 0,
+        }
 
         client.command("setblock 40 -60 42 minecraft:chest", "Changed the block")
         menu_packets = client.use_item_on(40, -60, 42, 1, 10)
@@ -250,7 +340,10 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
                 f"PlayerAction start did not emit break animation: "
                 f"{[packet_id for packet_id, _ in start_packets]}"
             )
-        time.sleep(5.0)
+        # STOP can reach the server before its next authoritative mining
+        # deadline even when the client's local progress is complete. Keep
+        # the START/STOP gap deliberately short to cover that phase skew.
+        time.sleep(0.01)
         dig_packets = client.player_action(2, 41, -59, 40, 1, 13)
         dig_packets += client.pump(3.0)
         if 13 not in ack_sequences(client.packet_payloads):
@@ -274,12 +367,32 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         }
 
         client.command("gamemode creative", "Set own game mode to creative")
+        portal_capture_start = len(client.packet_payloads)
         client.command("setblock 40 -60 40 minecraft:nether_portal", "Changed the block")
         portal_packets = client.move_player_pos_rot(40.0, -60.0, 40.0, 0.0, 0.0)
+        # A teleport response can arrive while the command helper pumps the
+        # connection. Cold destination chunk preparation may also take longer
+        # than one movement pump, so await the actual transition packet with a
+        # bounded timeout instead of inferring success from saved player data.
+        portal_deadline = time.monotonic() + 30.0
+        while (not any(packet_id == PLAY_RESPAWN
+                       for packet_id, _ in client.packet_payloads[portal_capture_start:]) and
+               time.monotonic() < portal_deadline):
+            client.pump(0.25)
+        portal_packets = client.packet_payloads[portal_capture_start:]
         if not any(packet_id == PLAY_RESPAWN for packet_id, _ in portal_packets):
-            raise AssertionError("portal movement emitted no Respawn packet")
+            raise AssertionError(
+                "portal movement emitted no Respawn packet; "
+                f"observed packet IDs={[packet_id for packet_id, _ in portal_packets]}"
+            )
         if not any(packet_id == PLAY_PLAYER_POSITION for packet_id, _ in portal_packets):
             raise AssertionError("portal movement emitted no PlayerPosition packet")
+        respawn_index = next(index for index, (packet_id, _) in enumerate(portal_packets)
+                             if packet_id == PLAY_RESPAWN)
+        position_index = next(index for index, (packet_id, _) in enumerate(portal_packets)
+                              if packet_id == PLAY_PLAYER_POSITION)
+        if respawn_index >= position_index:
+            raise AssertionError("portal Respawn must precede destination PlayerPosition")
         observations["portal"] = {
             "packet_ids": [packet_id for packet_id, _ in portal_packets],
             "respawn": sum(packet_id == PLAY_RESPAWN for packet_id, _ in portal_packets),

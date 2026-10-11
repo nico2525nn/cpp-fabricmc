@@ -7,7 +7,7 @@
 //         blockCount: i16
 //         blocks: paletted container (min indirect bits = 4)
 //         biomes: paletted container (min indirect bits = 1)
-//   blockEntityCount: varint (=0 here)
+//   blockEntityCount: varint + packed block entity positions/type/update NBT
 //   skyLightMask/blockLightMask/emptySkyLightMask/emptyBlockLightMask:
 //       varint arrayLen + i64 words (bit N = section N)
 //   skyLight / blockLight arrays: varint count of { varint len + bytes }
@@ -18,21 +18,16 @@
 //   direct        : bits(>8), longCount varint, packed global-id longs
 #pragma once
 #include "World.hpp"
+#include "Heightmaps.hpp"
+#include "BlockEntityChunkWire.hpp"
+#include "../core/BitMath.hpp"
 #include "../core/NBT.hpp"
 #include <algorithm>
 #include <atomic>
 #include <climits>
-#include <unordered_map>
-#include <unordered_set>
-#include <string_view>
+#include <vector>
 
 namespace cppfm {
-
-inline int ceilLog2(std::uint32_t v) { // smallest b with (1<<b) >= v ; v>=1
-    int b = 0;
-    while ((1u << b) < v) ++b;
-    return b;
-}
 
 // D5: live registry size for global bits (vanilla computes ceilLog2(registry size))
 // Atomic override for tests / modded servers; 0 means fallback to spec.globalMaxId+1 (27865→15)
@@ -111,106 +106,16 @@ inline void writePalettedContainer(WriteBuffer& out, Getter&& get, const Palette
     writePackedEntries(out, bits, entryCount, [&](int i) { return indexOf(get(i)); });
 }
 
-// Highest non-air y within chunk (chunk-relative 0..383); 0 if empty column.
-inline int columnSurface(const Chunk& c, int lx, int lz) {
-    for (int wy = kSectionsPerChunk * 16 - 1; wy >= 0; --wy)
-        if (c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] != 0)
-            return wy + 1;
-    return 0;
-}
-
-// D2: MOTION_BLOCKING vs WORLD_SURFACE distinction. WORLD_SURFACE = highest non-air (columnSurface) MOTION_BLOCKING = highest block that
-// blocks motion or contains fluid (vanilla Heightmap.Type)
-inline bool isMotionBlocking(std::uint32_t stateId) {
-    if (stateId == 0) return false;
-    // void/cave air (13971,13972) are air variants
-    if (stateId == 13971 || stateId == 13972) return false;
-    const auto* def = gen::blockByState(stateId);
-    if (!def) return false;
-    std::string_view name = def->name;
-    // fluids are motion blocking (water/lava/bubble_column) – any level state shares same name
-    if (name == "minecraft:water" || name == "minecraft:lava" || name == "minecraft:bubble_column")
-        return true;
-    // waterlogged blocks contain fluid
-    {
-        auto props = gen::propsOf(stateId);
-        for (auto& kv : props) if (kv.first == "waterlogged" && kv.second == "true") return true;
-    }
-    if (name == "minecraft:cobweb" || name == "minecraft:bamboo_sapling") return false;
-    // snow: layers=1 is non-solid (MOTION false), layers 2..8 is solid
-    if (name == "minecraft:snow") {
-        auto props = gen::propsOf(stateId);
-        for (auto& kv : props) if (kv.first == "layers") return kv.second != "1";
-        return false;
-    }
-    // extensive non-solid foliage / no-collision list (blocksMotion false)
-    // Leaves are intentionally NOT here – they ARE motion blocking (MOTION counts leaves)
-    static const std::unordered_set<std::string_view> kNonMotion = {
-        "minecraft:short_grass","minecraft:fern","minecraft:dead_bush","minecraft:seagrass","minecraft:tall_seagrass",
-        "minecraft:dandelion","minecraft:poppy","minecraft:blue_orchid","minecraft:allium","minecraft:azure_bluet",
-        "minecraft:red_tulip","minecraft:orange_tulip","minecraft:white_tulip","minecraft:pink_tulip","minecraft:oxeye_daisy",
-        "minecraft:cornflower","minecraft:wither_rose","minecraft:lily_of_the_valley","minecraft:brown_mushroom","minecraft:red_mushroom",
-        "minecraft:tall_grass","minecraft:large_fern","minecraft:sunflower","minecraft:lilac","minecraft:rose_bush","minecraft:peony",
-        "minecraft:vine","minecraft:glow_lichen","minecraft:resin_clump","minecraft:sugar_cane","minecraft:kelp","minecraft:kelp_plant",
-        "minecraft:bamboo","minecraft:powder_snow","minecraft:moss_carpet","minecraft:pale_moss_carpet","minecraft:open_eyeblossom","minecraft:closed_eyeblossom",
-        "minecraft:cave_vines","minecraft:cave_vines_plant","minecraft:spore_blossom","minecraft:pink_petals","minecraft:hanging_roots","minecraft:big_dripleaf","minecraft:big_dripleaf_stem","minecraft:small_dripleaf",
-        "minecraft:sweet_berry_bush","minecraft:nether_sprouts","minecraft:warped_roots","minecraft:crimson_roots","minecraft:weeping_vines","minecraft:weeping_vines_plant","minecraft:twisting_vines","minecraft:twisting_vines_plant","minecraft:crimson_fungus","minecraft:warped_fungus",
-        "minecraft:torch","minecraft:wall_torch","minecraft:soul_torch","minecraft:soul_wall_torch","minecraft:redstone_wire","minecraft:repeater","minecraft:comparator",
-        "minecraft:ladder","minecraft:rail","minecraft:powered_rail","minecraft:detector_rail","minecraft:activator_rail","minecraft:lever",
-        "minecraft:stone_button","minecraft:oak_button","minecraft:spruce_button","minecraft:birch_button","minecraft:jungle_button","minecraft:acacia_button","minecraft:cherry_button","minecraft:dark_oak_button","minecraft:pale_oak_button","minecraft:mangrove_button","minecraft:bamboo_button",
-        "minecraft:crimson_button","minecraft:warped_button","minecraft:polished_blackstone_button",
-        "minecraft:tripwire","minecraft:tripwire_hook","minecraft:chain","minecraft:pointed_dripstone","minecraft:light","minecraft:barrier","minecraft:structure_void",
-        "minecraft:oak_sapling","minecraft:spruce_sapling","minecraft:birch_sapling","minecraft:jungle_sapling","minecraft:acacia_sapling","minecraft:cherry_sapling","minecraft:dark_oak_sapling","minecraft:pale_oak_sapling","minecraft:mangrove_propagule",
-        "minecraft:wheat","minecraft:carrots","minecraft:potatoes","minecraft:beetroots","minecraft:torchflower_crop","minecraft:pitcher_crop","minecraft:nether_wart","minecraft:cocoa","minecraft:chorus_plant","minecraft:chorus_flower",
-        "minecraft:scaffolding","minecraft:azalea","minecraft:flowering_azalea",
-        "minecraft:nether_portal","minecraft:end_portal","minecraft:fire",
-        "minecraft:soul_fire"
-    };
-    if (kNonMotion.count(name)) return false;
-    // default: solid / motion blocking (includes leaves, logs, stone, glass, etc.)
-    return true;
-}
-
-inline int columnMotionBlocking(const Chunk& c, int lx, int lz) {
-    for (int wy = kSectionsPerChunk * 16 - 1; wy >= 0; --wy) {
-        const auto id = c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)];
-        if (isMotionBlocking(id)) return wy + 1;
-    }
-    return 0;
-}
-
-template <typename Fn>
-inline void packHeightmapGeneric(std::vector<std::int64_t>& out, Fn&& heightAt) {
-    // Heightmaps use Mojang's PackedIntegerArray layout: entries never
-    // straddle longs. With 9 bits per entry that is seven values per long,
-    // leaving one padding bit in every long and requiring 37 longs for 256
-    // columns. A contiguous bitstream would produce 36 longs, which the
-    // vanilla 1.21.4 client rejects before applying the heightmap.
-    constexpr int kBpe = 9;
-    constexpr int kValuesPerLong = 64 / kBpe;
-    out.assign((256 + kValuesPerLong - 1) / kValuesPerLong, 0);
-    for (int z = 0; z < 16; ++z)
-        for (int x = 0; x < 16; ++x) {
-            const int idx = z * 16 + x;
-            const int wi = idx / kValuesPerLong;
-            const int lo = (idx % kValuesPerLong) * kBpe;
-            const std::int64_t v = static_cast<std::int64_t>(heightAt(x, z) & ((1 << kBpe) - 1));
-            out[wi] |= v << lo;
-        }
-}
-
-inline void packHeightmap(std::vector<std::int64_t>& out, const Chunk& c) {
-    packHeightmapGeneric(out, [&](int x, int z){ return columnSurface(c, x, z); });
-}
-
 // Sky-light bytes for a transition section (lit at/above surface).
-inline void sectionSkyLight(std::vector<std::uint8_t>& out, const Chunk& c, int section) {
+inline void sectionSkyLight(std::vector<std::uint8_t>& out, const Chunk& c,
+                            int storageSection, DimensionGeometry geometry) {
     out.assign(2048, 0);
-    const int baseWY = section * 16;
+    const int baseWY = geometry.worldSection(storageSection) * 16;
     for (int yi = 0; yi < 16; ++yi)
         for (int z = 0; z < 16; ++z)
             for (int x = 0; x < 16; ++x) {
-                const bool lit = (baseWY + yi) >= columnSurface(c, x, z);
+                const bool lit = (baseWY + yi - geometry.minY) >=
+                                 columnSurface(c, x, z, geometry);
                 if (!lit) continue;
                 const int linear = yi * 256 + z * 16 + x;
                 if (linear & 1) out[linear >> 1] |= 0xF0;
@@ -219,8 +124,12 @@ inline void sectionSkyLight(std::vector<std::uint8_t>& out, const Chunk& c, int 
 }
 
 inline void writeMaskArray(WriteBuffer& out, const std::vector<std::int64_t>& mask) {
-    out.varint(static_cast<std::int32_t>(mask.size()));
-    for (auto w : mask) out.i64(w);
+    // Vanilla serializes BitSet::toLongArray(), which omits trailing zero
+    // words. In particular, an all-zero mask is a zero-length long array.
+    std::size_t wordCount = mask.size();
+    while (wordCount > 0 && mask[wordCount - 1] == 0) --wordCount;
+    out.varint(static_cast<std::int32_t>(wordCount));
+    for (std::size_t i = 0; i < wordCount; ++i) out.i64(mask[i]);
 }
 inline void writeLightArrays(WriteBuffer& out, const std::vector<std::vector<std::uint8_t>>& arrays) {
     out.varint(static_cast<std::int32_t>(arrays.size()));
@@ -232,19 +141,24 @@ inline void writeLightArrays(WriteBuffer& out, const std::vector<std::vector<std
 
 // Section-data blob (24 sections), shared by chunk packets & golden tests.
 inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
-                                 std::uint32_t biomeRegistryIndex) {
-    for (int s = 0; s < kSectionsPerChunk; ++s) {
-        std::size_t base = static_cast<std::size_t>(s) * 4096;
+                                 std::uint32_t biomeRegistryIndex,
+                                 DimensionGeometry geometry = kOverworldGeometry) {
+    for (int slice = 0; slice < geometry.sectionCount(); ++slice) {
+        const int storageSection = geometry.storageSection(
+            geometry.minSection() + slice);
+        std::size_t base = static_cast<std::size_t>(storageSection) * 4096;
         std::uint16_t nonAir = 0;
         for (int i = 0; i < 4096; ++i)
-            if (chunk->blocks[base + i]) ++nonAir;
+            if (chunk->blockAt(base + i)) ++nonAir;
         blob.i16(static_cast<std::int16_t>(nonAir));
 
         writePalettedContainer(blob,
-            [&](int i) -> std::uint32_t { return chunk->blocks[base + static_cast<std::size_t>(i)]; },
+            [&](int i) -> std::uint32_t {
+                return chunk->blockAt(base + static_cast<std::size_t>(i));
+            },
             PaletteSpec{4, true, gen::kMaxBlockStateId}, 4096);
 
-        const std::size_t bBase = static_cast<std::size_t>(s) * 64;
+        const std::size_t bBase = static_cast<std::size_t>(storageSection) * 64;
         bool uniform = true;
         const std::uint16_t first = chunk->biomes[bBase];
         for (std::size_t i = 1; i < 64; ++i)
@@ -263,10 +177,10 @@ inline void serializeSectionData(WriteBuffer& blob, const Chunk* chunk,
     }
 }
 
-inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
+inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk,
+                              DimensionGeometry geometry = kOverworldGeometry) {
     std::vector<std::int64_t> ws, mo;
-    packHeightmapGeneric(ws, [&](int x,int z){ return columnSurface(*chunk, x, z); });
-    packHeightmapGeneric(mo, [&](int x,int z){ return columnMotionBlocking(*chunk, x, z); });
+    packHeightmaps(ws, mo, *chunk, geometry);
     nbt::Writer w(out);
     w.rootCompound();
     w.namedLongArray("MOTION_BLOCKING", mo);
@@ -276,71 +190,115 @@ inline void packHeightmapsNbt(WriteBuffer& out, const Chunk* chunk) {
 
 // Light payload shared by LevelChunkWithLight and UpdateLight packets. Uses engine-maintained arrays when available; falls back to the
 // column heuristic for sky light and zeros for block light.
-inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
-    std::vector<std::int64_t> skyMask((kSectionsPerChunk + 63) / 64, 0);
-    std::vector<std::int64_t> blockMask((kSectionsPerChunk + 63) / 64, 0);
-    std::vector<std::int64_t> emptySkyMask((kSectionsPerChunk + 63) / 64, 0);
-    std::vector<std::int64_t> emptyBlockMask((kSectionsPerChunk + 63) / 64, 0);
+inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk,
+                                  DimensionGeometry geometry = kOverworldGeometry) {
+    const int sectionCount = geometry.sectionCount();
+    // LightData addresses the section below minY at bit 0, physical sections
+    // at bits 1..sectionCount, and the section above maxY at bit sectionCount+1.
+    const int lightSectionCount = sectionCount + 2;
+    const auto maskWords =
+        static_cast<std::size_t>((lightSectionCount + 63) / 64);
+    std::vector<std::int64_t> skyMask(maskWords, 0);
+    std::vector<std::int64_t> blockMask(maskWords, 0);
+    std::vector<std::int64_t> emptySkyMask(maskWords, 0);
+    std::vector<std::int64_t> emptyBlockMask(maskWords, 0);
     std::vector<std::vector<std::uint8_t>> skyArrays;
     std::vector<std::vector<std::uint8_t>> blockArrays;
-    const bool haveSky = chunk.skyLightReady && static_cast<bool>(chunk.skyLight);
+    const bool haveSky = geometry.hasSkylight && chunk.skyLightReady() &&
+                         chunk.hasSkyLightStorage();
+    const auto markBit = [](std::vector<std::int64_t>& mask, int bit) {
+        const auto word = static_cast<std::size_t>(bit / 64);
+        const auto offset = static_cast<unsigned>(bit % 64);
+        mask[word] |= static_cast<std::int64_t>(std::uint64_t{1} << offset);
+    };
+    const auto appendFullSkySection = [&](int bit) {
+        markBit(skyMask, bit);
+        skyArrays.emplace_back(2048, 0xFF);
+    };
 
-    for (int s = 0; s < kSectionsPerChunk; ++s) {
-        const std::size_t base = static_cast<std::size_t>(s) * 4096;
-        // scan arrays (or heuristic) per section
-        int minH = INT_MAX, maxH = INT_MIN;
-        for (int z = 0; z < 16; ++z)
-            for (int x = 0; x < 16; ++x) {
-                int h = columnSurface(chunk, x, z);
-                minH = std::min(minH, h); maxH = std::max(maxH, h);
-            }
-        const int secBot = s * 16, secTop = s * 16 + 16;
+    for (int bit = 0; bit < lightSectionCount; ++bit) {
+        const int worldSection = geometry.minSection() + bit - 1;
+        const int storageSection = geometry.storageSection(worldSection);
+        const bool hasBackingSection =
+            storageSection >= 0 && storageSection < kSectionsPerChunk;
+        const bool belowWorld = bit == 0;
+        const bool aboveWorld = bit == lightSectionCount - 1;
 
-        // ---- sky section classification
-        if (!haveSky) {
-            if (maxH <= secBot) emptySkyMask[s / 64] |= 1LL << (s % 64);
-            else if (minH < secTop) {
-                skyMask[s / 64] |= 1LL << (s % 64);
-                std::vector<std::uint8_t> arr;
-                sectionSkyLight(arr, chunk, s);
-                skyArrays.push_back(std::move(arr));
-            }
-        } else {
-            bool anyLit = false, allZero = true;
-            std::vector<std::uint8_t> arr(2048, 0);
-            for (int i = 0; i < 4096; i += 2) {
-                const std::uint8_t lo = Chunk::getNibble(*chunk.skyLight, base + i);
-                const std::uint8_t hi = Chunk::getNibble(*chunk.skyLight, base + i + 1);
-                const std::uint8_t byte = static_cast<std::uint8_t>(lo | (hi << 4));
-                arr[i >> 1] = byte;
-                if (lo || hi) { anyLit = true; allZero = false; }
-            }
-            if (!anyLit || allZero) {
-                emptySkyMask[s / 64] |= 1LL << (s % 64);
+        // The no-skylight LightEngine is a dummy listener in vanilla and
+        // returns no section data; its two sky masks therefore remain unset.
+        if (geometry.hasSkylight) {
+            if (belowWorld) {
+                // The section below the build range has no sky contribution.
+                markBit(emptySkyMask, bit);
+            } else if (aboveWorld) {
+                // Sky beyond the build ceiling is fully exposed.
+                appendFullSkySection(bit);
+            } else if (!haveSky) {
+                const int slice = bit - 1;
+                int minH = INT_MAX, maxH = INT_MIN;
+                for (int z = 0; z < 16; ++z)
+                    for (int x = 0; x < 16; ++x) {
+                        const int h = columnSurface(chunk, x, z, geometry);
+                        minH = std::min(minH, h);
+                        maxH = std::max(maxH, h);
+                    }
+                const int secBot = slice * 16;
+                const int secTop = secBot + 16;
+                if (minH >= secTop) {
+                    // The whole section is beneath every column surface.
+                    markBit(emptySkyMask, bit);
+                } else if (maxH <= secBot) {
+                    // The whole section is above every column surface.
+                    appendFullSkySection(bit);
+                } else {
+                    markBit(skyMask, bit);
+                    std::vector<std::uint8_t> arr;
+                    sectionSkyLight(arr, chunk, storageSection, geometry);
+                    skyArrays.push_back(std::move(arr));
+                }
             } else {
-                skyMask[s / 64] |= 1LL << (s % 64);
-                skyArrays.push_back(std::move(arr));
+                const std::size_t base =
+                    static_cast<std::size_t>(storageSection) * 4096;
+                bool anyLit = false;
+                std::vector<std::uint8_t> arr(2048, 0);
+                for (int i = 0; i < 4096; i += 2) {
+                    const std::uint8_t lo = chunk.skyLightAt(base + i);
+                    const std::uint8_t hi = chunk.skyLightAt(base + i + 1);
+                    arr[i >> 1] = static_cast<std::uint8_t>(lo | (hi << 4));
+                    anyLit = anyLit || lo != 0 || hi != 0;
+                }
+                if (!anyLit) {
+                    markBit(emptySkyMask, bit);
+                } else {
+                    markBit(skyMask, bit);
+                    skyArrays.push_back(std::move(arr));
+                }
             }
         }
 
-        // ---- block light section
-        {
-            bool any = false;
-            std::vector<std::uint8_t> arr(2048, 0);
-            for (int i = 0; i < 4096; i += 2) {
-                const std::uint8_t lo =
-                    Chunk::getNibble(chunk.blockLightNib, base + i);
-                const std::uint8_t hi =
-                    Chunk::getNibble(chunk.blockLightNib, base + i + 1);
-                arr[i >> 1] = static_cast<std::uint8_t>(lo | (hi << 4));
-                if (lo || hi) any = true;
-            }
-            if (any) {
-                blockMask[s / 64] |= 1LL << (s % 64);
-                blockArrays.push_back(std::move(arr));
-            } else {
-                emptyBlockMask[s / 64] |= 1LL << (s % 64);
-            }
+        // Blocks only inhabit the physical world range. The one-section light
+        // padding can overlap the fixed backing allocation in Nether/End.
+        if (!hasBackingSection) {
+            markBit(emptyBlockMask, bit);
+            continue;
+        }
+        const std::size_t base =
+            static_cast<std::size_t>(storageSection) * 4096;
+        bool any = false;
+        std::vector<std::uint8_t> arr(2048, 0);
+        for (int i = 0; i < 4096; i += 2) {
+            const std::uint8_t lo =
+                Chunk::getNibble(chunk.blockLightNib, base + i);
+            const std::uint8_t hi =
+                Chunk::getNibble(chunk.blockLightNib, base + i + 1);
+            arr[i >> 1] = static_cast<std::uint8_t>(lo | (hi << 4));
+            any = any || lo != 0 || hi != 0;
+        }
+        if (any) {
+            markBit(blockMask, bit);
+            blockArrays.push_back(std::move(arr));
+        } else {
+            markBit(emptyBlockMask, bit);
         }
     }
     writeMaskArray(out, skyMask);
@@ -352,30 +310,33 @@ inline void serializeLightPayload(WriteBuffer& out, const Chunk& chunk) {
 }
 
 inline void serializeUpdateLightBody(WriteBuffer& out, std::int32_t cx,
-                                     std::int32_t cz, const Chunk& chunk) {
+                                     std::int32_t cz, const Chunk& chunk,
+                                     DimensionGeometry geometry = kOverworldGeometry) {
     // L1: UpdateLight 0x2B chunkX/Z are varint (not i32) per Prismarine packet_update_light — lock verified.
     out.varint(cx);
     out.varint(cz);
-    serializeLightPayload(out, chunk);
+    serializeLightPayload(out, chunk, geometry);
 }
 
 // Serializes LevelChunkWithLight body (packet id excluded). biomeRegistryIndex: this world's biome id inside the synced registry order.
 // Full LevelChunkWithLight body given an already-locked chunk reference.
 inline void serializeLevelChunkBody(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
-                                    const Chunk& chunk, std::uint32_t biomeRegistryIndex) {
+                                    const Chunk& chunk, std::uint32_t biomeRegistryIndex,
+                                    DimensionGeometry geometry = kOverworldGeometry,
+                                    const nbt::Value* blockEntities = nullptr) {
     out.i32(cx);
     out.i32(cz);
 
-    packHeightmapsNbt(out, &chunk);
+    packHeightmapsNbt(out, &chunk, geometry);
 
     WriteBuffer blob;
-    serializeSectionData(blob, &chunk, biomeRegistryIndex);
+    serializeSectionData(blob, &chunk, biomeRegistryIndex, geometry);
     out.varint(static_cast<std::int32_t>(blob.data.size()));
     out.raw(blob.data.data(), blob.data.size());
 
-    out.varint(0);   // block entities
+    writeChunkBlockEntities(out, cx, cz, blockEntities);
 
-    serializeLightPayload(out, chunk);
+    serializeLightPayload(out, chunk, geometry);
 }
 
 inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t cz,
@@ -383,7 +344,8 @@ inline void serializeLevelChunk(WriteBuffer& out, std::int32_t cx, std::int32_t 
                                 const std::string& biomeKeyForDebug = {}) {
     world.generateChunkIfMissing(cx, cz);
     world.withChunk(cx, cz, [&](const Chunk& chunk) {
-        serializeLevelChunkBody(out, cx, cz, chunk, biomeRegistryIndex);
+        serializeLevelChunkBody(out, cx, cz, chunk, biomeRegistryIndex,
+                                world.verticalGeometry());
     });
 }
 

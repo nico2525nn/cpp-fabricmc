@@ -6,6 +6,7 @@ import argparse
 from collections import Counter
 from dataclasses import dataclass
 import io
+import math
 import os
 import select
 import signal
@@ -27,6 +28,10 @@ PLAY_KEEP_ALIVE_RESPONSE = mcproto.PLAY_SERVERBOUND_KEEP_ALIVE
 PLAY_DISCONNECT = mcproto.PLAY_CLIENTBOUND_DISCONNECT
 PLAY_LEVEL_CHUNK_WITH_LIGHT = mcproto.PLAY_CLIENTBOUND_LEVEL_CHUNK_WITH_LIGHT
 PLAY_UPDATE_TIME = mcproto.PLAY_CLIENTBOUND_UPDATE_TIME
+PLAY_CLIENTBOUND_PLAYER_POSITION = 0x42
+PLAY_SERVERBOUND_ACCEPT_TELEPORTATION = 0x00
+PLAY_CLIENTBOUND_CHUNK_BATCH_FINISHED = 0x0C
+PLAY_SERVERBOUND_CHUNK_BATCH_RECEIVED = 0x09
 
 
 @dataclass(frozen=True)
@@ -157,6 +162,18 @@ class PlayPacketPump:
                     self.send_errors += 1
                     return self._transport_result("send_error", drained, error)
                 self.keepalive_echoes += 1
+            elif pid == PLAY_CLIENTBOUND_CHUNK_BATCH_FINISHED:
+                try:
+                    # 1.21.4 clientbound ChunkBatchFinished carries the
+                    # number of chunks in the just-completed batch. The
+                    # client answers with its preferred next batch size.
+                    self.conn.send_packet_raw(
+                        PLAY_SERVERBOUND_CHUNK_BATCH_RECEIVED,
+                        struct.pack(">f", 8.0),
+                    )
+                except (EOFError, OSError) as error:
+                    self.send_errors += 1
+                    return self._transport_result("send_error", drained, error)
             elif pid == PLAY_DISCONNECT:
                 self.disconnects += 1
                 self.disconnect_reason = decode_disconnect_reason(data)
@@ -238,19 +255,46 @@ def _signal_owned_process_group(
     return True
 
 
-def _wait_for_process_exit(proc: subprocess.Popen, deadline: float) -> bool:
-    """Wait until the owned leader is reaped, using one monotonic deadline."""
-    while proc.poll() is None:
+def _owned_process_group_exists(proc: subprocess.Popen) -> bool:
+    """Check whether the dedicated group created for ``proc`` still exists."""
+    if os.name != "posix":
+        # The Windows fallback can observe/reap the owned leader, but the
+        # stdlib does not expose a portable query for the whole process tree.
+        return proc.poll() is None
+    try:
+        os.killpg(proc.pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _wait_for_process_group_exit(proc: subprocess.Popen, deadline: float) -> bool:
+    """Wait for both the Popen leader and its dedicated POSIX group to exit."""
+    while True:
+        try:
+            leader_exited = proc.poll() is not None
+            group_exists = _owned_process_group_exists(proc)
+        except Exception:
+            return False
+        if leader_exited and not group_exists:
+            return True
+
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
+        if leader_exited:
+            time.sleep(min(0.05, remaining))
+            continue
         try:
-            proc.wait(timeout=remaining)
+            proc.wait(timeout=min(0.05, remaining))
         except subprocess.TimeoutExpired:
+            pass
+        except Exception:
             return False
-        except OSError:
-            return proc.poll() is not None
-    return True
 
 
 def stop_process(
@@ -262,20 +306,48 @@ def stop_process(
     try:
         timeout = max(0.0, float(timeout))
         kill_timeout = max(0.0, float(kill_timeout))
-    except (TypeError, ValueError):
+    except (OverflowError, TypeError, ValueError):
+        return False
+    if not math.isfinite(timeout) or not math.isfinite(kill_timeout):
         return False
 
-    # Signal even when the leader already exited: a forked child can keep the
-    # session alive after its parent has been reaped.
-    term_ok = _signal_owned_process_group(proc, signal.SIGTERM)
-    _wait_for_process_exit(proc, time.monotonic() + timeout)
+    # The process may already have exited while descendants remain in its
+    # dedicated session. Signal the group only while it still exists; this
+    # also makes repeated cleanup safe after the whole group has disappeared.
+    try:
+        group_exists = _owned_process_group_exists(proc)
+        term_ok = (
+            _signal_owned_process_group(proc, signal.SIGTERM)
+            if group_exists
+            else True
+        )
+    except Exception:
+        term_ok = False
 
-    # Always issue the hard escalation after the grace period (including
-    # after an early leader exit) so descendants cannot survive cleanup.
-    kill_ok = _signal_owned_process_group(
-        proc, getattr(signal, "SIGKILL", signal.SIGTERM), hard=True
-    )
-    killed_exit = _wait_for_process_exit(proc, time.monotonic() + kill_timeout)
+    graceful_deadline = time.monotonic() + timeout
+    try:
+        if _wait_for_process_group_exit(proc, graceful_deadline):
+            return term_ok
+    except Exception:
+        pass
+
+    try:
+        group_exists = _owned_process_group_exists(proc)
+        kill_ok = (
+            _signal_owned_process_group(
+                proc, getattr(signal, "SIGKILL", signal.SIGTERM), hard=True
+            )
+            if group_exists
+            else True
+        )
+    except Exception:
+        kill_ok = False
+
+    kill_deadline = time.monotonic() + kill_timeout
+    try:
+        killed_exit = _wait_for_process_group_exit(proc, kill_deadline)
+    except Exception:
+        killed_exit = False
     return term_ok and kill_ok and killed_exit
 
 
@@ -309,6 +381,27 @@ def send_action(pump: PlayPacketPump, pid: int, payload: bytes) -> bool:
         return False
 
 
+def acknowledge_server_position(pump: PlayPacketPump, payload: bytes) -> int:
+    """Acknowledge the teleport ID prefix of a Play PlayerPosition packet."""
+    teleport_id, _ = mcproto.read_varint(io.BytesIO(payload))
+    if not send_action(
+        pump,
+        PLAY_SERVERBOUND_ACCEPT_TELEPORTATION,
+        mcproto.write_varint(teleport_id),
+    ):
+        raise OSError("failed to acknowledge server PlayerPosition")
+    return teleport_id
+
+
+def handle_position_packet(
+    pump: PlayPacketPump, packet_id: int, payload: bytes
+) -> int | None:
+    """Route the initial server position packet to its mandatory client ACK."""
+    if packet_id != PLAY_CLIENTBOUND_PLAYER_POSITION:
+        return None
+    return acknowledge_server_position(pump, payload)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="C-12 soak_bot 1h 20 TPS")
     ap.add_argument("--host", default=os.environ.get("CPPFM_HOST", "127.0.0.1"))
@@ -335,29 +428,32 @@ def main() -> int:
         print(f"[soak_bot] binary {binary} not found", file=sys.stderr)
         return 1
 
-    owned_proc = [None]
-    spawn_in_progress = False
+    launch_in_progress = False
     termination_requested = False
     termination_signum = signal.SIGTERM
-    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    termination_signals = (signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {
+        signum: signal.getsignal(signum) for signum in termination_signals
+    }
 
     def handle_termination(signum, _frame):
         nonlocal termination_requested, termination_signum
-        if spawn_in_progress:
-            # Popen has not returned a PID yet.  Let the spawn finish so the
-            # child can be registered and cleaned up instead of orphaned.
-            termination_requested = True
-            termination_signum = signum
+        if launch_in_progress:
+            # Finish world/log setup and Popen registration before acting on
+            # the signal, so cleanup never races an untracked owned resource.
+            if not termination_requested:
+                termination_requested = True
+                termination_signum = signum
             return
-        child = owned_proc[0]
+        for handled_signum in termination_signals:
+            signal.signal(handled_signum, signal.SIG_IGN)
+        child = proc
         if child is not None:
             # The outer timeout uses a five-second kill-after window.  Finish
             # the owned group cleanup inside that window while retaining the
             # normal TERM -> grace -> KILL -> wait order.
             stop_process(child, timeout=1.0, kill_timeout=1.0)
         raise SystemExit(128 + signum)
-
-    signal.signal(signal.SIGTERM, handle_termination)
 
     def check(cond: bool, msg: str) -> None:
         nonlocal fails
@@ -367,6 +463,7 @@ def main() -> int:
 
     chunks = 0
     times = 0
+    teleport_confirms = 0
     moves_seen = 0
     deaths = 0
     updates = 0
@@ -374,11 +471,13 @@ def main() -> int:
     elapsed = 0.0
 
     def observe_packet(pid: int, data: bytes) -> None:
-        nonlocal chunks, times, moves_seen, deaths, updates
+        nonlocal chunks, times, teleport_confirms, moves_seen, deaths, updates
         if pid == PLAY_LEVEL_CHUNK_WITH_LIGHT:
             chunks += 1
         elif pid == PLAY_UPDATE_TIME:
             times += 1
+        elif handle_position_packet(pump, pid, data) is not None:
+            teleport_confirms += 1
         elif pid in (0x2F, 0x30, 0x32, 0x77, 0x4D):
             moves_seen += 1
         elif pid == 0x09:
@@ -387,19 +486,23 @@ def main() -> int:
             deaths += 1
 
     try:
+        for signum in termination_signals:
+            signal.signal(signum, handle_termination)
         if binary:
             port = free_port()
             host = "127.0.0.1"
-            world_dir = tempfile.mkdtemp(prefix=f"soak_bot_{os.getpid()}_")
-            print(
-                f"[soak_bot] spawning {binary} --port {port} --view-distance "
-                f"{args.view_distance} --world-dir {world_dir} for {duration}s"
-            )
-            cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
-            environment = os.environ.copy()
-            environment["CPPFM_SERVER_DIR"] = world_dir
-            spawn_in_progress = True
+            launch_in_progress = True
             try:
+                world_dir = tempfile.mkdtemp(prefix=f"soak_bot_{os.getpid()}_")
+                print(
+                    f"[soak_bot] spawning {binary} --port {port} --view-distance "
+                    f"{args.view_distance} --world-dir {world_dir} for {duration}s"
+                )
+                cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+                environment = os.environ.copy()
+                environment["CPPFM_SERVER_DIR"] = world_dir
+                if termination_requested:
+                    raise SystemExit(128 + termination_signum)
                 proc = subprocess.Popen(
                     [
                         binary,
@@ -418,9 +521,8 @@ def main() -> int:
                     start_new_session=True,
                     **_owned_process_group_kwargs(),
                 )
-                owned_proc[0] = proc
             finally:
-                spawn_in_progress = False
+                launch_in_progress = False
             if termination_requested:
                 stop_process(proc, timeout=1.0, kill_timeout=1.0)
                 raise SystemExit(128 + termination_signum)
@@ -482,29 +584,39 @@ def main() -> int:
         if proc is not None and proc.poll() is not None and pump.server_exit_count == 0:
             pump.mark_server_exited(proc.returncode)
     except Exception as error:
+        if termination_requested:
+            raise SystemExit(128 + termination_signum)
         fatal_error = f"{type(error).__name__}: {error}"
     finally:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        for signum in termination_signals:
+            signal.signal(signum, signal.SIG_IGN)
         try:
-            if conn is not None:
-                conn.close()
-        except Exception as error:
-            fatal_error = fatal_error or f"{type(error).__name__}: {error}"
-        finally:
             try:
-                process_cleanup_ok = stop_process(proc)
+                if conn is not None:
+                    conn.close()
             except Exception as error:
-                process_cleanup_ok = False
                 fatal_error = fatal_error or f"{type(error).__name__}: {error}"
-            if process_cleanup_ok:
-                world_cleanup_ok = remove_world_dir(world_dir)
-            else:
-                world_cleanup_ok = False
-                print(
-                    "[soak_bot] refusing to remove world-dir while owned process cleanup is incomplete",
-                    file=sys.stderr,
-                )
-        signal.signal(signal.SIGTERM, previous_sigterm)
+            finally:
+                try:
+                    process_cleanup_ok = stop_process(proc)
+                except Exception as error:
+                    process_cleanup_ok = False
+                    fatal_error = fatal_error or f"{type(error).__name__}: {error}"
+                if process_cleanup_ok:
+                    try:
+                        world_cleanup_ok = remove_world_dir(world_dir)
+                    except Exception as error:
+                        world_cleanup_ok = False
+                        fatal_error = fatal_error or f"{type(error).__name__}: {error}"
+                else:
+                    world_cleanup_ok = False
+                    print(
+                        "[soak_bot] refusing to remove world-dir while owned process cleanup is incomplete",
+                        file=sys.stderr,
+                    )
+        finally:
+            for signum, previous_handler in previous_handlers.items():
+                signal.signal(signum, previous_handler)
 
     if fatal_error:
         check(False, f"runner completed without fatal error ({fatal_error})")
@@ -520,7 +632,8 @@ def main() -> int:
         ) or "none"
         print(
             f"[soak_bot] elapsed {elapsed:.1f}s ticks {ticks} keepAlives {keepalives} "
-            f"chunks {chunks} times {times} updates {updates} deaths {deaths} kicks {kicks}"
+            f"chunks {chunks} times {times} teleportConfirms {teleport_confirms} "
+            f"updates {updates} deaths {deaths} kicks {kicks}"
         )
         print(
             f"[soak_bot] pump state={pump.state} packets={packet_counts} "
@@ -550,6 +663,10 @@ def main() -> int:
         check(
             pump.keepalive_echoes == keepalives,
             f"KeepAlive echoes {pump.keepalive_echoes} == received {keepalives} (0x27 -> 0x1a)",
+        )
+        check(
+            teleport_confirms >= 1,
+            f"teleport confirms {teleport_confirms} >= 1 (PlayerPosition 0x42 -> AcceptTeleportation 0x00)",
         )
         check(chunks >= 10, f"chunks {chunks} >=10 (LevelChunkWithLight 0x28)")
         check(times >= 1 or ticks > 100, f"time updates {times} or ticks {ticks} (UpdateTime 0x6b)")

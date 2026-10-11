@@ -9,6 +9,7 @@
 //   broadcast UpdateLight packets exactly where light changed.
 #pragma once
 #include <cstdint>
+#include <mutex>
 #include <queue>
 #include <unordered_set>
 #include <vector>
@@ -42,13 +43,16 @@ public:
     void onBlockChanged(std::int32_t x, std::int32_t y, std::int32_t z,
                         std::uint16_t oldState, std::uint16_t newState);
 
-    // Drains queued work; returns chunks whose light arrays changed.
+    // Drains queued work; returns chunks whose light arrays changed. A single
+    // tick thread owns drain(); block-change producers may enqueue concurrently.
     LightUpdateBatch drain();
 
     std::uint8_t blockLightAt(std::int32_t x, std::int32_t y,
                               std::int32_t z) const;
-    std::size_t pendingNodeCount() const { return addQueue_.size() + removeQueue_.size(); }
-    std::size_t pendingSkyCount() const { return pendingSkyRebuild_.size() + skyDirtyExtra_.size(); }
+    // Counts currently queued work; a batch already swapped into drain() is
+    // intentionally not included.
+    std::size_t pendingNodeCount() const;
+    std::size_t pendingSkyCount() const;
     // Recompute sky-light BFS cache for a whole chunk (used by serializers).
     void ensureSkyLight(std::int32_t cx, std::int32_t cz);
 
@@ -65,6 +69,10 @@ private:
                        std::uint8_t v);
 
     World& world_;
+    // Block edits may enqueue work from session/command threads while the
+    // tick thread drains it. Keep this lock limited to queue transfer; light
+    // propagation calls back into World and must never run under this mutex.
+    mutable std::mutex queueMutex_;
     std::queue<Node> addQueue_;
     std::queue<Node> removeQueue_;
     // pending sky-light rebuilds (opacity changes, diagonal neighbors)

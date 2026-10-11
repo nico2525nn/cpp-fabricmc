@@ -31,6 +31,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Node.js for Mineflayer integration
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: tests/mineflayer/package-lock.json
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -47,6 +54,12 @@ jobs:
         run: |
           timeout --foreground --kill-after=10 1800 \
             cmake --build build -j2
+
+      - name: Install Mineflayer test dependencies
+        run: npm ci --prefix tests/mineflayer
+
+      - name: Verify generated block registry
+        run: python3 tools/gen_block_registry_ids.py --check
 
       - name: Static diff check
         env:
@@ -72,6 +85,15 @@ jobs:
           timeout --foreground --kill-after=10 180 ./build/test_recovery
           timeout --foreground --kill-after=10 120 ./build/test_core_safety
 
+      - name: Mineflayer live-client regression
+        env:
+          TMPDIR: /dev/shm
+        run: |
+          timeout --foreground --kill-after=10 120 \
+            npm --prefix tests/mineflayer test
+          timeout --kill-after=30 600 \
+            npm --prefix tests/mineflayer run live-smoke
+
       - name: Full non-nightly CTest regression
         env:
           TMPDIR: /dev/shm
@@ -79,4 +101,4 @@ jobs:
         run: |
           timeout --foreground --kill-after=10 1800 \
             ctest --test-dir build \
-              -LE 'nightly|package' --output-on-failure --timeout 600
+              -LE nightly --output-on-failure --timeout 600

@@ -415,6 +415,16 @@ struct MobEntity {
     float yaw=0, pitch=0;
     double health = 10;
     bool dead = false;
+    // Set under stateMtx when a subsystem takes ownership of kill side effects.
+    // Prevents concurrent tick/session/projectile/explosion paths from
+    // duplicating drops, XP, and removal packets for the same entity.
+    bool deathHandlingClaimed = false;
+    bool tryClaimDeathHandling() {
+        std::lock_guard entityLock(*stateMtx);
+        if (!dead || deathHandlingClaimed) return false;
+        deathHandlingClaimed = true;
+        return true;
+    }
     double tx=0, tz=0; bool hasTarget=false;
     std::int64_t nextWanderAt = 0;
     std::int32_t age = 0;

@@ -197,7 +197,10 @@ void GameServer::killPlayer(Player& p, const char* cause) {
                 }
             }
         }
-        if (hardcore) p.gamemode = 3; // spectator; publish under the same lock
+        if (hardcore) {
+            p.previousGamemode = p.gamemode;
+            p.gamemode = 3; // spectator; publish under the same lock
+        }
     }
 
     // Everything below can re-enter the server or block on transport/storage,
@@ -341,8 +344,10 @@ void GameServer::weatherTick() {
             int ly = static_cast<int>(target.y);
             // find ground just above top non-air (scan down from MaxY)
             bool found = false;
-            for (int scanY = kMaxY - 1; scanY >= kMinY; --scanY) {
-                std::uint16_t st = worldFor(target.dimension).getBlock(lx, scanY, lz);
+            World& targetWorld = worldFor(target.dimension);
+            for (int scanY = targetWorld.maxY() - 1;
+                 scanY >= targetWorld.minY(); --scanY) {
+                std::uint16_t st = targetWorld.getBlock(lx, scanY, lz);
                 if (st != 0) { ly = scanY + 1; found = true; break; }
             }
             if (!found) ly = static_cast<int>(target.y);
@@ -532,12 +537,6 @@ void GameServer::explodeAtFor(std::int8_t dimension, double x, double y,
         de.boolean(false);
         state.connection->trySendPacket(pl::sc::DamageEvent, de);
     }
-    struct DeferredDrop {
-        double x = 0, y = 0, z = 0;
-        std::uint32_t itemId = 0;
-        std::uint8_t count = 0;
-    };
-    std::vector<DeferredDrop> drops;
     std::vector<std::shared_ptr<MobEntity>> removed;
     // Damage callbacks can re-enter the server (including Java callbacks),
     // so never hold entsMtx_ while applying damage.  The shared_ptr snapshot
@@ -559,7 +558,7 @@ void GameServer::explodeAtFor(std::int8_t dimension, double x, double y,
             std::lock_guard mobLock(*m->stateMtx);
             deadNow = m->dead;
         }
-        if (deadNow) dead.push_back(m);
+        if (deadNow && m->tryClaimDeathHandling()) dead.push_back(m);
     }
     {
         std::lock_guard lk(entsMtx_);
@@ -572,18 +571,22 @@ void GameServer::explodeAtFor(std::int8_t dimension, double x, double y,
     }
     for (const auto& m : removed) {
         const auto state = snapshotMobCombat(*m);
+        bool entityOnFire = false;
+        {
+            std::lock_guard mobLock(*m->stateMtx);
+            entityOnFire = m->onFireTicks > 0;
+        }
+        const auto lootContext = mobLootContextForDeath(
+            state.entityId, entityOnFire, power);
+        spawnMobLootFor(state.kind, state.dimension, state.x,
+                        state.y + .4, state.z, lootContext);
+        spawnXpOrbsFor(state.dimension, state.x, state.y + .5, state.z,
+                       mobStats(state.kind).xpDrop, nullptr);
         eraseMobAi(state.entityId);
-        const auto drop = MobEntity::dropFor(state.kind);
-        if (drop.itemId)
-            drops.push_back({state.x, state.y + .4f, state.z, drop.itemId,
-                             drop.count});
         WriteBuffer rm; rm.varint(1); rm.varint(state.entityId);
         broadcastPacketExceptInDimension(state.dimension, nullptr,
                                          pl::sc::RemoveEntities, rm);
     }
-    for (const auto& drop : drops)
-        spawnItemDropFor(targetDimension, drop.x, drop.y, drop.z,
-                         drop.itemId, drop.count);
     for (const auto& mob : removed) invalidateJvmMob(mob);
     for (int i = 0; i < 4; ++i) {
         int pid = (i == 0 ? ParticleId::explosion_emitter : ParticleId::explosion); // 21/22, Simple
@@ -647,7 +650,7 @@ void GameServer::tntTick(){
         t->vx *= 0.98;
         t->vy *= 0.98;
         t->vz *= 0.98;
-        if (t->y < kMinY) t->y = kMinY;
+        if (t->y < world.minY()) t->y = world.minY();
         if (world.getBlock(static_cast<int>(std::floor(t->x)),
                            static_cast<int>(std::floor(t->y - 0.1)),
                            static_cast<int>(std::floor(t->z))) != 0) {
@@ -769,15 +772,16 @@ void GameServer::strikeLightningFor(std::int8_t dimension, double x, double y,
     }
     // Also handle Enderman damage via lightning? vanilla: enderman takes damage but teleports – already via applyDamage.
 }
-void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv) {
+bool GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv) {
     if (mobStateLockOwnedByCurrentThread()) {
         const DamageSource source = src;
-        runWithoutMobStateLock([this, &m, amount, source, breachLv] {
-            applyDamageToMob(m, amount, source, breachLv);
+        bool applied = false;
+        runWithoutMobStateLock([this, &m, amount, source, breachLv, &applied] {
+            applied = applyDamageToMob(m, amount, source, breachLv);
         });
-        return;
+        return applied;
     }
-    if (amount <= 0) return;
+    if (amount <= 0) return false;
 
     // Fabric callbacks are user code.  In particular, an allow-damage
     // callback may call back into the native bridge and mutate this entity.
@@ -786,9 +790,10 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     // so taking entsMtx_ here would only add an avoidable lock-order edge.
     {
         std::lock_guard entityLock(*m.stateMtx);
-        if (m.dead) return;
+        if (m.dead) return false;
     }
-    if (jvmRuntime_ && !jvmRuntime_->onEntityDamage(nullptr, &m, amount, src.type)) return;
+    if (jvmRuntime_ && !jvmRuntime_->onEntityDamage(nullptr, &m, amount, src.type))
+        return false;
 
     struct DamageResult {
         std::int8_t dimension = 0;
@@ -809,7 +814,7 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
         // is held; those paths may re-enter the server.  Vector membership is
         // owned by entsMtx_ and is intentionally not coupled to this lock.
         std::lock_guard entityLock(*m.stateMtx);
-        if (m.dead) return;
+        if (m.dead) return false;
 
         result.dimension = m.dimension;
         result.entityId = m.entityId;
@@ -858,7 +863,7 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
                 DamageCalculator::calculate(effectiveAmount, src, armor, 0.0,
                                              epf, {});
             // mobs have no resistance effects currently
-            if (finalAmt <= 0) return;
+            if (finalAmt <= 0) return false;
             m.health -= finalAmt;
             m.hurtCooldown = 10;
             if (m.kind == MobKind::Armadillo)
@@ -886,9 +891,9 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
                            result.x, result.y, result.z, 1.f, 1.f,
                            "hostile");
         // trigger resin clump growth is handled in growResinNearHeart
-        return;
+        return false;
     }
-    if (!result.applied) return;
+    if (!result.applied) return false;
 
     noteMobHurt(result.entityId, -1);
     if (result.boss && bossAI_) {
@@ -939,10 +944,11 @@ void GameServer::applyDamageToMob(MobEntity& m, float amount, const DamageSource
     }
     broadcastEntitySoundFor(result.dimension, result.entityId, snd, 1.f, 1.f,
                             SoundSource::Hostile);
+    return true;
 }
-void GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
+bool GameServer::applyDamageToMob(MobEntity& m, float amount, const char* cause) {
     DamageSource src(cause ? std::string(cause) : std::string("generic"));
-    applyDamageToMob(m, amount, src);
+    return applyDamageToMob(m, amount, src);
 }
 void GameServer::sendActionBar(Player& p, const std::string& text) {
     const auto connection = snapshotPlayerConnection(p);

@@ -186,8 +186,7 @@ void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
             auto& piece = victim.inv[i];
             if (!piece.empty() && piece.itemId == expected.itemId &&
                 piece.count == expected.count &&
-                piece.components == expected.components &&
-                piece.removedComponents == expected.removedComponents) {
+                piece.sameItemData(expected)) {
                 if (DamageComponent::applyDamage(piece, 2))
                     piece = ItemStack::air();
             }

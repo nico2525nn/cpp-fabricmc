@@ -476,7 +476,23 @@ inline ArgumentType blockPredicateArg() {
     a.id = ParserId::BlockPredicate;
     a.parse = [](StringReader& r, ParseCtx& c) -> ArgValue {
         // same as blockState but also allows leading # for tag
-        if (r.peek() == '#') { r.skip(); return std::string("#") + readResourceLocation(r); }
+        if (r.peek() == '#') {
+            r.skip();
+            std::string predicate = "#" + readResourceLocation(r);
+            if (r.peek() == '[') {
+                int depth = 0;
+                do {
+                    const char ch = r.read();
+                    predicate.push_back(ch);
+                    if (ch == '[') ++depth;
+                    else if (ch == ']') --depth;
+                } while (r.canRead() && depth > 0);
+                if (depth != 0)
+                    throw StringReader::ParseError(
+                        "unterminated block-tag properties");
+            }
+            return predicate;
+        }
         return blockStateArg().parse(r,c);
     };
     a.suggest = blockStateArg().suggest;

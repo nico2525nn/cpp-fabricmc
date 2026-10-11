@@ -377,12 +377,17 @@ set(CPPFM_SERVER_SOURCES
     src/game/GameServer_items.cpp
     src/game/GameServer_world.cpp
     src/game/GameServer_session.cpp
+    src/game/GameServer_session_lifecycle.cpp
+    src/game/GameServer_session_interaction.cpp
+    src/game/GameServer_session_menu.cpp
     src/game/GameServer_core.cpp
     src/game/Recipes.cpp
     src/game/MenuInteraction.cpp
     src/game/Commands.cpp
     src/game/commands_chat.cpp
     src/game/commands_admin.cpp
+    src/game/CloneTransaction.cpp
+    src/game/commands_clone.cpp
     src/game/commands_world.cpp
     src/game/commands_player.cpp
     src/game/commands_data.cpp
@@ -449,6 +454,7 @@ add_executable(test_native tests/TestClient.cpp tests/native_integration.cpp
     ${CPPFM_SERVER_SOURCES})
 target_include_directories(test_native PRIVATE "${CPPFM_EMBEDDED_DIR}"
     src src/generated tests)
+target_compile_definitions(test_native PRIVATE CPPFM_WORLD_MUTATION_TEST=1)
 target_link_libraries(test_native PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto
     ${CPPFM_PLATFORM_LIBS})
 if(TARGET cppfm_embedded_resources)
@@ -456,9 +462,25 @@ if(TARGET cppfm_embedded_resources)
 endif()
 
 # self-contained: spawns the server itself on a random port
-add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(native PROPERTIES TIMEOUT 300)
+add_test(NAME native COMMAND test_native $<TARGET_FILE:cppfm>)
+set_tests_properties(native PROPERTIES TIMEOUT 600
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME block_entity_drop_policy
+    COMMAND test_native block_entity_drop_policy)
+set_tests_properties(block_entity_drop_policy PROPERTIES TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME clone_block_entity_budget
+    COMMAND test_native clone_block_entity_budget)
+set_tests_properties(clone_block_entity_budget PROPERTIES TIMEOUT 180
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME chunk_save_ownership
+    COMMAND test_native chunk_save_ownership)
+set_tests_properties(chunk_save_ownership PROPERTIES TIMEOUT 120
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME player_data_transaction
+    COMMAND test_native player_data_transaction)
+set_tests_properties(player_data_transaction PROPERTIES TIMEOUT 120
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan28 D26: header-only ResetScore 0x49 wire + wildcard reset lock
 add_executable(test_scoreboard_reset tests/test_scoreboard_reset.cpp)
@@ -485,8 +507,9 @@ target_link_libraries(test_smoke_80 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL:
 if(TARGET cppfm_embedded_resources)
     add_dependencies(test_smoke_80 cppfm_embedded_resources)
 endif()
-add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(NAME smoke80 COMMAND test_smoke_80 $<TARGET_FILE:cppfm>)
+set_tests_properties(smoke80 PROPERTIES TIMEOUT 600
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan51 §1–2: generation-safe handle and selective routing invariants.
 add_executable(test_jvm_handles
@@ -604,9 +627,9 @@ add_executable(test_plan43
     src/core/NBT.cpp)
 target_include_directories(test_plan43 PRIVATE src src/generated tests)
 target_link_libraries(test_plan43 PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
-add_test(NAME plan43 COMMAND test_plan43 $<TARGET_FILE:cppfm>
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(plan43 PROPERTIES TIMEOUT 300)
+add_test(NAME plan43 COMMAND test_plan43 $<TARGET_FILE:cppfm>)
+set_tests_properties(plan43 PROPERTIES TIMEOUT 300
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan46 §1 (O-13/W-14/W-16) flood/defense: unit (budgets/throttle/gate) +
 # live-server (fork cppfm, raw sockets + TestClient) A1–A8 scenarios.
@@ -616,9 +639,9 @@ add_executable(test_flood_net
     src/core/NBT.cpp)
 target_include_directories(test_flood_net PRIVATE src src/generated tests)
 target_link_libraries(test_flood_net PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
-add_test(NAME flood_net COMMAND test_flood_net $<TARGET_FILE:cppfm>
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(flood_net PROPERTIES TIMEOUT 300)
+add_test(NAME flood_net COMMAND test_flood_net $<TARGET_FILE:cppfm>)
+set_tests_properties(flood_net PROPERTIES TIMEOUT 300
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(test_fuzz tests/test_fuzz.cpp
     src/core/NBT.cpp)
@@ -656,9 +679,12 @@ add_executable(test_goal_gameplay_bugs tests/test_goal_gameplay_bugs.cpp
     src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp
     src/worldgen/StructureManager.cpp src/game/WorldDataManager.cpp)
 target_include_directories(test_goal_gameplay_bugs PRIVATE src src/generated tests)
+target_compile_definitions(test_goal_gameplay_bugs PRIVATE
+    CPPFM_WORLD_MUTATION_TEST=1)
 target_link_libraries(test_goal_gameplay_bugs PRIVATE Threads::Threads ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME goal_gameplay_bugs COMMAND test_goal_gameplay_bugs)
-set_tests_properties(goal_gameplay_bugs PROPERTIES TIMEOUT 60)
+set_tests_properties(goal_gameplay_bugs PROPERTIES TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 add_executable(test_goal_cleanup_runtime tests/test_goal_cleanup_runtime.cpp
     src/jvm/JavaObjectCache.cpp
@@ -702,9 +728,9 @@ add_executable(test_properties
     src/game/ServerConfig.cpp)
 target_include_directories(test_properties PRIVATE src src/generated)
 add_dependencies(test_properties cppfm)
-add_test(NAME properties COMMAND test_properties $<TARGET_FILE:cppfm>
-         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(properties PROPERTIES TIMEOUT 30)
+add_test(NAME properties COMMAND test_properties $<TARGET_FILE:cppfm>)
+set_tests_properties(properties PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Canonical server.properties/CLI settings matrix, including seed, difficulty,
 # secure-chat, and resource-pack contracts.
@@ -739,15 +765,16 @@ add_executable(test_wire_b6 tests/test_wire_b6.cpp
 target_include_directories(test_wire_b6 PRIVATE src src/generated)
 target_link_libraries(test_wire_b6 PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME wire_b6 COMMAND test_wire_b6)
-set_tests_properties(wire_b6 PROPERTIES TIMEOUT 60)
+set_tests_properties(wire_b6 PROPERTIES TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan36 soak 2h nightly (300s dry + 7200s full) — B-06
 if(Python3_Interpreter_FOUND)
     add_test(NAME soak2h
         COMMAND "${Python3_EXECUTABLE}" tests/soak_test.py
-                --duration 7200 --binary $<TARGET_FILE:cppfm>
+                --duration 7200 --binary $<TARGET_FILE:cppfm>)
+    set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-    set_tests_properties(soak2h PROPERTIES TIMEOUT 8000 LABELS nightly)
 endif()
 
 add_executable(test_gameplay_full tests/test_gameplay_full.cpp
@@ -760,7 +787,143 @@ add_executable(test_gameplay_full tests/test_gameplay_full.cpp
 target_include_directories(test_gameplay_full PRIVATE src src/generated)
 target_link_libraries(test_gameplay_full PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
 add_test(NAME gameplay_full COMMAND test_gameplay_full)
-set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60)
+set_tests_properties(gameplay_full PROPERTIES TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Protect World mutation/callback/revision semantics and detached chunk-build
+# boundaries while replacing public mutable chunk storage with value APIs.
+add_executable(test_world_mutation_contract tests/test_world_mutation_contract.cpp
+    src/game/CloneTransaction.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp
+    src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/core/NBT.cpp
+    src/game/WorldDataManager.cpp)
+target_include_directories(test_world_mutation_contract PRIVATE src src/generated)
+target_compile_definitions(test_world_mutation_contract PRIVATE
+    CPPFM_WORLD_MUTATION_TEST=1)
+target_link_libraries(test_world_mutation_contract PRIVATE Threads::Threads
+    ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME world_mutation_contract COMMAND test_world_mutation_contract)
+set_tests_properties(world_mutation_contract PROPERTIES TIMEOUT 90
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Exercise the bounded chunk-body cache and snapshot invalidation contract
+# without constructing the full server or its protocol dependencies.
+add_executable(test_chunk_body_cache tests/test_chunk_body_cache.cpp)
+target_include_directories(test_chunk_body_cache PRIVATE src)
+target_link_libraries(test_chunk_body_cache PRIVATE Threads::Threads)
+add_test(NAME chunk_body_cache COMMAND test_chunk_body_cache)
+set_tests_properties(chunk_body_cache PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Keep asynchronous and synchronous region recovery scenarios isolated from
+# the World mutation/callback contract suite.
+add_executable(test_persistence_recovery tests/test_persistence_recovery.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp
+    src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/core/NBT.cpp
+    src/game/WorldDataManager.cpp)
+target_include_directories(test_persistence_recovery PRIVATE src src/generated)
+target_compile_definitions(test_persistence_recovery PRIVATE
+    CPPFM_WORLD_MUTATION_TEST=1)
+target_link_libraries(test_persistence_recovery PRIVATE Threads::Threads
+    ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME persistence_recovery COMMAND test_persistence_recovery)
+set_tests_properties(persistence_recovery PROPERTIES TIMEOUT 90
+    LABELS "persistence;recovery" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Region save transactions hold both a replacement-stable canonical-path lock
+# and the current native file-identity lock, preventing atomic rename from
+# splitting concurrent writers into different lock domains.
+add_executable(test_region_transaction_lock
+    tests/test_region_transaction_lock.cpp)
+target_include_directories(test_region_transaction_lock PRIVATE
+    src src/generated)
+target_link_libraries(test_region_transaction_lock PRIVATE Threads::Threads)
+add_test(NAME region_transaction_lock COMMAND test_region_transaction_lock)
+set_tests_properties(region_transaction_lock PROPERTIES TIMEOUT 30
+    LABELS "persistence;concurrency")
+
+# Keep world-data compatibility baselines and dimension projection checks
+# separate from the concurrency/persistence mutation contract suite.
+add_executable(test_world_data_contract tests/test_world_data_contract.cpp
+    src/worldgen/DensityFunction.cpp src/worldgen/MultiNoise.cpp
+    src/worldgen/StructurePlacer.cpp src/worldgen/ChunkGenerator.cpp
+    src/worldgen/StructureManager.cpp src/game/WorldGen.cpp src/core/NBT.cpp
+    src/game/WorldDataManager.cpp)
+target_include_directories(test_world_data_contract PRIVATE src src/generated)
+target_link_libraries(test_world_data_contract PRIVATE Threads::Threads
+    ZLIB::ZLIB OpenSSL::Crypto)
+add_test(NAME world_data_contract COMMAND test_world_data_contract)
+set_tests_properties(world_data_contract PROPERTIES TIMEOUT 90
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Keep block-entity persistence and item-component contracts independent from
+# the World mutation/concurrency suite.
+add_executable(test_block_entity_contract
+    tests/test_block_entity_contract.cpp
+    src/game/Recipes.cpp)
+target_include_directories(test_block_entity_contract PRIVATE src src/generated)
+target_link_libraries(test_block_entity_contract PRIVATE Threads::Threads
+    ZLIB::ZLIB)
+add_test(NAME block_entity_contract COMMAND test_block_entity_contract)
+set_tests_properties(block_entity_contract PROPERTIES TIMEOUT 60
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Keep the pure block-entity payload and packed-position contracts independently
+# compilable without pulling in the BlockEntityStore header.
+add_executable(test_block_entity_value_contract
+    tests/test_block_entity_value_contract.cpp)
+target_include_directories(test_block_entity_value_contract PRIVATE src src/generated)
+add_test(NAME block_entity_value_contract COMMAND test_block_entity_value_contract)
+set_tests_properties(block_entity_value_contract PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Exercise per-record NBT conversion and opaque-template merging without the
+# BlockEntityStore's indexing/publication implementation in the test target.
+add_executable(test_block_entity_nbt_codec
+    tests/test_block_entity_nbt_codec.cpp)
+target_include_directories(test_block_entity_nbt_codec PRIVATE src src/generated)
+add_test(NAME block_entity_nbt_codec COMMAND test_block_entity_nbt_codec)
+set_tests_properties(block_entity_nbt_codec PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Keep chunk-level serialization policy independently testable from the
+# BlockEntityStore that captures the authoritative typed/raw snapshot.
+add_executable(test_block_entity_chunk_codec
+    tests/test_block_entity_chunk_codec.cpp)
+target_include_directories(test_block_entity_chunk_codec PRIVATE src src/generated)
+target_link_libraries(test_block_entity_chunk_codec PRIVATE Threads::Threads)
+add_test(NAME block_entity_chunk_codec COMMAND test_block_entity_chunk_codec)
+set_tests_properties(block_entity_chunk_codec PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# The record-to-chunk membership index owns its per-chunk/global capacity
+# accounting independently from BlockEntityStore's typed and opaque payloads.
+add_executable(test_block_entity_chunk_index
+    tests/test_block_entity_chunk_index.cpp)
+target_include_directories(test_block_entity_chunk_index PRIVATE src)
+add_test(NAME block_entity_chunk_index COMMAND test_block_entity_chunk_index)
+set_tests_properties(block_entity_chunk_index PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# State-only collision-height contracts are kept separate from block-entity
+# persistence so entity movement approximations can be exercised cheaply.
+add_executable(test_entity_support tests/test_entity_support.cpp)
+target_include_directories(test_entity_support PRIVATE src src/generated)
+add_test(NAME entity_support COMMAND test_entity_support)
+set_tests_properties(entity_support PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
+# Adventure-mode item predicates are protocol data and server authorization;
+# test their codec, persistence, tags, and fail-closed policy independently.
+add_executable(test_item_block_predicate tests/test_item_block_predicate.cpp)
+target_include_directories(test_item_block_predicate PRIVATE src src/generated)
+target_link_libraries(test_item_block_predicate PRIVATE Threads::Threads
+    ZLIB::ZLIB)
+add_test(NAME item_block_predicate COMMAND test_item_block_predicate)
+set_tests_properties(item_block_predicate PROPERTIES TIMEOUT 30
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # Focused 1.21.4 menu behavior: enchanting offers/consumption and the
 # model-safe crafter redstone craft/output transfer path.
@@ -935,6 +1098,12 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(bot_smoke PROPERTIES TIMEOUT 120
         LABELS "bot;smoke" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+    add_test(NAME soak_bot_protocol
+        COMMAND "${Python3_EXECUTABLE}"
+                ${CMAKE_SOURCE_DIR}/tests/test_soak_bot_protocol.py)
+    set_tests_properties(soak_bot_protocol PROPERTIES TIMEOUT 30
+        LABELS "bot;protocol" WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
     add_test(NAME soak_bot
         COMMAND "${Python3_EXECUTABLE}" ${CMAKE_SOURCE_DIR}/tools/soak_bot.py
                 --duration 300 --binary $<TARGET_FILE:cppfm>)
@@ -950,8 +1119,9 @@ add_executable(test_recipes_mirror
     src/game/Recipes.cpp)
 target_include_directories(test_recipes_mirror PRIVATE src src/generated)
 target_link_libraries(test_recipes_mirror PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
-add_test(NAME recipes_mirror COMMAND test_recipes_mirror WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory)
+add_test(NAME recipes_mirror COMMAND test_recipes_mirror)
+set_tests_properties(recipes_mirror PROPERTIES TIMEOUT 30 LABELS inventory
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan46 §2 recovery (O-07/O-08): offline world-integrity checker
 add_executable(check_world
@@ -970,15 +1140,17 @@ add_executable(test_recovery tests/test_recovery.cpp
     src/game/WorldDataManager.cpp)
 target_include_directories(test_recovery PRIVATE src src/generated)
 target_link_libraries(test_recovery PRIVATE ZLIB::ZLIB OpenSSL::Crypto)
-add_test(NAME recovery COMMAND test_recovery WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(recovery PROPERTIES TIMEOUT 120 LABELS recovery)
+add_test(NAME recovery COMMAND test_recovery)
+set_tests_properties(recovery PROPERTIES TIMEOUT 120 LABELS recovery
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan46 §2 (O-09): 5x concurrent RCON + 10x wrong-pass harness (in-process)
 add_executable(test_rcon_multi tests/test_rcon_multi.cpp)
 target_include_directories(test_rcon_multi PRIVATE src src/generated)
 target_link_libraries(test_rcon_multi PRIVATE Threads::Threads)
-add_test(NAME rcon_multi COMMAND test_rcon_multi WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
-set_tests_properties(rcon_multi PROPERTIES TIMEOUT 60 LABELS recovery)
+add_test(NAME rcon_multi COMMAND test_rcon_multi)
+set_tests_properties(rcon_multi PROPERTIES TIMEOUT 60 LABELS recovery
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 # plan44 G-05 mob attributes 149 species (world; see docs/SPEC_GAMEPLAY.md) — header-only, reads docs/mob_stats_149.csv
 
@@ -1035,6 +1207,17 @@ set(CPPFM_PACKAGE_ARCHIVE
 # native fallback contract remains valid and is covered by the native gates.
 if(CPPFM_BUILD_TESTS AND Python3_Interpreter_FOUND AND
    TARGET cppfm_jvm_classes AND JNI_FOUND)
+    # The archive is a generated artifact, not a side effect of the default
+    # build target.  Model that prerequisite in CTest so a clean configure +
+    # build + ctest run exercises the same release ZIP as the package gate.
+    add_test(NAME package_archive
+        COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}"
+                --target package)
+    set_tests_properties(package_archive PROPERTIES TIMEOUT 600
+        FIXTURES_SETUP cppfm_release_package
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+        LABELS "package;build")
+
     add_test(NAME package_jvm_smoke
         COMMAND "${Python3_EXECUTABLE}"
                 "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_jvm_smoke.py"
@@ -1042,6 +1225,7 @@ if(CPPFM_BUILD_TESTS AND Python3_Interpreter_FOUND AND
                 "${CPPFM_PACKAGE_ARCHIVE}"
                 --executable-name "${CPPFM_PACKAGE_EXECUTABLE}")
     set_tests_properties(package_jvm_smoke PROPERTIES TIMEOUT 300
+        FIXTURES_REQUIRED cppfm_release_package
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
         LABELS "package;jvm")
 endif()

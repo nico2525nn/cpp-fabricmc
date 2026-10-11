@@ -11,6 +11,7 @@
 #include "../src/game/DatapackManager.hpp"
 #include "../src/game/GameRules.hpp"
 #include "../src/game/World.hpp"
+#include "../src/game/Anvil.hpp"
 #include "../src/game/Entities.hpp"
 #include "../src/game/AiBrain.hpp"
 #include "../src/game/BehaviorTree.hpp"
@@ -21,6 +22,7 @@
 #include "../src/game/LootTables.hpp"
 #include "../src/game/EnchantmentHelper.hpp"
 #include "../src/game/Items.hpp"
+#include "../src/game/MiningCalculator.hpp"
 #include "../src/generated/BlockStates.hpp"
 #include "../src/physics/Redstone.hpp"
 #include "../src/physics/BlockTickScheduler.hpp"
@@ -28,6 +30,9 @@
 #include "../src/game/CommandsHelpers.hpp"
 #include "../src/game/DamageSource.hpp"
 #include "../src/game/Scoreboard.hpp"
+#include <algorithm>
+#include <memory>
+#include <mutex>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <cerrno>
@@ -38,7 +43,392 @@
 #include <filesystem>
 #include <atomic>
 #include <chrono>
+#include <fstream>
 #include <thread>
+#include <utility>
+
+namespace cppfm {
+struct WorldMutationContractTestAccess {
+    struct OpaqueCrafterResult {
+        bool tickCompleted = false;
+        bool inputConsumed = false;
+        bool outputDropped = false;
+        bool opaqueInventoryPreserved = false;
+        bool shulkerRemovedWithoutDrops = false;
+        bool shulkerDropsSuppressed = false;
+        bool pendingContainerLootGenerated = false;
+        bool tntUsesPostCallbackHeldItem = false;
+        bool blockEventTargetReplacementPreserved = false;
+        bool registeredEmptyLootSuppressesBlockDrop = false;
+        bool invalidLootTableUsesBlockFallback = false;
+    };
+
+    static void armDig(Player& player, std::int32_t x, std::int32_t y,
+                       std::int32_t z, std::uint16_t state) {
+        std::lock_guard digLock(player.digMtx);
+        player.digActive = true;
+        player.digX = x;
+        player.digY = y;
+        player.digZ = z;
+        player.digStartTick = MiningCalculator::packDigStartTick(0, state);
+        player.digTotalTicks = 1;
+        player.digLastStage = MiningCalculator::packDigStage(0, true);
+        ++player.digRevision;
+    }
+
+    static OpaqueCrafterResult crafterOutputToOpaqueContainer() {
+        OpaqueCrafterResult result;
+        ServerConfig config;
+        config.jvmEnabled = false;
+        config.ioWorkerThreads = 1;
+        GameServer server(config);
+
+        auto& runtime = server.dimensionRuntime(0);
+        runtime.redstone = std::make_unique<RedstoneEngine>(runtime.world);
+        runtime.redstone->setBlockEntityStore(&runtime.blockEntities);
+        runtime.redstone->setTickRef(&server.tickNo_);
+        auto mutationGate = runtime.world.lockMutationGate();
+        (void)mutationGate;
+        server.recipes_.loadDefaults();
+        server.recipes_.loadDirectory("assets/data/recipes");
+
+        constexpr std::int32_t x = 0;
+        constexpr std::int32_t y = 64;
+        constexpr std::int32_t z = 0;
+        const auto crafterState = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:crafter",
+                                    {{"orientation", "north_up"}}));
+        runtime.world.setBlock(x, y, z, crafterState);
+        runtime.world.setBlock(x, y, z - 1, static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:chest")));
+
+        nbt::Value opaqueRoot = nbt::Value::makeCompound();
+        nbt::Value blockEntities = nbt::Value::makeList(nbt::Compound);
+        nbt::Value chest = nbt::Value::makeCompound();
+        chest.set("id", nbt::Value::makeString("minecraft:chest"));
+        chest.set("x", nbt::Value::makeInt(x));
+        chest.set("y", nbt::Value::makeInt(y));
+        chest.set("z", nbt::Value::makeInt(z - 1));
+        nbt::Value items = nbt::Value::makeList(nbt::Compound);
+        nbt::Value unknownItem = nbt::Value::makeCompound();
+        unknownItem.set("id", nbt::Value::makeString("example:gem"));
+        unknownItem.set("Count", nbt::Value::makeByte(1));
+        unknownItem.set("Slot", nbt::Value::makeByte(0));
+        unknownItem.set("custom_payload",
+                        nbt::Value::makeString("must remain untouched"));
+        items.list.push_back(std::move(unknownItem));
+        chest.set("Items", std::move(items));
+        blockEntities.list.push_back(std::move(chest));
+        opaqueRoot.set("block_entities", std::move(blockEntities));
+        runtime.blockEntities.readChunkNbt(opaqueRoot);
+
+        const auto crafterOwner = runtime.blockEntities.createShared(
+            posKey(x, y, z), BlockEntity::Kind::Crafter);
+        {
+            std::lock_guard lock(*crafterOwner->stateMtx);
+            crafterOwner->crafter.slots[0] = ItemStack::of(
+                gen::itemIdByName().at("minecraft:oak_log"));
+            // Drive the delayed-craft boundary directly; this regression is
+            // about an opaque output target, not redstone signal propagation.
+            crafterOwner->crafter.redstoneCraftDueTick = server.tickNo_;
+        }
+
+        try {
+            server.craftersTickFor(0);
+            result.tickCompleted = true;
+        } catch (...) {
+            return result;
+        }
+
+        {
+            std::lock_guard lock(*crafterOwner->stateMtx);
+            result.inputConsumed = crafterOwner->crafter.slots[0].empty();
+        }
+        {
+            std::lock_guard lock(server.entsMtx_);
+            const auto planks = gen::itemIdByName().at("minecraft:oak_planks");
+            const auto matchingDrops = std::count_if(
+                server.itemDrops_.begin(), server.itemDrops_.end(),
+                [planks](const auto& item) {
+                    if (!item) return false;
+                    const auto stack = item->asStack();
+                    return stack.itemId == planks && stack.count == 4;
+                });
+            result.outputDropped = matchingDrops == 1;
+        }
+        nbt::Value savedOpaque = nbt::Value::makeList(nbt::Compound);
+        runtime.blockEntities.writeChunkNbt(0, -1, savedOpaque);
+        for (const auto& savedChest : savedOpaque.list) {
+            const auto* savedId = savedChest.get("id");
+            const auto* savedX = savedChest.get("x");
+            const auto* savedY = savedChest.get("y");
+            const auto* savedZ = savedChest.get("z");
+            const auto* savedItems = savedChest.get("Items");
+            if (!savedId || savedId->tag != nbt::String ||
+                savedId->str != "minecraft:chest" || !savedX ||
+                savedX->tag != nbt::Int || savedX->i != x || !savedY ||
+                savedY->tag != nbt::Int || savedY->i != y || !savedZ ||
+                savedZ->tag != nbt::Int || savedZ->i != z - 1 ||
+                !savedItems || savedItems->tag != nbt::List)
+                continue;
+            for (const auto& savedItem : savedItems->list) {
+                const auto* itemId = savedItem.get("id");
+                const auto* count = savedItem.get("Count");
+                const auto* slot = savedItem.get("Slot");
+                const auto* payload = savedItem.get("custom_payload");
+                if (itemId && itemId->tag == nbt::String &&
+                    itemId->str == "example:gem" && count &&
+                    count->tag == nbt::Byte && count->b == 1 && slot &&
+                    slot->tag == nbt::Byte && slot->b == 0 && payload &&
+                    payload->tag == nbt::String &&
+                    payload->str == "must remain untouched")
+                    result.opaqueInventoryPreserved = true;
+            }
+        }
+
+        constexpr std::int32_t breakX = 2;
+        constexpr std::int32_t breakY = y;
+        constexpr std::int32_t breakZ = z;
+        const auto shulkerState = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:red_shulker_box"));
+        runtime.world.setBlock(breakX, breakY, breakZ, shulkerState);
+        const auto shulkerOwner = runtime.blockEntities.createShared(
+            posKey(breakX, breakY, breakZ), BlockEntity::Kind::ShulkerBox);
+        {
+            std::lock_guard lock(*shulkerOwner->stateMtx);
+            shulkerOwner->chest.slots[0] =
+                ItemStack::ofName("minecraft:diamond", 1);
+        }
+
+        auto player = std::make_shared<Player>();
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            player->inPlay = true;
+        }
+        armDig(*player, breakX, breakY, breakZ, shulkerState);
+        server.tickNo_ = 1;
+        {
+            std::lock_guard lock(server.playersMtx_);
+            server.players_.push_back(player);
+        }
+
+        std::size_t existingDrops = 0;
+        {
+            std::lock_guard lock(server.entsMtx_);
+            existingDrops = server.itemDrops_.size();
+        }
+        {
+            auto suppressDrops = api::events().blockBreak.subscribeScoped(
+                0, [](api::BlockBreakEvent& event) {
+                    event.dropItems = false;
+                });
+            server.tickDigs();
+        }
+
+        result.shulkerRemovedWithoutDrops =
+            runtime.world.getBlock(breakX, breakY, breakZ) == 0;
+        {
+            std::lock_guard lock(server.entsMtx_);
+            result.shulkerDropsSuppressed =
+                server.itemDrops_.size() == existingDrops;
+        }
+
+        constexpr std::int32_t lootChestX = 8;
+        constexpr std::int64_t lootSeed = 123456;
+        constexpr const char* lootTableId =
+            "minecraft:chests/simple_dungeon";
+        server.lootTables_.loadDirectory("assets/data/loot_tables");
+        const auto expectedLoot = server.lootTables_.evaluateRegisteredTable(
+            lootTableId, ItemStack{}, nullptr, lootSeed);
+        const auto chestState = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:chest"));
+        runtime.world.setBlock(lootChestX, breakY, breakZ, chestState);
+        nbt::Value lootChestNbt = nbt::Value::makeCompound();
+        lootChestNbt.set("id", nbt::Value::makeString("minecraft:chest"));
+        lootChestNbt.set("x", nbt::Value::makeInt(lootChestX));
+        lootChestNbt.set("y", nbt::Value::makeInt(breakY));
+        lootChestNbt.set("z", nbt::Value::makeInt(breakZ));
+        lootChestNbt.set("LootTable",
+            nbt::Value::makeString(lootTableId));
+        lootChestNbt.set("LootTableSeed",
+            nbt::Value::makeLong(lootSeed));
+        lootChestNbt.set("Items", nbt::Value::makeList(nbt::Compound));
+        const bool lootChestInstalled = runtime.blockEntities.replaceNbtAt(
+            lootChestX, breakY, breakZ, std::move(lootChestNbt));
+        armDig(*player, lootChestX, breakY, breakZ, chestState);
+        std::size_t lootDropsBefore = 0;
+        {
+            std::lock_guard lock(server.entsMtx_);
+            lootDropsBefore = server.itemDrops_.size();
+        }
+        server.tickDigs();
+        const bool lootChestWasRemoved =
+            runtime.world.getBlock(lootChestX, breakY, breakZ) == 0;
+        {
+            std::lock_guard lock(server.entsMtx_);
+            std::vector<bool> matchedLoot(
+                expectedLoot ? expectedLoot->size() : 0, false);
+            for (std::size_t dropIndex = lootDropsBefore;
+                 dropIndex < server.itemDrops_.size(); ++dropIndex) {
+                if (!server.itemDrops_[dropIndex]) continue;
+                const auto actual = server.itemDrops_[dropIndex]->asStack();
+                for (std::size_t expectedIndex = 0;
+                     expectedLoot && expectedIndex < expectedLoot->size();
+                     ++expectedIndex) {
+                    const auto& expected = (*expectedLoot)[expectedIndex];
+                    if (!matchedLoot[expectedIndex] &&
+                        actual.itemId == expected.itemId &&
+                        actual.count == expected.count) {
+                        matchedLoot[expectedIndex] = true;
+                        break;
+                    }
+                }
+            }
+            result.pendingContainerLootGenerated = lootChestInstalled &&
+                expectedLoot && !expectedLoot->empty() && lootChestWasRemoved &&
+                std::all_of(matchedLoot.begin(), matchedLoot.end(),
+                            [](bool matched) { return matched; });
+        }
+
+        constexpr std::int32_t tntX = 4;
+        const auto stableTnt = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:tnt", {{"unstable", "false"}}));
+        runtime.world.setBlock(tntX, breakY, breakZ, stableTnt);
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            player->gamemode = 0;
+            player->heldSlot = 0;
+            player->inv[36] = ItemStack::ofName("minecraft:flint_and_steel");
+        }
+        armDig(*player, tntX, breakY, breakZ, stableTnt);
+        std::size_t tntEntitiesBefore = 0;
+        {
+            std::lock_guard lock(server.entsMtx_);
+            tntEntitiesBefore = server.tntEntities_.size();
+        }
+        auto replaceTntTool = api::events().blockBreak.subscribeScoped(
+            0, [player, tntX, breakY, breakZ](api::BlockBreakEvent& event) {
+                if (event.x != tntX || event.y != breakY ||
+                    event.z != breakZ)
+                    return;
+                std::lock_guard playerLock(player->stateMtx);
+                player->inv[36] = ItemStack::ofName("minecraft:stick");
+            });
+        server.tickDigs();
+        bool callbackReplacedTool = false;
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            callbackReplacedTool =
+                player->inv[36].name() == "minecraft:stick";
+        }
+        {
+            std::lock_guard lock(server.entsMtx_);
+            result.tntUsesPostCallbackHeldItem = callbackReplacedTool &&
+                server.tntEntities_.size() == tntEntitiesBefore;
+        }
+
+        constexpr std::int32_t callbackX = 6;
+        const auto originalBlock = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:stone"));
+        const auto callbackReplacement = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:gold_block"));
+        runtime.world.setBlock(callbackX, breakY, breakZ, originalBlock);
+        armDig(*player, callbackX, breakY, breakZ, originalBlock);
+        blockEventDispatcher().addOnBlockBreakHandler(
+            [&](const BlockEvent& event) {
+                if (event.x == callbackX && event.y == breakY &&
+                    event.z == breakZ)
+                    runtime.world.setBlock(callbackX, breakY, breakZ,
+                                           callbackReplacement);
+            });
+        server.tickDigs();
+        blockEventDispatcher().clearLegacyHandlers();
+        result.blockEventTargetReplacementPreserved =
+            runtime.world.getBlock(callbackX, breakY, breakZ) ==
+            callbackReplacement;
+
+        const auto emptyLootRoot = std::filesystem::temp_directory_path() /
+            ("cppfm-empty-loot-" + std::to_string(::getpid()));
+        std::error_code fixtureError;
+        std::filesystem::create_directories(
+            emptyLootRoot / "loot_tables" / "blocks", fixtureError);
+        bool fixtureWritten = !fixtureError;
+        if (fixtureWritten) {
+            std::ofstream tableFile(
+                emptyLootRoot / "loot_tables" / "blocks" / "stone.json",
+                std::ios::binary | std::ios::trunc);
+            tableFile << R"({"pools":[]})";
+            fixtureWritten = static_cast<bool>(tableFile);
+        }
+        if (fixtureWritten) {
+            server.lootTables_.loadDirectory(emptyLootRoot.string());
+            constexpr std::int32_t emptyLootX = 10;
+            runtime.world.setBlock(emptyLootX, breakY, breakZ,
+                                   originalBlock);
+            armDig(*player, emptyLootX, breakY, breakZ, originalBlock);
+            const auto* registeredStoneTable =
+                server.lootTables_.findBlockTable("minecraft:stone");
+            const auto emptyDrops = server.lootTables_.evaluate(
+                "minecraft:stone", ItemStack{});
+            std::size_t dropsBeforeEmptyLoot = 0;
+            {
+                std::lock_guard lock(server.entsMtx_);
+                dropsBeforeEmptyLoot = server.itemDrops_.size();
+            }
+            server.tickDigs();
+            std::size_t dropsAfterEmptyLoot = 0;
+            {
+                std::lock_guard lock(server.entsMtx_);
+                dropsAfterEmptyLoot = server.itemDrops_.size();
+            }
+            result.registeredEmptyLootSuppressesBlockDrop =
+                registeredStoneTable && emptyDrops.empty() &&
+                runtime.world.getBlock(emptyLootX, breakY, breakZ) == 0 &&
+                dropsAfterEmptyLoot == dropsBeforeEmptyLoot;
+
+            {
+                std::ofstream invalidTable(
+                    emptyLootRoot / "loot_tables" / "blocks" / "stone.json",
+                    std::ios::binary | std::ios::trunc);
+                invalidTable << R"({"pools":[{"rolls":1,"entries":[{"type":"minecraft:item","name":"minecraft:not_a_real_item"}]}]})";
+                fixtureWritten = static_cast<bool>(invalidTable);
+            }
+            if (fixtureWritten) {
+                server.lootTables_.loadDirectory(emptyLootRoot.string());
+                constexpr std::int32_t invalidLootX = 11;
+                runtime.world.setBlock(invalidLootX, breakY, breakZ,
+                                       originalBlock);
+                armDig(*player, invalidLootX, breakY, breakZ, originalBlock);
+                const auto* invalidTableRegistered =
+                    server.lootTables_.findBlockTable("minecraft:stone");
+                std::size_t dropsBeforeInvalidLoot = 0;
+                {
+                    std::lock_guard lock(server.entsMtx_);
+                    dropsBeforeInvalidLoot = server.itemDrops_.size();
+                }
+                server.tickDigs();
+                bool fallbackDropFound = false;
+                {
+                    std::lock_guard lock(server.entsMtx_);
+                    for (std::size_t dropIndex = dropsBeforeInvalidLoot;
+                         dropIndex < server.itemDrops_.size(); ++dropIndex) {
+                        const auto& drop = server.itemDrops_[dropIndex];
+                        if (drop && drop->asStack().name() ==
+                                        "minecraft:cobblestone")
+                            fallbackDropFound = true;
+                    }
+                }
+                result.invalidLootTableUsesBlockFallback =
+                    !invalidTableRegistered && fallbackDropFound;
+            }
+        }
+        std::filesystem::remove_all(emptyLootRoot, fixtureError);
+        result.registeredEmptyLootSuppressesBlockDrop =
+            result.registeredEmptyLootSuppressesBlockDrop && !fixtureError;
+        return result;
+    }
+};
+} // namespace cppfm
 
 using namespace cppfm;
 using namespace cpptest;
@@ -817,8 +1207,11 @@ void scenarioEnderItemsUnit(){
     // Test a normal stack and component payloads through the actual codec.
     ItemStack s = ItemStack::ofName("minecraft:diamond_sword",1);
     s.setDamage(42);
-    s.components.emplace_back(77, std::vector<std::uint8_t>{1, 2, 3});
-    s.removedComponents.push_back(88);
+    // Unknown ids beyond protocol 769's SlotComponentType registry must not
+    // be treated as valid opaque wire data. Exercise a real zero-byte Unit
+    // component and a supported removed component instead.
+    s.components.emplace_back(20, std::vector<std::uint8_t>{});
+    s.removedComponents.push_back(4);
     WriteBuffer b; s.write(b);
     ReadBuffer r(b.data);
     ItemStack rr = ItemStack::read(r);
@@ -940,12 +1333,31 @@ void scenarioLoot100Plan40(){
     CHECK(eval.tables().count("minecraft:chests/bastion_other")>0, "loot bastion_other exists");
     CHECK(eval.tables().count("minecraft:entities/cow")>0, "loot cow exists");
     CHECK(eval.tables().count("minecraft:gameplay/fishing_treasure")>0, "loot fishing_treasure exists");
+    const auto* stoneLoot = eval.findBlockTable("minecraft:stone");
+    const auto seededLootA = eval.evaluateRegisteredTable(
+        "minecraft:chests/simple_dungeon", {}, nullptr, 8675309);
+    const auto seededLootB = eval.evaluateRegisteredTable(
+        "minecraft:chests/simple_dungeon", {}, nullptr, 8675309);
+    bool seededLootDeterministic = seededLootA && seededLootB &&
+        seededLootA->size() == seededLootB->size();
+    if (seededLootDeterministic) {
+        for (std::size_t i = 0; i < seededLootA->size(); ++i) {
+            if ((*seededLootA)[i].itemId != (*seededLootB)[i].itemId ||
+                (*seededLootA)[i].count != (*seededLootB)[i].count) {
+                seededLootDeterministic = false;
+                break;
+            }
+        }
+    }
+    CHECK(stoneLoot != nullptr && seededLootA && seededLootDeterministic,
+          "registered loot tables can be found independently of their possibly-empty generated result, and explicit seeds are reproducible");
     // fortune evaluation
     {
-        LootContext ctx0{0,0,0,"",false}; ctx0.fortuneLevel=0;
+        LootContext ctx0;
         auto d0=eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx0);
         CHECK(!d0.empty(), "loot coal_ore fortune 0 non-empty");
-        LootContext ctx3{0,3,0,"",false}; ctx3.fortuneLevel=3;
+        LootContext ctx3;
+        ctx3.fortuneLevel = 3;
         auto d3=eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx3);
         CHECK(!d3.empty(), "loot coal_ore fortune 3 non-empty");
     }
@@ -1046,7 +1458,7 @@ void scenarioEnchant41Plan40(){
 // Online-mode join is tested via crypto unit tests + manual verification.
 
 static void scenarioDimensionCacheUnit() {
-    std::printf("\n[dimension-aware chunk cache — 5 cases (W20)]\n");
+    std::printf("\n[dimension-aware chunk cache — 8 cases (W20)]\n");
     ServerConfig cfg;
     cfg.ioWorkerThreads = 1;
     GameServer server(cfg);
@@ -1070,6 +1482,154 @@ static void scenarioDimensionCacheUnit() {
           "dimension cache: invalidating Nether preserves Overworld body");
     CHECK(server.chunkCacheSize() == 1,
           "dimension cache: LRU contains the surviving dimension only");
+
+    auto staleSnapshot = server.beginChunkCacheSnapshot(0, 7, -3);
+    server.invalidateChunkCacheFor(0, 7, -3);
+    bool staleBodyPublished = false;
+    const auto staleBody = std::make_shared<const std::vector<std::uint8_t>>(
+        std::vector<std::uint8_t>{0x0C});
+    CHECK(!server.publishChunkForSnapshot(
+              staleSnapshot, 2, staleBody,
+              [&](const GameServer::ChunkBodyRef&) {
+                  staleBodyPublished = true;
+              }) && !staleBodyPublished,
+          "chunk cache: invalidation rejects and does not publish a stale snapshot");
+    CHECK(!server.getCachedChunkFor(0, 7, -3, 0, found),
+          "chunk cache: rejected stale snapshot is not reinserted");
+
+    auto currentSnapshot = server.beginChunkCacheSnapshot(0, 7, -3);
+    bool currentBodyPublished = false;
+    CHECK(server.publishChunkForSnapshot(
+              currentSnapshot, 3, overworld,
+              [&](const GameServer::ChunkBodyRef& body) {
+                  currentBodyPublished = body && *body == *overworld;
+              }) && currentBodyPublished,
+          "chunk cache: current snapshot is stored and published");
+}
+
+static void scenarioChunkSaveWithoutPersistenceIsNotScheduled() {
+    std::printf("\n[chunk persistence ownership — no unsafe direct region fallback]\n");
+    const auto worldDir = std::filesystem::temp_directory_path() /
+        ("cppfm-unowned-chunk-save-" + std::to_string(getpid()));
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "unowned-chunk fixture starts from an absent private world directory");
+
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    cfg.worldDir = worldDir.string();
+    {
+        GameServer server(cfg);
+        const auto stone = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:stone"));
+        CHECK(server.worldFor(-1).setBlock(1, 64, 1, stone),
+              "unowned-chunk fixture creates a dirty Nether chunk");
+        server.saveChunkAsyncFor(-1, 0, 0);
+        server.stop(); // drains the owned I/O pool before checking disk state
+    }
+    CHECK(!std::filesystem::exists(worldDir / "DIM-1" / "region" / "r.0.0.mca"),
+          "a chunk without a Persistence owner is not written in-place");
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec,
+          "unowned-chunk fixture removes its exact temporary world directory");
+}
+
+static void scenarioSpawnChunkLoadFailureIsFatal() {
+    std::printf("\n[startup rejects an unreadable saved spawn chunk]\n");
+    const auto worldDir = std::filesystem::temp_directory_path() /
+        ("cppfm-spawn-load-failure-" + std::to_string(getpid()));
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+    const auto regionPath = worldDir / "region" / "r.0.0.mca";
+    std::filesystem::create_directories(regionPath.parent_path(), ec);
+    CHECK(!ec, "spawn-load fixture creates its isolated region directory");
+    if (ec) return;
+
+    std::vector<std::uint8_t> originalChunk;
+    try {
+        auto root = chunkToNBT(0, 0, Chunk{}, "minecraft:plains");
+        auto* sections = root.get("sections");
+        auto* blockStates = sections && !sections->list.empty()
+            ? sections->list.front().get("block_states") : nullptr;
+        auto* palette = blockStates ? blockStates->get("palette") : nullptr;
+        if (!palette || palette->tag != nbt::List || palette->list.empty())
+            throw std::runtime_error("empty spawn chunk fixture palette");
+        palette->list.front().set(
+            "Name", nbt::Value::makeString("example:unsupported_block"));
+        WriteBuffer encoded;
+        nbt::writeFileRoot(encoded, root);
+        RegionFile region(regionPath.string());
+        region.store(0, 0, encoded.data);
+        originalChunk = region.load(0, 0);
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "spawn-load fixture setup failed: %s\n",
+                     error.what());
+        CHECK(false, "spawn-load fixture writes a structurally valid unsupported chunk");
+        std::filesystem::remove_all(worldDir, ec);
+        return;
+    }
+    CHECK(!originalChunk.empty(),
+          "spawn-load fixture stores its target chunk in Anvil");
+
+    ServerConfig config;
+    config.ioWorkerThreads = 1;
+    config.jvmEnabled = false;
+    config.port = 0;
+    config.worldDir = worldDir.string();
+    bool initializationFailed = false;
+    std::string failureMessage;
+    {
+        GameServer server(config);
+        try {
+            server.init();
+        } catch (const std::exception& error) {
+            initializationFailed = true;
+            failureMessage = error.what();
+        }
+    }
+
+    CHECK(initializationFailed &&
+              failureMessage.find("required spawn chunk 0,0") !=
+                  std::string::npos,
+          "startup fails explicitly when a required saved spawn chunk is unsupported");
+    try {
+        RegionFile preservedRegion(regionPath.string());
+        CHECK(preservedRegion.load(0, 0) == originalChunk,
+              "failed startup preserves the original unsupported chunk bytes");
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "spawn-load preservation check failed: %s\n",
+                     error.what());
+        CHECK(false, "failed startup leaves the original spawn region readable");
+    }
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "spawn-load fixture removes its exact temporary world");
+}
+
+static void scenarioCrafterOpaqueOutputTarget() {
+    std::printf("\n[crafter output refuses opaque inventory without aborting tick]\n");
+    const auto result =
+        WorldMutationContractTestAccess::crafterOutputToOpaqueContainer();
+    CHECK(result.tickCompleted,
+          "crafter tick completes when its output target has opaque inventory");
+    CHECK(result.inputConsumed && result.outputDropped,
+          "crafted output is dropped safely instead of inserted or lost");
+    CHECK(result.opaqueInventoryPreserved,
+          "opaque destination block-entity data remains present");
+    CHECK(result.shulkerRemovedWithoutDrops,
+          "dropItems=false does not cancel breaking a filled shulker");
+    CHECK(result.shulkerDropsSuppressed,
+          "dropItems=false suppresses both block and container-content drops");
+    CHECK(result.pendingContainerLootGenerated,
+          "breaking an unopened container materializes its seeded loot table instead of losing it");
+    CHECK(result.tntUsesPostCallbackHeldItem,
+          "TNT ignition uses the held item after native block-break callbacks");
+    CHECK(result.blockEventTargetReplacementPreserved,
+          "a legacy break callback replacement is not erased by stale mining state");
+    CHECK(result.registeredEmptyLootSuppressesBlockDrop,
+          "a registered loot table that returns no items no longer falls back to dropping the block itself");
+    CHECK(result.invalidLootTableUsesBlockFallback,
+          "an unrepresentable loot entry is not silently registered over the block's default drop");
 }
 
 static void scenarioNestedCommandSourcePolicy() {
@@ -1123,6 +1683,27 @@ static void scenarioJvmServerThreadBoundary() {
     {
         GameServer server(cfg);
         server.init();
+
+        const auto chestState = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:chest"));
+        const auto stoneState = static_cast<std::uint16_t>(
+            gen::blockNameToState().at("minecraft:stone"));
+        const auto chestKey = posKey(8, 100, 8);
+        auto& world = server.worldFor(0);
+        bool placedChest = false;
+        bool replacedChest = false;
+        BlockEntityStore::Owner chestEntity;
+        {
+            auto mutationGate = world.lockMutationGate();
+            (void)mutationGate;
+            placedChest = world.setBlock(8, 100, 8, chestState);
+            chestEntity = server.blockEntities().createShared(
+                chestKey, BlockEntity::Kind::Chest);
+            replacedChest = world.setBlock(8, 100, 8, stoneState);
+        }
+        CHECK(placedChest && chestEntity && replacedChest &&
+                  !server.blockEntities().getShared(chestKey),
+              "changing a block entity's block type removes the stale entity from persistence");
 
         // init() temporarily owns the boundary for bootstrap, but a foreign
         // thread must not leave a request behind while no tick loop exists.
@@ -1503,14 +2084,691 @@ static void scenarioStopFromPlayerJoinCallback() {
     CHECK(!ec, "session self-stop lifecycle test removes its temporary world");
 }
 
+static void scenarioPlayerDataLoadIsTransactional() {
+    std::printf("\n[player persistence — failed parse leaves live player unchanged]\n");
+    const auto worldDir = std::filesystem::temp_directory_path() /
+        ("cppfm-playerdata-transaction-" + std::to_string(getpid()));
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+    std::filesystem::create_directories(worldDir / "playerdata");
+
+    ServerConfig cfg;
+    cfg.jvmEnabled = false;
+    cfg.ioWorkerThreads = 1;
+    cfg.worldDir = worldDir.string();
+    const std::string playerKey = "atomicity-fixture";
+    const auto playerFile = worldDir / "playerdata" /
+                            (playerKey + ".dat");
+    {
+        GameServer server(cfg);
+        Player player;
+        player.x = 1.25;
+        player.y = 72.0;
+        player.z = -4.5;
+        player.health = 11.0f;
+        player.food = 13;
+        player.inv[0] = ItemStack::of(
+            gen::itemIdByName().at("minecraft:diamond"), 3);
+        player.inv[1] = ItemStack::of(
+            gen::itemIdByName().at("minecraft:gold_ingot"), 4);
+        player.scoreboardTags = {"alpha", "build:zone", "zeta"};
+
+        Player tagLimitPlayer;
+        bool filledTags = true;
+        for (std::size_t index = 0;
+             index < Player::kMaxScoreboardTags; ++index) {
+            filledTags = tagLimitPlayer.addScoreboardTag(
+                "tag-" + std::to_string(index)) && filledTags;
+        }
+        CHECK(filledTags &&
+                  tagLimitPlayer.scoreboardTags.size() ==
+                      Player::kMaxScoreboardTags,
+              "players can add tags up to the vanilla 1024-tag limit");
+        CHECK(!tagLimitPlayer.addScoreboardTag("tag-0") &&
+                  !tagLimitPlayer.addScoreboardTag("tag-over-limit") &&
+                  tagLimitPlayer.scoreboardTags.size() ==
+                      Player::kMaxScoreboardTags,
+              "duplicate and over-limit command tags do not grow player state");
+
+        nbt::Value root = nbt::Value::makeCompound();
+        root.set("Health", nbt::Value::makeFloat(2.0f));
+        nbt::Value position = nbt::Value::makeList(nbt::Double);
+        nbt::Value px; px.tag = nbt::Double; px.d = 900.0;
+        nbt::Value py; py.tag = nbt::Double; py.d = 120.0;
+        nbt::Value pz; pz.tag = nbt::Double; pz.d = 901.0;
+        position.list = {px, py, pz};
+        root.set("Pos", std::move(position));
+        nbt::Value inventory = nbt::Value::makeList(nbt::Compound);
+        nbt::Value validStack = nbt::Value::makeCompound();
+        validStack.set("id", nbt::Value::makeString("minecraft:stone"));
+        validStack.set("Count", nbt::Value::makeByte(1));
+        validStack.set("Slot", nbt::Value::makeByte(5));
+        inventory.list.push_back(std::move(validStack));
+        nbt::Value malformedStack = nbt::Value::makeCompound();
+        malformedStack.set("id", nbt::Value::makeString("minecraft:stone"));
+        malformedStack.set("Count", nbt::Value::makeByte(0));
+        malformedStack.set("Slot", nbt::Value::makeByte(6));
+        inventory.list.push_back(std::move(malformedStack));
+        root.set("Inventory", std::move(inventory));
+        WriteBuffer encoded;
+        nbt::writeFileRoot(encoded, root);
+        {
+            std::ofstream file(playerFile, std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(encoded.data.data()),
+                       static_cast<std::streamsize>(encoded.data.size()));
+        }
+
+        bool filePresent = false;
+        const bool loaded = server.loadPlayerData(playerKey, player,
+                                                  &filePresent);
+        CHECK(!loaded && filePresent,
+              "malformed player data is rejected and isolated");
+        CHECK(player.x == 1.25 && player.y == 72.0 && player.z == -4.5 &&
+                  player.health == 11.0f && player.food == 13,
+              "failed player-data parsing does not partially apply position or survival state");
+        CHECK(player.inv[0].itemId == gen::itemIdByName().at("minecraft:diamond") &&
+                  player.inv[0].count == 3 &&
+                  player.inv[1].itemId == gen::itemIdByName().at("minecraft:gold_ingot") &&
+                  player.inv[1].count == 4 && player.inv[5].empty() &&
+                  player.inv[6].empty(),
+              "failed player-data parsing does not clear or partially replace inventory");
+        CHECK(std::filesystem::exists(playerFile.string() + ".corrupt"),
+              "rejected player data remains available under the quarantine suffix");
+
+        const std::string tagRoundTripKey = playerKey + "-tags";
+        server.savePlayerData(tagRoundTripKey, player);
+        Player restoredTags;
+        bool tagFilePresent = false;
+        CHECK(server.loadPlayerData(tagRoundTripKey, restoredTags,
+                                    &tagFilePresent) && tagFilePresent &&
+                  restoredTags.scoreboardTags == player.scoreboardTags,
+              "player scoreboard tags round-trip through vanilla Tags NBT");
+
+        const std::string emptyTagsKey = playerKey + "-empty-tags";
+        Player emptyTagsPlayer;
+        server.savePlayerData(emptyTagsKey, emptyTagsPlayer);
+        const auto emptyTagsPath = worldDir / "playerdata" /
+                                   (emptyTagsKey + ".dat");
+        std::ifstream emptyTagsFile(emptyTagsPath, std::ios::binary);
+        std::vector<std::uint8_t> emptyTagsBytes(
+            (std::istreambuf_iterator<char>(emptyTagsFile)),
+            std::istreambuf_iterator<char>());
+        ReadBuffer emptyTagsBuffer(emptyTagsBytes);
+        nbt::Parser emptyTagsParser(emptyTagsBuffer);
+        const auto emptyTagsRoot = emptyTagsParser.readFileRoot();
+        const auto* savedEmptyTags = emptyTagsRoot.get("Tags");
+        CHECK(savedEmptyTags && savedEmptyTags->tag == nbt::List &&
+                  savedEmptyTags->list.empty() &&
+                  savedEmptyTags->listElement == nbt::End,
+              "empty player Tags use vanilla's TAG_End list marker");
+        Player restoredEmptyTags;
+        bool emptyTagsPresent = false;
+        CHECK(server.loadPlayerData(emptyTagsKey, restoredEmptyTags,
+                                    &emptyTagsPresent) && emptyTagsPresent &&
+                  restoredEmptyTags.scoreboardTags.empty(),
+              "vanilla-shaped empty Tags lists load successfully");
+
+        const std::string legacyTagsKey = playerKey + "-legacy-tags";
+        const auto legacyTagsPath = worldDir / "playerdata" /
+                                    (legacyTagsKey + ".dat");
+        WriteBuffer legacyTagsBytes;
+        nbt::writeFileRoot(legacyTagsBytes, nbt::Value::makeCompound());
+        {
+            std::ofstream file(legacyTagsPath,
+                               std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(legacyTagsBytes.data.data()),
+                       static_cast<std::streamsize>(legacyTagsBytes.data.size()));
+        }
+        Player legacyTagsPlayer;
+        legacyTagsPlayer.scoreboardTags.insert("stale");
+        bool legacyTagsPresent = false;
+        CHECK(server.loadPlayerData(legacyTagsKey, legacyTagsPlayer,
+                                    &legacyTagsPresent) &&
+                  legacyTagsPresent && legacyTagsPlayer.scoreboardTags.empty(),
+              "legacy player data without Tags clears preexisting session tags");
+
+        const auto validPosition = [] {
+            nbt::Value position = nbt::Value::makeList(nbt::Double);
+            position.list = {nbt::Value::makeDouble(900.0),
+                             nbt::Value::makeDouble(120.0),
+                             nbt::Value::makeDouble(901.0)};
+            return position;
+        };
+        const auto rejectedFixture = [&](const std::string& fixtureName,
+                                         nbt::Value malformed,
+                                         const char* description) {
+            malformed.set("Health", nbt::Value::makeFloat(2.0f));
+            const auto path = worldDir / "playerdata" /
+                              (fixtureName + ".dat");
+            WriteBuffer bytes;
+            nbt::writeFileRoot(bytes, malformed);
+            {
+                std::ofstream file(path, std::ios::binary | std::ios::trunc);
+                file.write(reinterpret_cast<const char*>(bytes.data.data()),
+                           static_cast<std::streamsize>(bytes.data.size()));
+            }
+
+            Player candidate;
+            candidate.x = 1.25;
+            candidate.y = 72.0;
+            candidate.z = -4.5;
+            candidate.health = 11.0f;
+            candidate.food = 13;
+            candidate.inv[0] = ItemStack::of(
+                gen::itemIdByName().at("minecraft:diamond"), 3);
+            candidate.inv[1] = ItemStack::of(
+                gen::itemIdByName().at("minecraft:gold_ingot"), 4);
+            candidate.enderItems[0] = ItemStack::of(
+                gen::itemIdByName().at("minecraft:emerald"), 5);
+            candidate.scoreboardTags.insert("unchanged");
+            bool present = false;
+            const bool loaded = server.loadPlayerData(fixtureName, candidate,
+                                                      &present);
+            CHECK(!loaded && present &&
+                      std::filesystem::exists(path.string() + ".corrupt"),
+                  description);
+            CHECK(candidate.x == 1.25 && candidate.y == 72.0 &&
+                      candidate.z == -4.5 && candidate.health == 11.0f &&
+                      candidate.food == 13 &&
+                      candidate.inv[0].itemId ==
+                          gen::itemIdByName().at("minecraft:diamond") &&
+                      candidate.inv[0].count == 3 &&
+                      candidate.inv[1].itemId ==
+                          gen::itemIdByName().at("minecraft:gold_ingot") &&
+                      candidate.inv[1].count == 4 &&
+                      candidate.enderItems[0].itemId ==
+                          gen::itemIdByName().at("minecraft:emerald") &&
+                      candidate.enderItems[0].count == 5 &&
+                      candidate.scoreboardTags.size() == 1 &&
+                      candidate.scoreboardTags.contains("unchanged"),
+                  "malformed player data leaves position, survival data, inventory, ender inventory, and tags unchanged");
+        };
+
+        nbt::Value unregisteredItemData = nbt::Value::makeCompound();
+        unregisteredItemData.set("Pos", validPosition());
+        nbt::Value unregisteredInventory = nbt::Value::makeList(nbt::Compound);
+        nbt::Value unregisteredItem = nbt::Value::makeCompound();
+        unregisteredItem.set("id",
+            nbt::Value::makeString("example:modded_item"));
+        unregisteredItem.set("Count", nbt::Value::makeByte(1));
+        unregisteredItem.set("Slot", nbt::Value::makeByte(0));
+        unregisteredInventory.list.push_back(unregisteredItem);
+        unregisteredItemData.set("Inventory", std::move(unregisteredInventory));
+        const std::string unregisteredKey = playerKey + "-unregistered-item";
+        const auto unregisteredPath = worldDir / "playerdata" /
+                                      (unregisteredKey + ".dat");
+        WriteBuffer unregisteredBytes;
+        nbt::writeFileRoot(unregisteredBytes, unregisteredItemData);
+        {
+            std::ofstream file(unregisteredPath,
+                               std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(unregisteredBytes.data.data()),
+                       static_cast<std::streamsize>(unregisteredBytes.data.size()));
+        }
+        Player withUnregisteredItem;
+        withUnregisteredItem.inv[0] = ItemStack::of(
+            gen::itemIdByName().at("minecraft:diamond"), 3);
+        bool unregisteredFilePresent = false;
+        bool unsupportedItemData = false;
+        bool unsafeUnregisteredData = false;
+        const bool unregisteredLoaded = server.loadPlayerData(
+            unregisteredKey, withUnregisteredItem, &unregisteredFilePresent,
+            &unsupportedItemData, &unsafeUnregisteredData);
+        std::ifstream unregisteredAfterFile(unregisteredPath,
+                                             std::ios::binary);
+        const std::vector<std::uint8_t> retainedUnregisteredBytes(
+            (std::istreambuf_iterator<char>(unregisteredAfterFile)),
+            std::istreambuf_iterator<char>());
+        CHECK(!unregisteredLoaded && unregisteredFilePresent &&
+                  unsupportedItemData &&
+                  unsafeUnregisteredData &&
+                  std::filesystem::exists(unregisteredPath) &&
+                  !std::filesystem::exists(unregisteredPath.string() + ".corrupt") &&
+                  retainedUnregisteredBytes == unregisteredBytes.data,
+              "unregistered mod item data is rejected without quarantine or changing the active player save");
+        CHECK(withUnregisteredItem.inv[0].itemId ==
+                  gen::itemIdByName().at("minecraft:diamond") &&
+                  withUnregisteredItem.inv[0].count == 3,
+              "unsupported player items leave live player state unchanged");
+
+        nbt::Value wrongPos = nbt::Value::makeCompound();
+        nbt::Value integerPosition = nbt::Value::makeList(nbt::Int);
+        integerPosition.list = {nbt::Value::makeInt(900),
+                                nbt::Value::makeInt(120),
+                                nbt::Value::makeInt(901)};
+        wrongPos.set("Pos", std::move(integerPosition));
+        nbt::Value validInventory = nbt::Value::makeList(nbt::Compound);
+        nbt::Value stagedItem = nbt::Value::makeCompound();
+        stagedItem.set("id", nbt::Value::makeString("minecraft:stone"));
+        stagedItem.set("Count", nbt::Value::makeByte(1));
+        stagedItem.set("Slot", nbt::Value::makeByte(5));
+        validInventory.list.push_back(std::move(stagedItem));
+        wrongPos.set("Inventory", std::move(validInventory));
+        rejectedFixture(playerKey + "-wrong-pos", std::move(wrongPos),
+                        "wrong-tag Pos is rejected and quarantined");
+
+        nbt::Value wrongInventory = nbt::Value::makeCompound();
+        wrongInventory.set("Pos", validPosition());
+        wrongInventory.set("Inventory",
+                           nbt::Value::makeString("not an inventory list"));
+        rejectedFixture(playerKey + "-wrong-inventory",
+                        std::move(wrongInventory),
+                        "wrong-tag Inventory is rejected and quarantined");
+
+        nbt::Value wrongTags = nbt::Value::makeCompound();
+        wrongTags.set("Pos", validPosition());
+        wrongTags.set("Tags", nbt::Value::makeString("not a string list"));
+        rejectedFixture(playerKey + "-wrong-tags", std::move(wrongTags),
+                        "wrong-tag Tags is rejected and quarantined");
+
+        nbt::Value wrongEnderItems = nbt::Value::makeCompound();
+        wrongEnderItems.set("Pos", validPosition());
+        wrongEnderItems.set("EnderItems", nbt::Value::makeInt(1));
+        rejectedFixture(playerKey + "-wrong-ender-items",
+                        std::move(wrongEnderItems),
+                        "wrong-tag EnderItems is rejected and quarantined");
+
+        nbt::Value wrongXpLevel = nbt::Value::makeCompound();
+        wrongXpLevel.set("Pos", validPosition());
+        wrongXpLevel.set("XpLevel", nbt::Value::makeFloat(17.0f));
+        wrongXpLevel.set("XpTotal", nbt::Value::makeInt(200));
+        rejectedFixture(playerKey + "-wrong-xp-level",
+                        std::move(wrongXpLevel),
+                        "wrong-tag XpLevel is rejected and quarantined");
+
+        nbt::Value outOfRangeSlot = nbt::Value::makeCompound();
+        outOfRangeSlot.set("Pos", validPosition());
+        nbt::Value badSlotList = nbt::Value::makeList(nbt::Compound);
+        nbt::Value badSlotItem = nbt::Value::makeCompound();
+        badSlotItem.set("id", nbt::Value::makeString("minecraft:stone"));
+        badSlotItem.set("Count", nbt::Value::makeByte(1));
+        badSlotItem.set("Slot", nbt::Value::makeInt(127));
+        badSlotList.list.push_back(std::move(badSlotItem));
+        outOfRangeSlot.set("Inventory", std::move(badSlotList));
+        rejectedFixture(playerKey + "-out-of-range-slot",
+                        std::move(outOfRangeSlot),
+                        "unsupported out-of-range player Slot is rejected and quarantined");
+
+        nbt::Value vanillaEquipment = nbt::Value::makeCompound();
+        vanillaEquipment.set("Pos", validPosition());
+        nbt::Value equipmentItems = nbt::Value::makeList(nbt::Compound);
+        nbt::Value helmet = nbt::Value::makeCompound();
+        helmet.set("id", nbt::Value::makeString("minecraft:diamond_helmet"));
+        helmet.set("Count", nbt::Value::makeByte(1));
+        helmet.set("Slot", nbt::Value::makeByte(103));
+        equipmentItems.list.push_back(std::move(helmet));
+        const auto addArmorPiece = [&](const char* itemId, std::int8_t slot) {
+            nbt::Value armorPiece = nbt::Value::makeCompound();
+            armorPiece.set("id", nbt::Value::makeString(itemId));
+            armorPiece.set("Count", nbt::Value::makeByte(1));
+            armorPiece.set("Slot", nbt::Value::makeByte(slot));
+            equipmentItems.list.push_back(std::move(armorPiece));
+        };
+        addArmorPiece("minecraft:diamond_chestplate", 102);
+        addArmorPiece("minecraft:diamond_leggings", 101);
+        addArmorPiece("minecraft:diamond_boots", 100);
+        nbt::Value offhand = nbt::Value::makeCompound();
+        offhand.set("id", nbt::Value::makeString("minecraft:shield"));
+        offhand.set("Count", nbt::Value::makeByte(1));
+        offhand.set("Slot", nbt::Value::makeByte(-106));
+        equipmentItems.list.push_back(std::move(offhand));
+        vanillaEquipment.set("Inventory", std::move(equipmentItems));
+        const std::string equipmentKey = playerKey + "-vanilla-equipment";
+        const auto equipmentPath = worldDir / "playerdata" /
+                                   (equipmentKey + ".dat");
+        WriteBuffer equipmentBytes;
+        nbt::writeFileRoot(equipmentBytes, vanillaEquipment);
+        {
+            std::ofstream file(equipmentPath,
+                               std::ios::binary | std::ios::trunc);
+            file.write(reinterpret_cast<const char*>(equipmentBytes.data.data()),
+                       static_cast<std::streamsize>(equipmentBytes.data.size()));
+        }
+        Player equipped;
+        bool equipmentPresent = false;
+        const bool equipmentLoaded = server.loadPlayerData(
+            equipmentKey, equipped, &equipmentPresent);
+        CHECK(equipmentLoaded && equipmentPresent &&
+                  equipped.inv[8].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_helmet") &&
+                  equipped.inv[7].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_chestplate") &&
+                  equipped.inv[6].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_leggings") &&
+                  equipped.inv[5].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_boots") &&
+                  equipped.inv[45].itemId ==
+                      gen::itemIdByName().at("minecraft:shield"),
+              "vanilla feet-through-head armor and offhand aliases map to the matching internal equipment slots");
+        server.savePlayerData(equipmentKey, equipped);
+        Player roundTrippedEquipment;
+        bool roundTrippedEquipmentPresent = false;
+        const bool roundTrippedEquipmentLoaded = server.loadPlayerData(
+            equipmentKey, roundTrippedEquipment,
+            &roundTrippedEquipmentPresent);
+        CHECK(roundTrippedEquipmentLoaded &&
+                  roundTrippedEquipmentPresent &&
+                  roundTrippedEquipment.inv[8].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_helmet") &&
+                  roundTrippedEquipment.inv[7].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_chestplate") &&
+                  roundTrippedEquipment.inv[6].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_leggings") &&
+                  roundTrippedEquipment.inv[5].itemId ==
+                      gen::itemIdByName().at("minecraft:diamond_boots") &&
+                  roundTrippedEquipment.inv[45].itemId ==
+                      gen::itemIdByName().at("minecraft:shield"),
+              "saving and reloading vanilla equipment keeps every armor and offhand slot stable");
+    }
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "player-data transaction fixture removes its exact temporary world");
+}
+
+static void scenarioCloneBlockEntityBudgetPreflight() {
+    std::printf("\n[/clone block-entity budget — rejection preserves destination and source]\n");
+    const auto worldDir = std::filesystem::temp_directory_path() /
+        ("cppfm-clone-be-budget-" + std::to_string(getpid()));
+    std::error_code ec;
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "clone budget fixture starts with a clean exact temporary world");
+
+    ServerConfig cfg;
+    cfg.ioWorkerThreads = 1;
+    cfg.jvmEnabled = false;
+    // This fixture measures the block-entity record cap, not normal terrain
+    // generation. Keep its required chunk setup deterministic and cheap.
+    cfg.levelType = "flat";
+    cfg.worldDir = worldDir.string();
+    {
+        GameServer server(cfg);
+        try {
+            std::printf("  initializing flat fixture server...\n");
+            server.init();
+            std::printf("  fixture server initialized\n");
+            auto& world = server.worldFor(0);
+            auto& entities = server.blockEntities();
+            const auto source = posKey(0, 64, 0);
+            const auto destination = posKey(1, 64, 0);
+            const auto chestState = static_cast<std::uint16_t>(
+                gen::blockNameToState().at("minecraft:chest"));
+            const auto stoneState = static_cast<std::uint16_t>(
+                gen::blockNameToState().at("minecraft:stone"));
+            const auto movingPiston =
+                gen::blockNameToState().find("minecraft:moving_piston");
+
+            CHECK(movingPiston != gen::blockNameToState().end(),
+                  "moving-piston animation block is registered");
+            if (movingPiston != gen::blockNameToState().end()) {
+                constexpr std::int32_t animationX = 32;
+                const auto animationKey = posKey(animationX, 64, 0);
+                BlockEntityStore::Owner animationOwner;
+                bool basePlaced = false;
+                bool animationPlaced = false;
+                {
+                    auto mutationGate = world.lockMutationGate();
+                    (void)mutationGate;
+                    basePlaced = world.setBlock(
+                        animationX, 64, 0, stoneState);
+                    auto staged = entities.tryCreateSharedBatch(
+                        {animationKey}, BlockEntity::Kind::MovingPiston);
+                    animationPlaced = staged && world.setBlock(
+                        animationX, 64, 0,
+                        static_cast<std::uint16_t>(movingPiston->second));
+                    if (staged && animationPlaced)
+                        animationOwner = staged->front();
+                    else if (staged)
+                        entities.remove(animationKey);
+                }
+                CHECK(basePlaced && animationPlaced &&
+                          animationOwner &&
+                          entities.getShared(animationKey) == animationOwner,
+                      "ordinary-block to moving-piston transition preserves the pre-admitted animation entity");
+
+                if (animationOwner) {
+                    const auto sourceReject = server.dispatchConsole(
+                        "clone 32 64 0 32 64 0 33 64 0");
+                    CHECK(sourceReject.find("moving piston") !=
+                                  std::string::npos &&
+                              world.getBlock(animationX, 64, 0) ==
+                                  movingPiston->second &&
+                              entities.getShared(animationKey) ==
+                                  animationOwner &&
+                              world.getBlock(33, 64, 0) == 0,
+                          "/clone rejects a moving-piston source without changing its animation or destination");
+
+                    const auto movingDestinationKey = posKey(35, 64, 0);
+                    BlockEntityStore::Owner movingDestinationOwner;
+                    bool sourceStonePlaced = false;
+                    bool destinationMovingPlaced = false;
+                    {
+                        auto mutationGate = world.lockMutationGate();
+                        (void)mutationGate;
+                        sourceStonePlaced = world.setBlock(
+                            34, 64, 0, stoneState);
+                        auto owners = entities.tryCreateSharedBatch(
+                            {movingDestinationKey},
+                            BlockEntity::Kind::MovingPiston);
+                        destinationMovingPlaced = owners && world.setBlock(
+                            35, 64, 0,
+                            static_cast<std::uint16_t>(movingPiston->second));
+                        if (destinationMovingPlaced)
+                            movingDestinationOwner = owners->front();
+                        else if (owners)
+                            entities.remove(movingDestinationKey);
+                    }
+                    const auto destinationReject =
+                        sourceStonePlaced && destinationMovingPlaced
+                            ? server.dispatchConsole(
+                                  "clone 34 64 0 34 64 0 35 64 0")
+                            : std::string{};
+                    CHECK(sourceStonePlaced,
+                          "destination-guard fixture places its ordinary source block");
+                    CHECK(destinationMovingPlaced,
+                          "destination-guard fixture stages a moving piston and owner");
+                    CHECK(destinationReject.find("moving piston") !=
+                              std::string::npos,
+                          "/clone explicitly rejects a moving-piston destination");
+                    CHECK(world.getBlock(34, 64, 0) == stoneState &&
+                              world.getBlock(35, 64, 0) ==
+                                  movingPiston->second,
+                          "rejected destination clone preserves both block states");
+                    CHECK(movingDestinationOwner &&
+                              entities.getShared(movingDestinationKey) ==
+                                  movingDestinationOwner,
+                          "rejected destination clone preserves its animation owner");
+
+                    const auto unrelatedMovingKey = posKey(37, 64, 0);
+                    BlockEntityStore::Owner unrelatedMovingOwner;
+                    bool unrelatedMovingPlaced = false;
+                    bool unrelatedSourcePlaced = false;
+                    {
+                        auto mutationGate = world.lockMutationGate();
+                        (void)mutationGate;
+                        unrelatedSourcePlaced = world.setBlock(
+                            36, 64, 0, stoneState);
+                        auto owners = entities.tryCreateSharedBatch(
+                            {unrelatedMovingKey},
+                            BlockEntity::Kind::MovingPiston);
+                        unrelatedMovingPlaced = owners && world.setBlock(
+                            37, 64, 0,
+                            static_cast<std::uint16_t>(movingPiston->second));
+                        if (unrelatedMovingPlaced)
+                            unrelatedMovingOwner = owners->front();
+                        else if (owners)
+                            entities.remove(unrelatedMovingKey);
+                    }
+                    const auto unrelatedCloneResult =
+                        unrelatedMovingPlaced && unrelatedSourcePlaced
+                            ? server.dispatchConsole(
+                                  "clone 36 64 0 36 64 0 38 64 0")
+                            : std::string{};
+                    CHECK(unrelatedMovingPlaced,
+                          "unrelated-animation fixture stages its moving piston");
+                    CHECK(unrelatedSourcePlaced,
+                          "unrelated-animation fixture places its clone source");
+                    CHECK(unrelatedCloneResult.find("moving piston") ==
+                              std::string::npos,
+                          "/clone does not reject an unrelated animation in the chunk");
+                    CHECK(world.getBlock(38, 64, 0) == stoneState,
+                          "/clone copies a valid source beside an unrelated animation");
+                    CHECK(unrelatedMovingOwner &&
+                              entities.getShared(unrelatedMovingKey) ==
+                                  unrelatedMovingOwner,
+                          "/clone leaves the unrelated animation owner intact");
+
+                    const bool animationFinalized = world.setBlock(
+                        animationX, 64, 0, stoneState);
+                    const bool destinationAnimationCleared = world.setBlock(
+                        35, 64, 0, 0);
+                    const bool unrelatedAnimationCleared = world.setBlock(
+                        37, 64, 0, 0);
+                    CHECK(animationFinalized && destinationAnimationCleared &&
+                              unrelatedAnimationCleared &&
+                              !entities.getShared(animationKey) &&
+                              !entities.getShared(movingDestinationKey) &&
+                              !entities.getShared(unrelatedMovingKey),
+                          "clone animation fixtures clean up their exact transient owners");
+                }
+            }
+
+            std::printf("  generating block-entity fixture chunk...\n");
+            const bool chunkReady = world.generateChunkIfMissing(0, 0);
+            std::printf("  block-entity fixture chunk generated: %s\n",
+                        chunkReady ? "yes" : "no");
+            std::printf("  placing source chest block...\n");
+            const bool sourcePlaced = chunkReady &&
+                world.setBlock(0, 64, 0, chestState);
+            std::printf("  source chest placement complete: %s\n",
+                        sourcePlaced ? "yes" : "no");
+            std::printf("  placing destination sentinel block...\n");
+            const bool destinationPlaced = sourcePlaced &&
+                world.setBlock(1, 64, 0, stoneState);
+            std::printf("  destination sentinel placement complete: %s\n",
+                        destinationPlaced ? "yes" : "no");
+            CHECK(chunkReady && sourcePlaced && destinationPlaced,
+                  "clone budget source and sentinel destination are prepared in a loaded chunk");
+
+            if (chunkReady && sourcePlaced && destinationPlaced) {
+                entities.setDirtyCallback({});
+                std::vector<std::int64_t> fillerKeys;
+                fillerKeys.reserve(
+                    BlockEntityStore::kMaxChunkBlockEntityRecords - 1);
+                for (std::int32_t y = -64;
+                     y < world.maxY() &&
+                         fillerKeys.size() + 1 <
+                             BlockEntityStore::kMaxChunkBlockEntityRecords;
+                     ++y) {
+                    for (std::int32_t z = 0; z < 16 &&
+                         fillerKeys.size() + 1 <
+                             BlockEntityStore::kMaxChunkBlockEntityRecords;
+                         ++z) {
+                        for (std::int32_t x = 0; x < 16 &&
+                             fillerKeys.size() + 1 <
+                                 BlockEntityStore::kMaxChunkBlockEntityRecords;
+                             ++x) {
+                            if ((x == 0 || x == 1) && y == 64 && z == 0)
+                                continue;
+                            fillerKeys.push_back(posKey(x, y, z));
+                        }
+                    }
+                }
+                auto fillerOwners = entities.tryCreateSharedBatch(
+                    fillerKeys, BlockEntity::Kind::MovingPiston);
+                const auto sourceEntity = fillerOwners
+                    ? entities.tryCreateShared(source,
+                                               BlockEntity::Kind::Chest)
+                    : BlockEntityStore::Owner{};
+                CHECK(fillerOwners && sourceEntity &&
+                          fillerKeys.size() + 1 ==
+                              BlockEntityStore::kMaxChunkBlockEntityRecords &&
+                          entities.size() ==
+                              BlockEntityStore::kMaxChunkBlockEntityRecords,
+                      "fixture reaches the exact per-chunk block-entity record limit");
+
+                const auto serializeChunkEntities = [&] {
+                    auto list = nbt::Value::makeList(nbt::Compound);
+                    entities.writeChunkNbt(0, 0, list);
+                    auto serializedRoot = nbt::Value::makeCompound();
+                    serializedRoot.set("block_entities", std::move(list));
+                    WriteBuffer encoded;
+                    nbt::writeFileRoot(encoded, serializedRoot);
+                    return encoded.data;
+                };
+                const auto before = serializeChunkEntities();
+                const auto countBefore = entities.size();
+                const auto result = server.dispatchConsole(
+                    "clone 0 64 0 0 64 0 1 64 0");
+                const auto after = serializeChunkEntities();
+
+                CHECK(result.find("budget") != std::string::npos,
+                      "/clone reports the block-entity budget rejection");
+                CHECK(world.getBlock(1, 64, 0) == stoneState &&
+                          !entities.getShared(destination) &&
+                          entities.size() == countBefore,
+                      "rejected /clone leaves the sentinel block and entity-store membership unchanged");
+                CHECK(before == after,
+                      "rejected /clone leaves the complete source-chunk block-entity NBT byte-identical");
+            }
+        } catch (const std::exception& error) {
+            std::fprintf(stderr,
+                         "clone block-entity budget fixture threw: %s\n",
+                         error.what());
+            CHECK(false,
+                  "clone block-entity budget fixture completes without an exception");
+        }
+        server.stop();
+    }
+    std::filesystem::remove_all(worldDir, ec);
+    CHECK(!ec, "clone budget fixture removes its exact temporary world");
+}
+
 int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     bool filterMobAi=false;
-    for(int i=1;i<argc;++i) if(std::string(argv[i]).find("mob_ai")!=std::string::npos) filterMobAi=true;
+    bool filterBlockEntityDropPolicy = false;
+    bool filterCloneBlockEntityBudget = false;
+    bool filterChunkSaveOwnership = false;
+    bool filterPlayerDataTransaction = false;
+    for(int i=1;i<argc;++i) {
+        const std::string arg(argv[i]);
+        if (arg.find("mob_ai") != std::string::npos) filterMobAi = true;
+        if (arg == "block_entity_drop_policy")
+            filterBlockEntityDropPolicy = true;
+        if (arg == "clone_block_entity_budget")
+            filterCloneBlockEntityBudget = true;
+        if (arg == "chunk_save_ownership")
+            filterChunkSaveOwnership = true;
+        if (arg == "player_data_transaction")
+            filterPlayerDataTransaction = true;
+    }
     if(filterMobAi){
         std::printf("=== cppfm native mob_ai filter (10 cases) ===\n");
         scenarioMobStateLockBoundary();
         scenarioMobAI30();
+        std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
+        return g_fail ? 1 : 0;
+    }
+    if (filterBlockEntityDropPolicy) {
+        std::printf("=== block-entity and suppressed-drop policy regression ===\n");
+        scenarioCrafterOpaqueOutputTarget();
+        std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
+        return g_fail ? 1 : 0;
+    }
+    if (filterCloneBlockEntityBudget) {
+        std::printf("=== clone block-entity budget regression ===\n");
+        scenarioCloneBlockEntityBudgetPreflight();
+        std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
+        return g_fail ? 1 : 0;
+    }
+    if (filterChunkSaveOwnership) {
+        std::printf("=== chunk persistence ownership regression ===\n");
+        scenarioChunkSaveWithoutPersistenceIsNotScheduled();
+        std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
+        return g_fail ? 1 : 0;
+    }
+    if (filterPlayerDataTransaction) {
+        std::printf("=== transactional player-data and Tags NBT regressions ===\n");
+        scenarioPlayerDataLoadIsTransactional();
         std::printf("\n%s (%d failures)\n", g_fail ? "FAILURES" : "ALL PASS", g_fail);
         return g_fail ? 1 : 0;
     }
@@ -1548,10 +2806,15 @@ int main(int argc, char** argv) {
     CHECK(srv.stop(), "owned server process and temporary world cleaned up");
     scenarioMobStateLockBoundary();
     scenarioDimensionCacheUnit();
+    scenarioChunkSaveWithoutPersistenceIsNotScheduled();
+    scenarioSpawnChunkLoadFailureIsFatal();
+    scenarioCrafterOpaqueOutputTarget();
     scenarioNestedCommandSourcePolicy();
     scenarioJvmServerThreadBoundary();
     scenarioStopFromTickCallback();
     scenarioStopFromPlayerJoinCallback();
+    scenarioPlayerDataLoadIsTransactional();
+    scenarioCloneBlockEntityBudgetPreflight();
     scenarioWorldGenParity();
     scenarioPredicateUnit();
     scenarioMobAI30();

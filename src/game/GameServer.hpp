@@ -14,6 +14,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <array>
 #include <deque>
@@ -24,6 +25,10 @@
 #include "../proto/Ids.hpp"
 #include "World.hpp"
 #include "ChunkCodec.hpp"
+#include "ChunkBodyCache.hpp"
+#include "ChunkSaveCoordinator.hpp"
+#include "ChunkNbtProjection.hpp"
+#include "PacketOrder.hpp"
 #include "EmbeddedData.hpp"
 #include "Persistence.hpp"
 #include "Entities.hpp"
@@ -38,6 +43,8 @@
 #include "TagManager.hpp"
 #include "LootTables.hpp"
 #include "BlockEntities.hpp"
+#include "BlockEntityKinds.hpp"
+#include "BlockContainerSlot.hpp"
 #include "GameData.hpp"
 #include "Xp.hpp"
 #include "MobEffects.hpp"
@@ -139,9 +146,15 @@ struct Player {
     std::int64_t lastKeepAliveSentMs = 0;
     std::int64_t keepAliveCounter = 0;
     bool spawned = false;          // position confirmed (teleport/movement)
+    // All teleports share one per-player confirmation sequence. The serial
+    // mutex keeps packet enqueue order aligned with the latest pending id.
+    mutable std::mutex teleportMtx;
+    std::int32_t lastTeleportId = 1;
+    std::optional<std::int32_t> pendingTeleportId;
     bool inPlay = false;           // finished onEnterPlay: eligible for broadcasts
     // survival state
-    std::uint8_t gamemode = 1;     // 0 survival 1 creative 2 adventure 3 spectator
+    std::uint8_t gamemode = 0;     // 0 survival 1 creative 2 adventure 3 spectator
+    std::uint8_t previousGamemode = 0;
     float health = 20.f;
     std::int32_t food = 20;
     float saturation = 5.f;
@@ -175,11 +188,19 @@ struct Player {
     struct LoginProp { std::string name, value, signature; };
     std::vector<LoginProp> loginProps;
     // survival dig tracking
+    // The connection/session thread and the authoritative tick thread both
+    // transition this state. digMtx protects the fields; digTransitionMtx
+    // serializes session-side dig actions with the tick's authoritative block
+    // break and its packets. When both are needed, acquire digTransitionMtx
+    // before digMtx.
+    mutable std::mutex digTransitionMtx;
+    mutable std::mutex digMtx;
     bool digActive = false;
     std::int32_t digX=0, digY=0, digZ=0;
     std::int64_t digStartTick = 0;
     std::int32_t digTotalTicks = 0;
     std::uint8_t digLastStage = 255;
+    std::uint64_t digRevision = 0;
     double sentX = 0, sentY = 0, sentZ = 0;   // last broadcast to others
     float  sentYaw = 0, sentPitch = 0;
     XpState xp{};
@@ -198,7 +219,17 @@ struct Player {
     std::int32_t chatMessageIndex = 0;
     std::int64_t chatSessionExpiry = 0;
     std::vector<std::int64_t> lastSeenChatSalts;
-    std::unordered_map<std::string, std::vector<std::uint8_t>> cookies;
+    std::unordered_set<std::string> scoreboardTags;
+    static constexpr std::size_t kMaxScoreboardTags = 1024;
+
+    bool addScoreboardTag(std::string tag) {
+        std::lock_guard playerLock(stateMtx);
+        if (scoreboardTags.contains(tag) ||
+            scoreboardTags.size() >= kMaxScoreboardTags)
+            return false;
+        return scoreboardTags.insert(std::move(tag)).second;
+    }
+
     std::int8_t dimension = 0;
     std::int64_t portalCooldownUntilTick = -100000;
     // sleeping state (bed)
@@ -299,6 +330,137 @@ public:
         : srv_(srv), conn_(std::move(conn)),
           statusAdmission_(std::move(statusAdmission)),
           releaseAdmission_(std::move(releaseAdmission)) {}
+
+    // State for a component-driven item use. Play packet handlers and the
+    // authoritative server tick are serialized by simulationDispatchMtx_, so
+    // this deliberately has no independent lock. Keeping the transition
+    // rules here makes the elapsed-use boundary independently testable.
+    struct ConsumableUseState {
+        enum class Phase : std::uint8_t { Idle, Active, Ready, Cancelled };
+        enum class TickResult : std::uint8_t { Inactive, Active, Ready };
+
+        static std::optional<std::uint32_t> consumeTicks(
+            const float consumeSeconds) noexcept {
+            if (!std::isfinite(consumeSeconds) || consumeSeconds <= 0.0F)
+                return std::nullopt;
+            // Match the component's float-seconds representation before
+            // rounding to a whole server tick. Never authorize completion
+            // before the configured interval has elapsed.
+            const float ticks = consumeSeconds * 20.0F;
+            if (!std::isfinite(ticks) || ticks <= 0.0F)
+                return std::nullopt;
+            const double rounded = std::ceil(static_cast<double>(ticks));
+            if (!std::isfinite(rounded) || rounded > 2147483647.0)
+                return std::nullopt;
+            return static_cast<std::uint32_t>(std::max(1.0, rounded));
+        }
+
+        static std::optional<std::uint32_t> consumeTicksFromPayload(
+            const std::vector<std::uint8_t>& payload) noexcept {
+            if (payload.size() < sizeof(float)) return std::nullopt;
+            try {
+                ReadBuffer input(payload);
+                return consumeTicks(input.f32());
+            } catch (...) {
+                return std::nullopt;
+            }
+        }
+
+        bool start(const bool hasConsumableComponent,
+                   const std::size_t inventorySlot,
+                   const float consumeSeconds,
+                   const ItemStack& heldStack) {
+            const auto ticks = consumeTicks(consumeSeconds);
+            return ticks && startWithTicks(hasConsumableComponent,
+                                           inventorySlot, *ticks,
+                                           heldStack);
+        }
+
+        bool startWithTicks(const bool hasConsumableComponent,
+                            const std::size_t inventorySlot,
+                            const std::uint32_t durationTicks,
+                            const ItemStack& heldStack) {
+            if (!hasConsumableComponent ||
+                inventorySlot >= 46 || durationTicks == 0 ||
+                durationTicks > 2147483647u || heldStack.empty() ||
+                (phase_ != Phase::Idle && phase_ != Phase::Cancelled))
+                return false;
+            inventorySlot_ = inventorySlot;
+            durationTicks_ = durationTicks;
+            elapsedTicks_ = 0;
+            heldStack_ = heldStack;
+            phase_ = Phase::Active;
+            return true;
+        }
+
+        TickResult continueOneTick() noexcept {
+            if (phase_ == Phase::Ready) return TickResult::Ready;
+            if (phase_ != Phase::Active) return TickResult::Inactive;
+            ++elapsedTicks_;
+            if (elapsedTicks_ >= durationTicks_) {
+                phase_ = Phase::Ready;
+                return TickResult::Ready;
+            }
+            return TickResult::Active;
+        }
+
+        // RELEASE_USE_ITEM before the deadline cancels consumption. A release
+        // after the authoritative final tick only acknowledges the completed
+        // use and cannot roll it back.
+        bool release() noexcept {
+            if (phase_ == Phase::Active) {
+                cancel();
+                return false;
+            }
+            return phase_ == Phase::Ready;
+        }
+
+        void cancel() noexcept {
+            if (phase_ != Phase::Active) return;
+            phase_ = Phase::Cancelled;
+            inventorySlot_ = 0;
+            durationTicks_ = 0;
+            elapsedTicks_ = 0;
+            heldStack_ = ItemStack::air();
+        }
+
+        bool matchesActiveStack(const std::size_t inventorySlot,
+                                const ItemStack& stack) const {
+            return phase_ == Phase::Active &&
+                   inventorySlot == inventorySlot_ && !stack.empty() &&
+                   heldStack_.sameItemData(stack);
+        }
+
+        std::optional<std::size_t> activeSlot() const noexcept {
+            if (phase_ != Phase::Active) return std::nullopt;
+            return inventorySlot_;
+        }
+
+        std::optional<std::size_t> takeCompletedSlot() noexcept {
+            if (phase_ != Phase::Ready) return std::nullopt;
+            const auto completedSlot = inventorySlot_;
+            phase_ = Phase::Idle;
+            inventorySlot_ = 0;
+            durationTicks_ = 0;
+            elapsedTicks_ = 0;
+            heldStack_ = ItemStack::air();
+            return completedSlot;
+        }
+
+        Phase phase() const noexcept { return phase_; }
+        std::uint32_t elapsedTicks() const noexcept { return elapsedTicks_; }
+        std::uint32_t durationTicksValue() const noexcept {
+            return durationTicks_;
+        }
+
+    private:
+        Phase phase_ = Phase::Idle;
+        std::size_t inventorySlot_ = 0;
+        std::uint32_t durationTicks_ = 0;
+        std::uint32_t elapsedTicks_ = 0;
+        ItemStack heldStack_;
+    };
+
     ~Session();
 
     void run();
@@ -306,6 +468,7 @@ public:
     std::int8_t dimension() const { return self_->dimension; }
 
 private:
+    friend class GameServer;
     void handleHandshake(ReadBuffer& in);
     void answerLegacyPing();
     void handleStatus();
@@ -316,7 +479,10 @@ private:
     enum class ConfigWaitResult { Continue, FinishAck, PacksDone, Abort };
     ConfigWaitResult handleOneConfigPacket(ReadBuffer& in);
     void onEnterPlay();
-    void tickChunksAround(double px, double pz);
+    void tickChunksAround(double px, double pz,
+                          SimulationDispatchGuard& simulationLock);
+    void sendNextChunkBatch(std::int8_t dimension,
+                            SimulationDispatchGuard& simulationLock);
 
     // play-phase handlers
     void onChatMessage(ReadBuffer& in);
@@ -335,19 +501,19 @@ private:
     void placeUseItemOnBlock(const UseItemOnRequest& request,
                              const InvSlot& heldItem);
     void onUseItem(ReadBuffer& in);
+    void tickConsumableUse();
     void onHeldSlot(ReadBuffer& in);
     // Play-packet bodies extracted from handlePlay (cleanup P3(d)).
-    void onAcceptTeleportation(ReadBuffer& in);
+    void onAcceptTeleportation(ReadBuffer& in,
+                               SimulationDispatchGuard& simulationLock);
     void onKeepAlivePacket(ReadBuffer& in);
     bool onChatCommandSignedPacket(ReadBuffer& in);
     void onChatSessionUpdate(ReadBuffer& in);
-    void onCookieResponse(ReadBuffer& in);
     void onCustomPayload(ReadBuffer& in);
     void onPlaceRecipePacket(ReadBuffer& in);
     void onSelectTrade(ReadBuffer& in);
     void onPingRequest(ReadBuffer& in);
     void onPlayerAbilities(ReadBuffer& in);
-    void onPlayerLoadedPacket(ReadBuffer& in);
     void onSetCreativeModeSlot(ReadBuffer& in);
     void onClientCommand(ReadBuffer& in);
     void onPlayerInput(ReadBuffer& in);
@@ -378,7 +544,7 @@ private:
     void onUpdateJigsaw(ReadBuffer& in);
     void onUpdateStructureBlock(ReadBuffer& in);
     void onSpectatePacket(ReadBuffer& in);
-    void onPlayerLoadedPacket();
+    void onPlayerLoadedPacket(SimulationDispatchGuard& simulationLock);
     void onUseEntity(ReadBuffer& in);
     void handleRespawnRequest();
     void sendDeclareCommands();
@@ -386,7 +552,8 @@ private:
     void dispatchCommand(const std::string& line);
     void broadcastMovement();
     void broadcastSpawnEntity(Player* about);
-    void onMovement(ReadBuffer& in, bool hasPos, bool hasRot);
+    void onMovement(ReadBuffer& in, bool hasPos, bool hasRot,
+                    SimulationDispatchGuard& simulationLock);
     void onTabComplete(ReadBuffer& in);
     void handlePlaceRecipe(std::int32_t recipeId, bool makeAll);
     void handlePlaceGhostRecipe(std::int32_t recipeId);
@@ -402,19 +569,25 @@ private:
     void sendSystemText(const std::string& text);
     void sendJoinGame();
     void sendTeleport(double x, double y, double z, float yaw, float pitch);
-    void sendChunk(std::int32_t cx, std::int32_t cz);
-    void streamInitialChunks();
+    bool sendChunk(std::int8_t dimension, std::int32_t cx,
+                   std::int32_t cz,
+                   SimulationDispatchGuard& simulationLock);
+    void streamInitialChunks(SimulationDispatchGuard& simulationLock);
     void sendPlayerInfoAddSelf();
     void broadcastPlayerInfoAdd(Player* about);
-    void sendStarterInventory();
+    void sendInitialInventory();
     void sendAbilities();
-    void sendSignBlockEntity(std::int32_t x, std::int32_t y, std::int32_t z);
+    void sendSignBlockEntity(std::int8_t dimension, std::int32_t x,
+                             std::int32_t y, std::int32_t z,
+                             bool broadcast = true);
     void ack(std::int32_t sequence);
     // container menus (chest/furnace/crafting)
     void onCloseContainer();
     void handleMenuClick(Menu& m, int slot, int button, int mode);
     void handlePlayerInventoryClick(int slot, int button, int mode);
     void sendMenuContent(Menu& m);
+    void resyncOpenMenuAt(std::int8_t dimension, std::int64_t blockKey);
+    bool menuItemsSerializable(Menu& m);
     void appendEnchantmentProperties(Menu& m,
                                      std::vector<WriteBuffer>& packets);
     void sendSetSlot(std::int32_t windowId, std::int32_t stateId,
@@ -425,6 +598,9 @@ private:
     void closeOpenMenu(bool sendPacket);
     void onWindowClick(ReadBuffer& in);
     void onEnchantItem(ReadBuffer& in);
+    void resyncOpenMenuForBlockChanges(
+        std::int8_t dimension,
+        const std::unordered_set<std::int64_t>& changedBlockKeys);
     void applyClientSettings(Player::ClientSettings s);
     bool requireOp(int level, const char* what);
     void sendTagQueryResponse(std::int32_t transactionId, const WriteBuffer& nbt);
@@ -439,14 +615,21 @@ private:
     std::function<bool()> statusAdmission_;
     std::function<void()> releaseAdmission_;
     bool playerAdmissionReserved_ = false;
+    bool preservePlayerDataOnDisconnect_ = false;
     enum class State { Handshake, Status, Login, Configuration, Play, Done };
 
     State state_ = State::Handshake;
+    static constexpr std::size_t kDefaultChunkBatchSize = 8;
+    static constexpr std::size_t kMaxChunkBatchSize = 32;
     std::shared_ptr<Player> self_ = std::make_shared<Player>();
+    ConsumableUseState consumableUse_;
     bool registered_ = false;         // present in server registry
-    std::int32_t teleportId_ = 1;
     bool chunksStreamed_ = false;
     std::int32_t lastCx_ = INT32_MAX, lastCz_ = INT32_MAX;
+    std::optional<std::int8_t> chunkStreamDimension_;
+    std::vector<std::pair<std::int32_t, std::int32_t>> pendingChunkStream_;
+    std::size_t chunkBatchSize_ = kDefaultChunkBatchSize;
+    bool chunkBatchAwaitingAck_ = false;
     double sentX_ = 0, sentY_ = 0, sentZ_ = 0;
     float sentYaw_ = 0, sentPitch_ = 0;
     bool hasSent_ = false;
@@ -475,6 +658,9 @@ private:
 class GameServer {
     friend class Session;
     friend class jvm::JvmRuntime;
+#ifdef CPPFM_WORLD_MUTATION_TEST
+    friend struct WorldMutationContractTestAccess;
+#endif
 
     struct DimensionRuntime {
         World world;
@@ -494,7 +680,12 @@ class GameServer {
 
         DimensionRuntime(std::string biome, LevelType levelType,
                          std::uint64_t seed)
-            : world(std::move(biome), levelType, seed) {}
+            : world(std::move(biome), levelType, seed),
+              blockEntities(world.minY(), world.maxY()) {
+            if (!blockEntities.bindMutationGate(world.mutationGateIdentity()))
+                throw std::logic_error(
+                    "failed to bind block entities to World mutation gate");
+        }
     };
 
     // Canonical storage order is Overworld, Nether, End.  Minecraft dimension
@@ -540,6 +731,7 @@ public:
           pendingSessionAdmissionGate_(pendingSessionWorkerLimit(cfg.maxPlayers)),
           ioPool_(static_cast<std::size_t>(std::max(1, cfg_.ioWorkerThreads))) {
         difficulty_ = cfg_.difficulty;
+        defaultGameMode_.store(cfg_.gameMode, std::memory_order_relaxed);
         dimensionRuntimes_[1] = std::make_unique<DimensionRuntime>(
             "minecraft:nether_wastes", LevelType::Nether,
             cfg.seed ^ 0x4E37ULL);
@@ -549,6 +741,8 @@ public:
         dimensionRuntime(-1).world.setDimensionId(-1);
         dimensionRuntime(1).world.setDimensionId(1);
     }
+    bool teleportPlayer(Player& player, double x, double y, double z,
+                        std::optional<std::array<float, 2>> rotation = std::nullopt);
     World& worldFor(std::int8_t dim) {
         return dimensionRuntime(dim).world;
     }
@@ -629,6 +823,8 @@ public:
         loadBans();
         loadBannedIps();
         recipes_.loadDefaults();
+        tagManager_.loadDirectory("assets/data/tags");
+        recipes_.syncTagsFrom(tagManager_);
         recipes_.loadDirectory(cfg_.recipesDir);
         entityDataLoader_.loadDirectory("assets/entities");
         for (auto &kv : entityDataLoader_.all()) {
@@ -636,16 +832,10 @@ public:
             std::fprintf(stderr, "[cppfm] entity data: %s max_health=%.1f speed=%.3f\n",
                          def.type.c_str(), def.max_health, def.movement_speed);
         }
-        tagManager_.loadDirectory("assets/data/tags");
-        tagManager_.applyToRecipeTags(recipes_.tags_);
-        recipes_.syncTagsFrom(tagManager_); // plan37 B-03 double sync before recipes (also after loadDirectory)
         lootTables_.loadDirectory("assets/data/loot_tables");
         datapackManager_.loadAll(recipes_, "assets/data", cfg_.worldDir + "/datapacks");
         tagManager_ = datapackManager_.tagManager;
         lootTables_ = datapackManager_.lootTables;
-        // final double sync after DatapackManager merged (covers world/datapacks tags)
-        tagManager_.applyToRecipeTags(recipes_.tags_);
-        recipes_.syncTagsFrom(tagManager_);
         functionEvaluator_.setServer(this);
         initCommands();
         dimensionRuntime(0).lightEngine =
@@ -746,6 +936,11 @@ public:
             redstone.setTickRef(&tickNo_);
             redstone.setBlockTickScheduler(&blockTicks);
             redstone.setGameServer(this);
+            redstone.setPistonChunkDirtyFn(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    if (auto* storage = persistenceFor(dimension))
+                        storage->markDirty(cx, cz);
+                });
             redstone.setBroadcastFn(
                 [this, dimension](std::int32_t x, std::int32_t y,
                                   std::int32_t z, std::uint16_t state) {
@@ -754,10 +949,43 @@ public:
                 });
             dimensionWorld.setOnBlockChanged(
                 [this, dimension, light = &lightEngine, fluids = &fluidSim,
-                 redstoneEngine = &redstone](std::int32_t x, std::int32_t y,
+                 redstoneEngine = &redstone,
+                 blockEntityStore = &blockEntities](std::int32_t x, std::int32_t y,
                                               std::int32_t z, std::uint16_t oldState,
                                               std::uint16_t newState) {
                     invalidateChunkCacheFor(dimension, x >> 4, z >> 4);
+                    const auto* oldBlock = gen::blockByState(oldState);
+                    const auto* newBlock = gen::blockByState(newState);
+                    if (oldBlock &&
+                        (!newBlock || oldBlock->name != newBlock->name)) {
+                        const auto key = posKey(x, y, z);
+                        // Piston animation stages its MovingPiston owner before
+                        // changing an ordinary block to moving_piston so the
+                        // whole BE batch can be admitted before world mutation.
+                        // Do not mistake that newly-published animation owner
+                        // for stale data from the block being replaced.
+                        const bool installingMovingPiston = newBlock &&
+                            newBlock->name == "minecraft:moving_piston" &&
+                            blockEntityStore->hasCurrentKind(
+                                key, BlockEntity::Kind::MovingPiston);
+                        const auto replacementKind =
+                            blockEntityKindForBlockState(newState);
+                        const bool replacementEntityAlreadyStaged =
+                            replacementKind &&
+                            (blockEntityStore->hasCurrentKind(
+                                 key, *replacementKind) ||
+                             blockEntityStore->hasOpaqueNbtAt(key));
+                        if (!installingMovingPiston &&
+                            !replacementEntityAlreadyStaged) {
+                            const bool dirtyAccepted =
+                                blockEntityStore->removeAfterWorldBlockReplacement(
+                                    key);
+                            if (!dirtyAccepted)
+                                std::fprintf(stderr,
+                                    "[cppfm] block entity at %d,%d,%d was removed after its dirty callback failed\n",
+                                    x, y, z);
+                        }
+                    }
                     light->onBlockChanged(x, y, z, oldState, newState);
                     fluids->touch(x, y, z);
                     static constexpr int DX[6] = {1,-1,0,0,0,0};
@@ -765,7 +993,12 @@ public:
                     static constexpr int DZ[6] = {0,0,0,0,1,-1};
                     for (int d = 0; d < 6; ++d)
                         fluids->touch(x + DX[d], y + DY[d], z + DZ[d]);
-                    redstoneEngine->onBlockChanged(x, y, z);
+                    // World invokes this hook while holding its mutation-order
+                    // gate. Never wait on RedstoneEngine::operationMutex_ in
+                    // that lock scope: persistence drains redstone before it
+                    // acquires the World gate, so synchronous dispatch here
+                    // would invert the lock order.
+                    redstoneEngine->enqueueBlockChanged(x, y, z);
                 });
         };
         configureDimensionEngines(
@@ -783,10 +1016,12 @@ public:
         spawnProtection_ = cfg_.spawnProtection;
         dimensionRuntime(0).persistence = std::make_unique<Persistence>(
             worldFor(0), cfg_.worldDir, cfg_.worldBiome);
-        blockEntitiesFor(0).setDirtyCallback([this](std::int32_t cx, std::int32_t cz) {
-            if (auto* persistence = persistenceFor(0))
-                persistence->markDirty(cx, cz);
-        });
+        blockEntitiesFor(0).setDirtyCallback(
+            [this](std::int32_t cx, std::int32_t cz) {
+                if (auto* persistence = persistenceFor(0))
+                    persistence->markDirty(cx, cz);
+                invalidateChunkCacheFor(0, cx, cz);
+            });
         persistence().setDifficulty(difficulty_);
         persistence().setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
         {   // biome codec maps + chunk extras (block entities)
@@ -803,8 +1038,14 @@ public:
                     blockEntitiesFor(0).writeChunkNbt(cx, cz, list);
                     if (!list.list.empty()) root.set("block_entities", list);
                 },
+                {},
                 [this](const nbt::Value& root) {
-                    blockEntitiesFor(0).readChunkNbt(root);
+                    const auto geometry = worldFor(0).verticalGeometry();
+                    BlockEntityStore::validateChunkNbt(
+                        root, geometry.minY, geometry.maxY());
+                },
+                [this](const nbt::Value& root) {
+                    return blockEntitiesFor(0).prepareChunkNbt(root);
                 });
             persistence().setChunkSaveBarrier(
                 [this](std::int32_t cx, std::int32_t cz) {
@@ -813,6 +1054,16 @@ public:
                     // on the same serialized simulation domain as ticks.
                     SimulationDispatchGuard simulation(simulationDispatchMtx_);
                     redstoneFor(0).flushPendingPistons(cx, cz);
+                });
+            persistence().setChunkSaveAdmission(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    const auto* structures = worldFor(0).structureManager();
+                    return !structures ||
+                           !structures->hasPendingLootInChunk(cx, cz);
+                });
+            persistence().setChunkSaveComplete(
+                [this](std::int32_t cx, std::int32_t cz) {
+                    blockEntitiesFor(0).clearRemovalTombstonesForChunk(cx, cz);
                 });
         }
         persistence().setLevelStateProvider(
@@ -831,15 +1082,24 @@ public:
                 data.set("DayTime", nv::Value::makeLong(dayTime()));
                 data.set("Time", nv::Value::makeLong(tickNo_));
                 data.set("Difficulty", nv::Value::makeString(difficulty_));
+                data.set("GameType", nv::Value::makeInt(defaultGameMode()));
                 data.set("WanderingTraderSpawnDelay", nv::Value::makeInt(wanderingTraderSpawnDelay_));
                 data.set("WanderingTraderSpawnChance", nv::Value::makeInt(wanderingTraderSpawnChance_));
-                data.set("WanderingTraderId", nv::Value::makeCompound());
+                // WorldDataManager supplies an empty default only for a new
+                // world. Do not erase the UUID already stored in level.dat.
             },
             [this](const nbt::Value& data) {
                 if (const auto* t = data.get("Time"))
                     tickNo_ = t->l;
                 if (const auto* dt = data.get("DayTime"))
                     timeOffset_ += dt->l - dayTime();
+                if (const auto* gameType = data.get("GameType")) {
+                    std::int32_t mode = -1;
+                    if (gameType->tag == nbt::Int) mode = gameType->i;
+                    else if (gameType->tag == nbt::Byte) mode = gameType->b;
+                    if (mode >= 0 && mode <= 3)
+                        setDefaultGameMode(static_cast<std::uint8_t>(mode));
+                }
                 if (const auto* r = data.get("raining"))
                     weather_ = r->b ? Weather::Rain : Weather::Clear;
                 if (const auto* rt = data.get("rainTime"))
@@ -889,6 +1149,11 @@ public:
         cfg_.hashedSeed = static_cast<std::int64_t>(cfg_.seed);
         worldFor(-1).setSeed(cfg_.seed ^ 0x4E37ULL);
         worldFor(1).setSeed(cfg_.seed ^ 0xE11DULL);
+        // Spawn chunks may already exist on disk. Install Persistence's
+        // synchronous chunk loader before asking World to ensure them;
+        // generating first would publish fresh terrain as authoritative and
+        // permanently hide the saved spawn-area chunks during this lifetime.
+        persistence().start();
         for (auto sub : {"DIM-1", "DIM1"}) {
             std::string p = cfg_.worldDir + "/" + std::string(sub) + "/level.dat";
             if (std::filesystem::exists(p)) {
@@ -916,11 +1181,14 @@ public:
                 for (int dx = -2; dx <= 2; ++dx) {
                     const std::int32_t cx = (sp.x >> 4) + dx;
                     const std::int32_t cz = (sp.z >> 4) + dz;
-                    worldFor(0).generateChunkIfMissing(cx, cz);
+                    if (!worldFor(0).generateChunkIfMissing(cx, cz)) {
+                        throw std::runtime_error(
+                            "could not load or generate required spawn chunk " +
+                            std::to_string(cx) + "," + std::to_string(cz));
+                    }
                     worldFor(0).addSpawnTicket(cx, cz, tickNo_);
                 }
         }
-        persistence().start();
         for (int d = 0; d < 2; ++d) {
             const char* sub = d == 0 ? "DIM-1" : "DIM1";
             const std::int8_t dimension = d == 0 ? -1 : 1;
@@ -928,7 +1196,8 @@ public:
             auto& pw = dimensionRuntime.persistence;
             World& dimensionWorld = worldFor(dimension);
             pw = std::make_unique<Persistence>(dimensionWorld,
-                                               cfg_.worldDir + "/" + sub, "");
+                cfg_.worldDir + "/" + sub, "",
+                Persistence::StorageRole::Dimension);
             std::unordered_map<std::uint16_t, std::string> idxToKey;
             const auto& order = gameData_.order("minecraft:worldgen/biome");
             for (std::size_t i = 0; i < order.size(); ++i)
@@ -943,18 +1212,38 @@ public:
                     blockEntitiesFor(dimension).writeChunkNbt(cx, cz, list);
                     if (!list.list.empty()) root.set("block_entities", std::move(list));
                 },
+                {},
                 [this, dimension](const nbt::Value& root) {
-                    blockEntitiesFor(dimension).readChunkNbt(root);
+                    const auto geometry =
+                        worldFor(dimension).verticalGeometry();
+                    BlockEntityStore::validateChunkNbt(
+                        root, geometry.minY, geometry.maxY());
+                },
+                [this, dimension](const nbt::Value& root) {
+                    return blockEntitiesFor(dimension).prepareChunkNbt(root);
                 });
             pw->setChunkSaveBarrier(
                 [this, dimension](std::int32_t cx, std::int32_t cz) {
                     SimulationDispatchGuard simulation(simulationDispatchMtx_);
                     redstoneFor(dimension).flushPendingPistons(cx, cz);
                 });
+            pw->setChunkSaveAdmission(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    const auto* structures =
+                        worldFor(dimension).structureManager();
+                    return !structures ||
+                           !structures->hasPendingLootInChunk(cx, cz);
+                });
+            pw->setChunkSaveComplete(
+                [this, dimension](std::int32_t cx, std::int32_t cz) {
+                    blockEntitiesFor(dimension)
+                        .clearRemovalTombstonesForChunk(cx, cz);
+                });
             blockEntitiesFor(dimension).setDirtyCallback(
                 [this, dimension](std::int32_t cx, std::int32_t cz) {
                     if (auto* persistence = persistenceFor(dimension))
                         persistence->markDirty(cx, cz);
+                    invalidateChunkCacheFor(dimension, cx, cz);
                 });
             pw->start();
         }
@@ -1037,12 +1326,26 @@ public:
             std::fprintf(stderr, "[cppfm] stopping embedded JVM\n");
             jvmRuntime_->stop();
         }
+        bool persistenceSucceeded = flushPendingStructureLootForShutdown();
         std::fprintf(stderr, "[cppfm] stopping persistence\n");
+        const auto stopPersistence = [](Persistence& persistence) {
+            for (;;) {
+                const auto result = persistence.stopWithStatus();
+                if (result == Persistence::StopStatus::StoppedCleanly)
+                    return true;
+                if (result == Persistence::StopStatus::UnsavedData)
+                    return false;
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            }
+        };
         for (const std::int8_t dimension : {std::int8_t{0}, std::int8_t{-1},
                                             std::int8_t{1}}) {
             if (auto* persistence = persistenceFor(dimension))
-                persistence->stop();
+                persistenceSucceeded = stopPersistence(*persistence) &&
+                                       persistenceSucceeded;
         }
+        shutdownPersistenceSucceeded_.store(
+            persistenceSucceeded, std::memory_order_release);
         std::fprintf(stderr, "[cppfm] closing listen fd\n");
         if (const auto fd = listenFd_.exchange(platform::invalid_socket,
                                                std::memory_order_acq_rel);
@@ -1050,23 +1353,26 @@ public:
             platform::closeSocket(fd);
         }
         sessionLock_.release(); // plan46 §2 (O-08)
-        std::fprintf(stderr, "[cppfm] stopped cleanly\n");
+        if (persistenceSucceeded)
+            std::fprintf(stderr, "[cppfm] stopped cleanly\n");
+        else
+            std::fprintf(stderr,
+                         "[cppfm] stopped with unsaved world state; inspect persistence errors\n");
+    }
+    bool shutdownPersistenceSucceeded() const noexcept {
+        return shutdownPersistenceSucceeded_.load(std::memory_order_acquire);
     }
     Persistence& persistence() { return *dimensionRuntime(0).persistence; }
     void savePlayerData(const std::string& uuidHex, Player& p);
-    bool loadPlayerData(const std::string& uuidHex, Player& p);
+    bool loadPlayerData(const std::string& uuidHex, Player& p,
+                        bool* dataFilePresent = nullptr,
+                        bool* unsupportedItemData = nullptr,
+                        bool* unsafeExistingData = nullptr);
     void invalidateRespawnPointsAt(std::int8_t dimension,
                                    std::int32_t x, std::int32_t y,
                                    std::int32_t z);
     void saveLevelData();
     void loadLevelData();
-    void storeCookie(const std::array<std::uint8_t, 16>& uuid,
-                     const std::string& key,
-                     const std::vector<std::uint8_t>& value);
-    void eraseCookie(const std::array<std::uint8_t, 16>& uuid,
-                     const std::string& key);
-    std::vector<std::uint8_t> loadCookie(
-        const std::array<std::uint8_t, 16>& uuid, const std::string& key);
     auto& mobsForTest() { return mobs_; }
     void addMob(const std::shared_ptr<MobEntity>& mob) {
         if (!mob) return;
@@ -1092,6 +1398,15 @@ public:
     const BlockEntityStore& blockEntitiesFor(std::int8_t dimension) const {
         return dimensionRuntime(canonicalDimension(dimension)).blockEntities;
     }
+    bool chunkFitsAnvilEntry(std::int8_t dimension, std::int32_t cx,
+                             std::int32_t cz);
+    bool blockEntityCandidatesFitAnvilEntry(
+        std::int8_t dimension,
+        const std::vector<BlockEntityStore::SnapshotOverride>& candidates);
+    bool blockMutationCandidatesFitAnvilEntries(
+        std::int8_t dimension,
+        const std::vector<World::BlockUpdate>& blockUpdates,
+        const std::vector<BlockEntityStore::NbtReplacement>& replacements);
     std::int32_t villagerWindowSeq_ = 100;
     Scoreboard scoreboard;
     TeamsManager teams;
@@ -1180,12 +1495,6 @@ public:
                                         std::int32_t cz) const;
     bool isChunkInSimulationDistance(std::int32_t cx, std::int32_t cz) const;
     void chunksUnloadTick();
-    // Direct inventory access helpers used by the hopper simulation.
-    ItemStack* containerAt(std::int32_t x, std::int32_t y, std::int32_t z,
-                           int& countOut, BlockEntity::Kind& kindOut);
-    ItemStack* containerAtFor(std::int8_t dimension, std::int32_t x,
-                              std::int32_t y, std::int32_t z, int& countOut,
-                              BlockEntity::Kind& kindOut);
     // Send the experience bar + level to one player.
     static void sendSetExperience(Player& p);
     // Apply / expire status effects for all living things (per tick).
@@ -1202,8 +1511,9 @@ public:
     void mobsTick();
     void spawnSlimeSplit(MobEntity& m); // slime/magma-cube death split (was 3x copy-paste)
     void drainPendingStructureQueues(); // plan36 §5: drain StructureManager pending loot/mobs tick
-    void applyDamageToMob(MobEntity& m, float amount, const char* cause);
-    void applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv = 0);
+    bool flushPendingStructureLootForShutdown() noexcept;
+    bool applyDamageToMob(MobEntity& m, float amount, const char* cause);
+    bool applyDamageToMob(MobEntity& m, float amount, const DamageSource& src, int breachLv = 0);
     void growResinNearHeart(int hx,int hy,int hz);
     void growResinNearHeartFor(std::int8_t dimension, int hx, int hy, int hz);
     // Spawn a mob of `kind` at position and broadcast it.
@@ -1293,27 +1603,27 @@ public:
     void initMiscCommandsPart06();
     void initMiscCommandsPart07();
     void initMiscCommandsPart08();
-    void initWorldCommandsPart01();
-    void initWorldCommandsPart02();
-    void initWorldCommandsPart03();
-    void initWorldCommandsPart04();
-    void initWorldCommandsPart05();
-    void initWorldCommandsPart06();
-    void initWorldCommandsPart07();
-    void initWorldCommandsPart08();
-    void initWorldCommandsPart09();
-    void initWorldCommandsPart10(const brigadier::NodePtr& locate);
-    void initWorldCommandsPart11(const brigadier::NodePtr& locate);
-    void initWorldCommandsPart12(const brigadier::NodePtr& locate);
-    void initWorldCommandsPart13();
-    void initWorldCommandsPart14();
-    void initWorldCommandsPart15();
-    void initWorldCommandsPart16();
-    void initWorldCommandsPart17();
-    void initWorldCommandsPart18();
-    void initWorldCommandsPart19();
-    void initWorldCommandsPart20();
-    void initWorldCommandsPart21();
+    void addTimeSetSubcommands(const brigadier::NodePtr& time);
+    void addTimeQueryAndAddSubcommands(const brigadier::NodePtr& time);
+    void initGameRuleCommand();
+    void initForceLoadCommand();
+    void initSetBlockCommand();
+    void initWeatherCommand();
+    void addWorldBorderSizeSubcommand(const brigadier::NodePtr& worldBorder);
+    void addWorldBorderManagementSubcommands(
+        const brigadier::NodePtr& worldBorder);
+    void initDifficultyCommand();
+    void initFillCommand();
+    void initCloneCommand();
+    void initLocateStructureCommand(const brigadier::NodePtr& locate);
+    void initLocateBiomeCommand(const brigadier::NodePtr& locate);
+    void initLocatePoiCommand(const brigadier::NodePtr& locate);
+    void initPlaceCommand();
+    void initSpreadPlayersCommand();
+    void initEnchantCommand();
+    void initSetWorldSpawnCommand();
+    void initDefaultGameModeCommand();
+    void initJigsawGenerateCommand();
     void initPlayerCommandsPart01();
     void initPlayerCommandsPart02();
     void initPlayerCommandsPart03();
@@ -1360,16 +1670,16 @@ public:
     void initDataItemReplaceCommands(
         const brigadier::NodePtr& replaceLit,
         const std::function<ItemStack*(Player&, const std::string&)>& slotToPlayerStack,
-        const std::function<BlockEntityStore::SlotRef(
+        const std::function<BlockContainerSlotAccess(
             std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack,
         const std::function<ItemStack(const std::string&, int)>& parseItemStack);
     void initDataItemModifyCommands(
         const brigadier::NodePtr& modifyLit,
-        const std::function<BlockEntityStore::SlotRef(
+        const std::function<BlockContainerSlotAccess(
             std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initDataItemRemoveCommands(
         const brigadier::NodePtr& removeLit,
-        const std::function<BlockEntityStore::SlotRef(
+        const std::function<BlockContainerSlotAccess(
             std::int8_t, const brigadier::BlockPosI&, const std::string&)>& slotToBlockStack);
     void initExecuteRunCommands(const brigadier::NodePtr& exec);
     void initExecuteAsCommands(const brigadier::NodePtr& exec);
@@ -1462,6 +1772,8 @@ public:
     void broadcastSpawnItem(const ItemEntity& it);
     void broadcastItemMetadata(const ItemEntity& it);
     bool addToInventory(Player& p, std::uint32_t itemId, std::uint16_t count);
+    bool addStackToInventory(Player& p, const ItemStack& stack,
+                             std::uint16_t count);
     void resendInventory(Player& p);
     void sendSetHealth(Player& p);
 
@@ -1490,9 +1802,18 @@ public:
     }
     void broadcastDigStageFor(Player& p, std::int8_t st) { broadcastDigStage(p, st); }
     void broadcastDigStage(Player& p, std::int8_t stage);
+    void broadcastDigStageAt(Player& p, std::int8_t dimension,
+                             std::int32_t x, std::int32_t y, std::int32_t z,
+                             std::int8_t stage);
     void tickDigs();
 
     const ServerConfig& config() const { return cfg_; }
+    std::uint8_t defaultGameMode() const noexcept {
+        return defaultGameMode_.load(std::memory_order_acquire);
+    }
+    void setDefaultGameMode(std::uint8_t mode) noexcept {
+        if (mode <= 3) defaultGameMode_.store(mode, std::memory_order_release);
+    }
     jvm::JvmRuntime* jvmRuntime() { return jvmRuntime_.get(); }
     const jvm::JvmRuntime* jvmRuntime() const { return jvmRuntime_.get(); }
     World& world() { return dimensionRuntime(0).world; }
@@ -1612,14 +1933,8 @@ public:
         broadcastPacketExcept(except, proto::pl::sc::SystemChat, body);
     }
     void broadcastPacketExcept(const Player* except, std::uint8_t id, const WriteBuffer& body) {
-        // Keep chunk snapshots and the block/entity updates that modify them
-        // in one ordered low-priority stream. Control and chat may overtake it,
-        // but a block update must not overtake its snapshot.
-        const bool chunkDependent =
-            id == proto::pl::sc::BundleDelimiter ||
-            id == proto::pl::sc::BlockUpdate ||
-            id == proto::pl::sc::MultiBlockChange ||
-            id == proto::pl::sc::BlockEntityData;
+        // Keep chunk snapshots and their deltas in one ordered stream.
+        const bool chunkDependent = requiresChunkPacketOrdering(id);
         runWithoutMobStateLock([&] {
             const auto players = playersSnapshot();
             // Brain actions historically use the dimension-less broadcast helper.
@@ -1655,11 +1970,7 @@ public:
                                           const Player* except,
                                           std::uint8_t id,
                                           const WriteBuffer& body) {
-        const bool chunkDependent =
-            id == proto::pl::sc::BundleDelimiter ||
-            id == proto::pl::sc::BlockUpdate ||
-            id == proto::pl::sc::MultiBlockChange ||
-            id == proto::pl::sc::BlockEntityData;
+        const bool chunkDependent = requiresChunkPacketOrdering(id);
         runWithoutMobStateLock([&] {
             const auto target = canonicalDimension(dimension);
             const auto players = playersSnapshot();
@@ -1693,58 +2004,27 @@ public:
                              std::uint16_t state);
     void flushBlockBatches();
     void broadcastPlayerChat(Player& sender, const std::string& message, std::int64_t timestamp);
-    using ChunkBodyRef = std::shared_ptr<const std::vector<std::uint8_t>>;
-    // A chunk coordinate is only unique inside one dimension.  Keeping the
-    // dimension in the cache key prevents an Overworld body from being served
-    // at the same (x,z) in the Nether or the End.
-    struct DimensionChunkKey {
-        std::int8_t dimension = 0;
-        std::int32_t cx = 0;
-        std::int32_t cz = 0;
-
-        friend bool operator==(const DimensionChunkKey& lhs,
-                               const DimensionChunkKey& rhs) noexcept {
-            return lhs.dimension == rhs.dimension &&
-                   lhs.cx == rhs.cx && lhs.cz == rhs.cz;
-        }
-    };
-    struct DimensionChunkKeyHash {
-        std::size_t operator()(const DimensionChunkKey& key) const noexcept {
-            // SplitMix-style finalisation keeps nearby signed coordinates
-            // from producing long runs of equal low hash bits.
-            std::uint64_t h = static_cast<std::uint32_t>(key.cx);
-            h = (h ^ (h >> 30)) * 0xbf58476d1ce4e5b9ULL;
-            h ^= static_cast<std::uint32_t>(key.cz) + 0x9e3779b9U +
-                 (h << 6) + (h >> 2);
-            h ^= static_cast<std::uint8_t>(key.dimension) + 0x517cc1b7U +
-                 (h << 6) + (h >> 2);
-            h ^= h >> 27;
-            h *= 0x94d049bb133111ebULL;
-            h ^= h >> 31;
-            return static_cast<std::size_t>(h);
-        }
-    };
+    using ChunkBodyRef = ChunkBodyCache::BodyRef;
+    using ChunkCacheSnapshotTicket = ChunkBodyCache::SnapshotTicket;
+    using ChunkCacheStats = ChunkBodyCache::Stats;
+    // Kept as aliases here for the existing server-facing API. The key and
+    // its save/load coordinator are owned by the chunk-I/O module.
+    using DimensionChunkKey = chunk_io_detail::DimensionChunkKey;
+    using DimensionChunkKeyHash = chunk_io_detail::DimensionChunkKeyHash;
     static std::int8_t canonicalDimension(std::int8_t dim) noexcept {
-        return dim == -1 ? -1 : dim == 1 ? 1 : 0;
+        return chunk_io_detail::canonicalDimension(dim);
     }
     static DimensionChunkKey dimensionChunkKey(std::int8_t dim,
                                                 std::int32_t cx,
                                                 std::int32_t cz) noexcept {
-        return {canonicalDimension(dim), cx, cz};
+        return chunk_io_detail::dimensionChunkKey(dim, cx, cz);
     }
-    struct ChunkCacheStats {
-        std::size_t hits = 0, misses = 0, size = 0;
-        static constexpr std::size_t kMax = 1024;
-        double hitRate() const { auto tot = hits + misses; return tot == 0 ? 0.0 : (double)hits / (double)tot; }
-    };
     struct ChunkIoStats { std::size_t ioQueueDepth = 0, pendingLoads = 0; int viewDistance = 32; };
     double chunkCacheHitRate() const {
-        auto tot = cacheHits_.load(std::memory_order_relaxed) + cacheMisses_.load(std::memory_order_relaxed);
-        return tot == 0 ? 0.0 : (double)cacheHits_.load(std::memory_order_relaxed) / (double)tot;
+        return chunkBodyCache_.hitRate();
     }
     ChunkCacheStats chunkCacheStats() const {
-        std::lock_guard lk(chunkCacheMtx_);
-        return {cacheHits_.load(std::memory_order_relaxed), cacheMisses_.load(std::memory_order_relaxed), chunkCache_.size()};
+        return chunkBodyCache_.stats();
     }
     ChunkIoStats chunkIoStats() const {
         std::lock_guard lk(pendingLoadsMtx_);
@@ -1758,80 +2038,65 @@ public:
     bool getCachedChunkFor(std::int8_t dim, std::int32_t cx, std::int32_t cz,
                            std::uint32_t biomeIdx, ChunkBodyRef& out) {
         (void)biomeIdx; // retained for API/source compatibility; body is keyed by dim/pos.
-        const auto k = dimensionChunkKey(dim, cx, cz);
-        std::lock_guard lk(chunkCacheMtx_);
-        auto it = chunkCache_.find(k);
-        if (it == chunkCache_.end()) { cacheMisses_.fetch_add(1, std::memory_order_relaxed); return false; }
-        cacheHits_.fetch_add(1, std::memory_order_relaxed);
-        // LRU touch: move to front (MRU)
-        chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
-        it->second.it = chunkCacheLru_.begin();
-        out = it->second.body;
-        return true;
+        return chunkBodyCache_.get(dim, cx, cz, out);
+    }
+    ChunkCacheSnapshotTicket beginChunkCacheSnapshot(
+        std::int8_t dim, std::int32_t cx, std::int32_t cz) {
+        return chunkBodyCache_.beginSnapshot(dim, cx, cz);
+    }
+    template <typename Publish>
+    bool publishCachedChunkForSnapshot(
+        const ChunkCacheSnapshotTicket& ticket, Publish&& publish) {
+        return chunkBodyCache_.publishCached(
+            ticket, std::forward<Publish>(publish));
+    }
+    template <typename Publish>
+    bool publishChunkForSnapshot(const ChunkCacheSnapshotTicket& ticket,
+                                 std::uint64_t rev, ChunkBodyRef body,
+                                 Publish&& publish) {
+        (void)rev; // retained for the server-facing cache API
+        return chunkBodyCache_.publish(
+            ticket, std::move(body), std::forward<Publish>(publish));
+    }
+    bool storeChunkForSnapshot(const ChunkCacheSnapshotTicket& ticket,
+                               std::uint64_t rev, ChunkBodyRef body) {
+        (void)rev; // retained for the server-facing cache API
+        return chunkBodyCache_.storeForSnapshot(ticket, std::move(body));
     }
     void storeChunk(std::int32_t cx, std::int32_t cz, std::uint64_t rev, ChunkBodyRef body) {
         storeChunkFor(0, cx, cz, rev, std::move(body));
     }
     void storeChunkFor(std::int8_t dim, std::int32_t cx, std::int32_t cz,
                        std::uint64_t rev, ChunkBodyRef body) {
-        std::lock_guard lk(chunkCacheMtx_);
-        const auto k = dimensionChunkKey(dim, cx, cz);
-        auto it = chunkCache_.find(k);
-        if (it != chunkCache_.end()) {
-            it->second.rev = rev;
-            it->second.body = std::move(body);
-            chunkCacheLru_.splice(chunkCacheLru_.begin(), chunkCacheLru_, it->second.it);
-            it->second.it = chunkCacheLru_.begin();
-            return;
-        }
-        if (chunkCache_.size() >= 1024) {
-            // evict LRU (back) — Chebyshev variant: LRU already approximates distance since far chunks are least recently touched
-            const auto ev = chunkCacheLru_.back();
-            chunkCacheLru_.pop_back();
-            chunkCache_.erase(ev);
-        }
-        chunkCacheLru_.push_front(k);
-        chunkCache_.emplace(k, CachedChunk{rev, std::move(body), chunkCacheLru_.begin()});
+        (void)rev; // cache identity is dimension and coordinates only
+        chunkBodyCache_.store(dim, cx, cz, std::move(body));
     }
     void invalidateChunkCache(std::int32_t cx, std::int32_t cz) {
         invalidateChunkCacheFor(0, cx, cz);
     }
     void invalidateChunkCacheFor(std::int8_t dim, std::int32_t cx, std::int32_t cz) {
-        std::lock_guard lk(chunkCacheMtx_);
-        const auto k = dimensionChunkKey(dim, cx, cz);
-        auto it = chunkCache_.find(k);
-        if (it != chunkCache_.end()) {
-            chunkCacheLru_.erase(it->second.it);
-            chunkCache_.erase(it);
-        }
+        chunkBodyCache_.invalidate(dim, cx, cz);
     }
     void clearChunkCache() {
-        std::lock_guard lk(chunkCacheMtx_);
-        chunkCache_.clear();
-        chunkCacheLru_.clear();
+        chunkBodyCache_.clear();
     }
     void demandChunkAsync(std::int32_t cx, std::int32_t cz);
     void demandChunkAsyncFor(std::int8_t dim, std::int32_t cx, std::int32_t cz);
     void saveChunkAsync(std::int32_t cx, std::int32_t cz);
     void saveChunkAsyncFor(std::int8_t dim, std::int32_t cx, std::int32_t cz);
     std::size_t chunkCacheSize() const {
-        std::lock_guard lk(chunkCacheMtx_);
-        return chunkCache_.size();
+        return chunkBodyCache_.size();
     }
     std::size_t chunkCacheBytes() const {
-        std::lock_guard lk(chunkCacheMtx_);
-        std::size_t total = 0;
-        for (const auto& [key, entry] : chunkCache_)
-            if (entry.body) total += entry.body->size();
-        return total;
+        return chunkBodyCache_.bytes();
     }
     std::size_t ioQueueDepth() const { return ioPool_.pending(); }
     std::size_t pendingLoadsSize() const {
         std::lock_guard lk(pendingLoadsMtx_);
         return pendingLoads_.size();
     }
-    std::size_t chunkCacheHits() const { return cacheHits_.load(std::memory_order_relaxed); }
-    std::size_t chunkCacheMisses() const { return cacheMisses_.load(std::memory_order_relaxed); }
+    std::size_t chunkCacheHits() const { return chunkBodyCache_.hits(); }
+    std::size_t chunkCacheMisses() const { return chunkBodyCache_.misses(); }
 
 private:
     struct ServerThreadTask {
@@ -1887,14 +2152,12 @@ private:
     bool serverThreadAccepting_ = false;
     std::atomic<std::size_t> activeServerThreadTasks_{0};
 
-    struct ChunkSaveCoordinator {
-        struct Stamp {
-            std::mutex writeMutex;
-            std::atomic<std::uint64_t> latestRevision{0};
-        };
-        std::mutex mutex;
-        std::unordered_map<DimensionChunkKey, std::shared_ptr<Stamp>,
-                           DimensionChunkKeyHash> latest;
+    using ChunkSaveCoordinator = chunk_io_detail::ChunkSaveCoordinator;
+
+    struct PendingChunkLoad {
+        std::shared_ptr<ChunkSaveCoordinator::Stamp> stamp;
+        std::uint64_t generation = 0;
+        std::future<Persistence::ChunkBytesRead> future;
     };
 
     void acceptLoop();
@@ -1924,7 +2187,14 @@ public:
     // Finds an in-love adult partner of the same kind within 8 blocks.
     std::shared_ptr<MobEntity> findLovePartner(const MobEntity& seeker);
     void eraseMobAi(std::int32_t entityId);
-    void noteMobHurt(std::int32_t entityId, std::int32_t attackerEntityId);
+    void noteMobHurt(std::int32_t entityId, std::int32_t attackerEntityId,
+                     std::int32_t lootingLevel = 0);
+    LootContext mobLootContextForDeath(std::int32_t entityId,
+                                      bool entityOnFire,
+                                      float explosionRadius = 0.f) const;
+    void spawnMobLootFor(MobKind kind, std::int8_t dimension,
+                         double x, double y, double z,
+                         const LootContext& context);
 private:
     // AI compatibility wrappers use this only to infer a dimension for legacy
     // calls such as broadcastSound().  It must be thread-local: network/JVM
@@ -1976,6 +2246,7 @@ private:
     brigadier::CommandDispatcher commands_;          // Brigadier tree
     GameRuleManager gamerules_;
     std::string difficulty_ = "normal";
+    std::atomic<std::uint8_t> defaultGameMode_{0};
     double worldBorderDiameter_ = constants::kWorldBorderDiameter;   // vanilla default 5.9999968E7
     double worldBorderCenterX_ = 0, worldBorderCenterZ_ = 0;
     double worldBorderLerpFrom_ = constants::kWorldBorderDiameter;
@@ -1987,7 +2258,6 @@ private:
     std::unordered_set<std::string> ops_;    // ops.json / op list
     std::unordered_set<std::string> bannedPlayers_; // banned-players.json
     std::unordered_set<std::string> bannedIps_; // banned-ips.json
-    std::int32_t teleportCounterForTest_ = 1;
     // WanderingTrader scheduling (vanilla WanderingTraderManager)
     int wanderingTraderSpawnDelay_ = 0;
     int wanderingTraderSpawnChance_ = 25;
@@ -2125,9 +2395,8 @@ public:
         lootTables_ = datapackManager_.lootTables;
         recipes_.clear();
         recipes_.loadDefaults();
-        recipes_.loadDirectory(cfg_.recipesDir);
-        tagManager_.applyToRecipeTags(recipes_.tags_);
         recipes_.syncTagsFrom(tagManager_);
+        recipes_.loadDirectory(cfg_.recipesDir);
         {
             std::lock_guard cacheLock(advMergeMtx_);
             cachedMergedAdv_.clear();
@@ -2141,22 +2410,36 @@ public:
         functionEvaluator_.tick(tickNo_);
     }
 private:
-    struct CachedChunk {
-        std::uint64_t rev;
-        ChunkBodyRef body;
-        std::list<DimensionChunkKey>::iterator it;
-    };
-    std::unordered_map<DimensionChunkKey, CachedChunk, DimensionChunkKeyHash> chunkCache_;
-    std::list<DimensionChunkKey> chunkCacheLru_; // MRU front, LRU back (plan38 B-07 LRU 1024)
-    mutable std::mutex chunkCacheMtx_;
-    std::atomic<std::size_t> cacheHits_{0}, cacheMisses_{0}; // plan41 C-09 LRU stats
+    void registerSession(Session* session) {
+        if (!session) return;
+        SimulationDispatchGuard simulation(simulationDispatchMtx_);
+        activeSessions_.insert(session);
+    }
+    void unregisterSession(Session* session) {
+        if (!session) return;
+        SimulationDispatchGuard simulation(simulationDispatchMtx_);
+        activeSessions_.erase(session);
+    }
+    void resyncOpenMenusAtBlocks(
+        std::int8_t dimension,
+        const std::unordered_set<std::int64_t>& changedBlockKeys) {
+        if (changedBlockKeys.empty()) return;
+        SimulationDispatchGuard simulation(simulationDispatchMtx_);
+        dimension = canonicalDimension(dimension);
+        for (Session* session : activeSessions_) {
+            if (!session) continue;
+            session->resyncOpenMenuForBlockChanges(
+                dimension, changedBlockKeys);
+        }
+    }
+    ChunkBodyCache chunkBodyCache_;
     std::unordered_map<std::int32_t, std::int64_t> ghostThrottle_; // entityId -> last tick for PlaceGhostRecipe 0x39
     // W19/B-07 async I/O: ThreadPool for RegionFile zlib offload (Yarn ThreadedAnvilChunkStorage)
     core::ThreadPool ioPool_;
     std::shared_ptr<ChunkSaveCoordinator> chunkSaveCoordinator_ =
         std::make_shared<ChunkSaveCoordinator>();
     // pending async chunk loads (ChunkPos -> future) polled in tickOnce via pollPendingLoads()
-    std::unordered_map<DimensionChunkKey, std::future<std::vector<std::uint8_t>>,
+    std::unordered_map<DimensionChunkKey, PendingChunkLoad,
                        DimensionChunkKeyHash> pendingLoads_;
     mutable std::mutex pendingLoadsMtx_;
     void pollPendingLoads(); // B-07: drain ready futures and install chunks (defined in GameServer_tick.cpp)
@@ -2165,12 +2448,16 @@ private:
     // from running_: embedded callers and tests legitimately dispatch
     // commands before the network loop has been started.
     std::atomic<bool> shutdownStarted_{false};
+    std::atomic<bool> shutdownPersistenceSucceeded_{true};
     // Every authoritative ingress (tick, packet, console, and RCON command)
     // takes this lock before touching world/player state.  The recursive mutex
     // permits command callbacks and scheduled functions to re-enter safely.
     // The narrower command lock serializes command registration/evaluation.
     mutable std::recursive_mutex simulationDispatchMtx_;
     mutable std::recursive_mutex commandDispatchMtx_;
+    // Guarded by simulationDispatchMtx_: entries remain valid until the
+    // session unregisters in its teardown path.
+    std::unordered_set<Session*> activeSessions_;
     std::atomic<platform::socket_t> listenFd_{platform::invalid_socket};
     AcceptGate acceptGate_{20};
     std::atomic<std::int32_t> entityIdCounter_{1};

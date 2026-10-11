@@ -51,6 +51,8 @@ PLAY_SET_PASSENGERS = 0x65
 PLAY_SET_ENTITY_METADATA = 0x5D
 PLAY_MOVE_ENTITY_POS = 0x2F
 PLAY_MOVE_ENTITY_POS_ROT = 0x30
+PLAY_CHUNK_BATCH_FINISHED = 0x0C
+PLAY_CHUNK_BATCH_RECEIVED = 0x09
 
 
 class LiveClient:
@@ -87,6 +89,13 @@ class LiveClient:
             self.packet_lengths.append(len(payload))
             self.packet_payloads.append((packet_id, payload))
             packets.append((packet_id, payload))
+            if packet_id == PLAY_CHUNK_BATCH_FINISHED:
+                # Minecraft's client acknowledges each bounded chunk batch
+                # with its preferred next-batch size. Keep the live harness
+                # on the real protocol path instead of relying on one giant
+                # server-side burst.
+                self.conn.send_packet_raw(PLAY_CHUNK_BATCH_RECEIVED,
+                                          struct.pack(">f", 8.0))
             if packet_id == 0x2C and len(payload) >= 4:
                 self.entity_id = struct.unpack(">i", payload[:4])[0]
             if packet_id == PLAY_SPAWN_ENTITY:
@@ -339,6 +348,7 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
 
         commands = [
             ("time set day", "Time set to day"),
+            ("time set 6000", "Set the time to 6000"),
             ("gamerule randomTickSpeed 3", "Gamerule randomTickSpeed is now 3"),
             ("weather rain 5", "Set weather to rain"),
             ("difficulty peaceful", "Difficulty set to peaceful"),
@@ -358,6 +368,11 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             ("item replace entity @s weapon.mainhand with minecraft:bow", "Replaced entity slot"),
             ("item replace entity @s hotbar.1 with minecraft:arrow 8", "Replaced entity slot"),
             ("tag @s add goal_probe", "Added tag"),
+            ("tag @s add goal_probe", "Unable to add tag"),
+            ("tag @s list", "goal_probe"),
+            ("tag @s remove goal_probe", "Removed tag"),
+            ("tag @s remove goal_probe", "Unable to remove tag"),
+            ("tag @s list", "no tags"),
             ("team add goal_team", "Created team goal_team"),
             ("scoreboard objectives add goal_obj dummy", "Created objective"),
             ("scoreboard players set GoalFeatureOp goal_obj 7", "goal_obj"),
