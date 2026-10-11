@@ -15,6 +15,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-timeout-runner:
+    name: Windows timeout process-tree regression
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Timeout runner unit and Windows process-tree tests
+        timeout-minutes: 2
+        run: python -m unittest discover -s tests -p test_run_with_timeout.py -v
+
   build-and-regress:
     name: Build and non-nightly regression
     runs-on: ubuntu-22.04
