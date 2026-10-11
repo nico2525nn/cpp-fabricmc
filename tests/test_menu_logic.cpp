@@ -32,6 +32,13 @@ std::uint32_t id(const char* name) {
     return it == gen::itemIdByName().end() ? 0 : it->second;
 }
 
+ItemStack componentStack(std::uint32_t itemId, std::int16_t count,
+                         std::uint8_t marker) {
+    ItemStack stack = ItemStack::of(itemId, count);
+    stack.components.emplace_back(900, std::vector<std::uint8_t>{marker});
+    return stack;
+}
+
 struct TestIo final : MenuIo {
     int dirtyCount = 0;
     void dropFromPlayer(Player&, const ItemStack&, bool) override {}
@@ -185,11 +192,125 @@ void test_crafter_redstone() {
     check(invalid.extraSlots[0].count == 1 && untouched.empty(),
           "non-crafter rejection has no side effects");
 }
+
+void test_component_aware_menu_merging() {
+    RecipeManager recipes;
+    TestIo io;
+    Player player;
+    Menu menu;
+    menu.type = MenuType::Chest;
+    menu.container = menu.extraSlots;
+    menu.containerCount = 2;
+
+    ItemStack cursor = componentStack(id("minecraft:apple"), 2, 0x2a);
+    menu.extraSlots[0] = componentStack(id("minecraft:apple"), 3, 0x2a);
+    check(ClickLogic::apply(menu, player, recipes, 0, 0, 0, cursor, io) &&
+              cursor.empty() && menu.extraSlots[0].count == 5 &&
+              menu.extraSlots[0].components ==
+                  std::vector<std::pair<std::uint32_t,
+                                        std::vector<std::uint8_t>>>{
+                      {900, {0x2a}}},
+          "pickup merges stacks with identical non-empty components");
+
+    cursor = componentStack(id("minecraft:apple"), 2, 0x2a);
+    menu.extraSlots[1] = componentStack(id("minecraft:apple"), 4, 0x2b);
+    check(ClickLogic::apply(menu, player, recipes, 1, 0, 0, cursor, io) &&
+              menu.extraSlots[1].sameItemData(
+                  componentStack(id("minecraft:apple"), 2, 0x2a)) &&
+              cursor.sameItemData(
+                  componentStack(id("minecraft:apple"), 4, 0x2b)),
+          "pickup preserves rather than merges stacks with different components");
+
+    Menu crafting;
+    crafting.type = MenuType::Crafting;
+    crafting.craftResult = componentStack(id("minecraft:apple"), 2, 0x2a);
+    Player craftingPlayer;
+    craftingPlayer.inv[9] = componentStack(id("minecraft:apple"), 63, 0x2b);
+    ItemStack emptyCursor = ItemStack::air();
+    check(ClickLogic::apply(crafting, craftingPlayer, recipes, 0, 0, 1,
+                            emptyCursor, io) &&
+              craftingPlayer.inv[9].count == 63 &&
+              craftingPlayer.inv[9].components[0].second[0] == 0x2b &&
+              craftingPlayer.inv[10].count == 2 &&
+              craftingPlayer.inv[10].components[0].second[0] == 0x2a,
+          "crafted stacks with different components occupy a separate inventory slot");
+}
+
+void test_quick_move_distributes_remainder() {
+    Menu menu;
+    menu.type = MenuType::Chest;
+    menu.container = menu.extraSlots;
+    menu.containerCount = 4;
+    Player player;
+    player.inv[9] = componentStack(id("minecraft:apple"), 8, 0x31);
+    menu.extraSlots[0] = componentStack(id("minecraft:apple"), 62, 0x31);
+    menu.extraSlots[1] = componentStack(id("minecraft:apple"), 63, 0x31);
+    menu.extraSlots[2] = componentStack(id("minecraft:apple"), 17, 0x32);
+    RecipeManager recipes;
+    TestIo io;
+    ItemStack cursor = ItemStack::air();
+
+    check(ClickLogic::apply(menu, player, recipes, 27, 0, 1, cursor, io) &&
+              player.inv[9].empty() && menu.extraSlots[0].count == 64 &&
+              menu.extraSlots[1].count == 64 &&
+              menu.extraSlots[2].count == 17 &&
+              menu.extraSlots[2].components[0].second[0] == 0x32 &&
+              menu.extraSlots[3].count == 5 &&
+              menu.extraSlots[3].components[0].second[0] == 0x31,
+          "quickMove fills multiple partial matches before an empty slot");
+}
+
+void test_pickup_all_visible_slots_only() {
+    RecipeManager recipes;
+    TestIo io;
+    Player player;
+    Menu crafting;
+    crafting.type = MenuType::Crafting;
+    crafting.craftGrid[0] = componentStack(id("minecraft:apple"), 1, 0x41);
+    crafting.craftGrid[8] = componentStack(id("minecraft:apple"), 4, 0x42);
+    crafting.craftResult = componentStack(id("minecraft:apple"), 5, 0x41);
+    crafting.extraSlots[0] = componentStack(id("minecraft:apple"), 6, 0x41);
+    player.inv[9] = componentStack(id("minecraft:apple"), 2, 0x41);
+    player.inv[8] = componentStack(id("minecraft:apple"), 7, 0x41);
+    player.inv[45] = componentStack(id("minecraft:apple"), 8, 0x41);
+    ItemStack cursor = componentStack(id("minecraft:apple"), 61, 0x41);
+
+    check(ClickLogic::apply(crafting, player, recipes, 1, 0, 6, cursor, io) &&
+              cursor.count == 64 && crafting.craftGrid[0].empty() &&
+              crafting.craftGrid[8].count == 4 &&
+              crafting.craftResult.count == 5 &&
+              crafting.extraSlots[0].count == 6 && player.inv[9].empty() &&
+              player.inv[8].count == 7 && player.inv[45].count == 8,
+          "pickupAll gathers craft-grid and visible player items only");
+
+    Menu inventory;
+    inventory.type = MenuType::Crafting;
+    inventory.playerInventory = true;
+    inventory.craftGrid[0] = componentStack(id("minecraft:apple"), 1, 0x51);
+    inventory.craftGrid[4] = componentStack(id("minecraft:apple"), 1, 0x51);
+    inventory.craftGrid[8] = componentStack(id("minecraft:apple"), 4, 0x51);
+    inventory.craftResult = componentStack(id("minecraft:apple"), 5, 0x51);
+    player.inv[5] = componentStack(id("minecraft:apple"), 1, 0x51);
+    player.inv[45] = componentStack(id("minecraft:apple"), 2, 0x51);
+    player.inv[4] = componentStack(id("minecraft:apple"), 6, 0x51);
+    cursor = componentStack(id("minecraft:apple"), 59, 0x51);
+
+    check(ClickLogic::apply(inventory, player, recipes, 1, 0, 6, cursor, io) &&
+              cursor.count == 64 && inventory.craftGrid[0].empty() &&
+              inventory.craftGrid[4].empty() &&
+              inventory.craftGrid[8].count == 4 &&
+              inventory.craftResult.count == 5 && player.inv[5].empty() &&
+              player.inv[45].empty() && player.inv[4].count == 6,
+          "player-inventory pickupAll uses visible grid/inventory mappings");
+}
 } // namespace
 
 int main() {
     test_enchantment_menu();
     test_crafter_redstone();
+    test_component_aware_menu_merging();
+    test_quick_move_distributes_remainder();
+    test_pickup_all_visible_slots_only();
     std::printf("MENU_LOGIC: %d PASS %d FAIL\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

@@ -11,12 +11,10 @@ namespace cppfm {
 namespace {
 
 bool sameItemLocal(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId;
+    return !a.empty() && !b.empty() && a.sameItemData(b);
 }
 bool sameItem(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId &&
-           a.components.empty() && b.components.empty() &&
-           a.removedComponents.empty() && b.removedComponents.empty();
+    return !a.empty() && !b.empty() && a.sameItemData(b);
 }
 
 } // namespace
@@ -297,7 +295,9 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
             return moved;
         }
         // into container (or furnace special slots)
+        bool furnaceHandled = false;
         if (m.type == MenuType::Furnace) {
+            furnaceHandled = true;
             const bool smeltable =
                 recipes.findSmelting(src->itemId) != nullptr;
             const bool isFuel = isFuelItem(src->itemId);
@@ -305,28 +305,32 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
                           : isFuel ? FurnaceData::kFuel : -1;
             if (dstSlot >= 0) {
                 ItemStack* dst = m.container ? &m.container[dstSlot] : &m.extraSlots[dstSlot];
-                if (mergeInto(*src, *dst)) { moved = true; }
+                moved = mergeInto(*src, *dst);
             }
         }
-        int cont = containerSlotCount(m);
-        ItemStack* contPtr = m.container ? m.container : m.extraSlots;
-        // first pass: merge into existing same item
-        for (int i = 0; !moved && i < cont; ++i) {
-            if (contPtr && &contPtr[i] == src) continue;
-            if (contPtr && !contPtr[i].empty() && sameItem(*src, contPtr[i])) {
-                moved = mergeInto(*src, contPtr[i]);
+        if (!furnaceHandled) {
+            const int slotLimit = containerSlotCount(m);
+            const int backingLimit = m.container
+                                         ? slotLimit
+                                         : static_cast<int>(std::size(m.extraSlots));
+            const int cont = std::min(
+                std::min(slotLimit, std::max(m.containerCount, 0)),
+                backingLimit);
+            ItemStack* contPtr = m.container ? m.container : m.extraSlots;
+            // First fill every compatible partial stack; a partial merge does
+            // not finish the transfer while the source still has items.
+            for (int i = 0; i < cont && !src->empty(); ++i) {
+                if (contPtr && &contPtr[i] != src &&
+                    !contPtr[i].empty() && sameItem(*src, contPtr[i])) {
+                    moved = mergeInto(*src, contPtr[i]) || moved;
+                }
             }
-        }
-        // second pass: any same item (already handled) or any slot
-        for (int i = 0; !moved && i < cont; ++i) {
-            if (contPtr && &contPtr[i] == src) continue;
-            moved = mergeInto(*src, contPtr[i]);
-            if (moved) break;
-        }
-        if (!moved && !src->empty()) {
-            // second pass: empty slots
-            for (int i = 0; i < cont; ++i) {
-                if (contPtr[i].empty()) { contPtr[i] = *src; *src = ItemStack::air(); moved = true; break; }
+            // Then put the remainder into empty slots, continuing if a source
+            // stack is larger than one destination stack can hold.
+            for (int i = 0; i < cont && !src->empty(); ++i) {
+                if (contPtr && &contPtr[i] != src && contPtr[i].empty()) {
+                    moved = mergeInto(*src, contPtr[i], stackLimit(src->itemId)) || moved;
+                }
             }
         }
     } else {
@@ -424,30 +428,65 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
 
 bool ClickLogic::pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
                            MenuIo& io) {
-    if (cursor.empty()) return false;
+    const int totalSlots = m.playerInventory ? 46 : m.totalSlots();
+    if (cursor.empty() || slot < 0 || slot >= totalSlots ||
+        isTakeOnlySlot(m, slot))
+        return false;
     int collected = 0;
-    auto gather = [&](ItemStack* arr, int count) {
-        for (int i = 0; i < count; ++i) {
-            if (sameItem(cursor, arr[i])) {
-                while (arr[i].count > 0 &&
-                       cursor.count < maxStackFor(cursor)) {
-                    --arr[i].count; ++cursor.count; ++collected;
-                    if (arr[i].count <= 0) arr[i] = ItemStack::air();
-                }
-            }
+    bool blockContentsChanged = false;
+    auto gather = [&](ItemStack& source) {
+        if (!sameItem(cursor, source)) return false;
+        bool changed = false;
+        while (source.count > 0 && cursor.count < maxStackFor(cursor)) {
+            --source.count;
+            ++cursor.count;
+            ++collected;
+            changed = true;
+            if (source.count <= 0) source = ItemStack::air();
         }
+        return changed;
     };
-    gather(m.container, m.containerCount);
-    for (auto& s : m.craftGrid) (void)s;
-    for (auto& s : m.craftGrid) {
-        if (sameItem(cursor, s)) {
-            while (s.count > 0 && cursor.count < maxStackFor(cursor)) {
-                --s.count; ++cursor.count; ++collected;
-                if (s.count <= 0) s = ItemStack::air();
-            }
+
+    if (!m.playerInventory && m.type != MenuType::Crafting) {
+        ItemStack* contents = m.container ? m.container : m.extraSlots;
+        const int slotLimit = containerSlotCount(m);
+        const int storageLimit = m.container
+                                     ? slotLimit
+                                     : std::min(slotLimit,
+                                                static_cast<int>(std::size(m.extraSlots)));
+        const int count = std::min(std::max(m.containerCount, 0), storageLimit);
+        for (int i = 0; contents && i < count; ++i) {
+            if (!isTakeOnlySlot(m, i) && gather(contents[i]))
+                blockContentsChanged = true;
         }
     }
-    if (collected && m.blockKey != -1) io.blockEntityChanged(m.blockKey);
+
+    if (m.type == MenuType::Crafting) {
+        if (m.playerInventory) {
+            static constexpr int kVisibleCraftGrid[] = {0, 1, 3, 4};
+            for (const int i : kVisibleCraftGrid)
+                (void)gather(m.craftGrid[i]);
+        } else {
+            for (auto& stack : m.craftGrid)
+                (void)gather(stack);
+        }
+    }
+
+    if (m.playerInventory) {
+        for (int inventorySlot = 5; inventorySlot < 46; ++inventorySlot)
+            (void)gather(p.inv[inventorySlot]);
+    } else {
+        const int firstMenuSlot = containerSlotCount(m);
+        for (int menuSlot = firstMenuSlot; menuSlot < firstMenuSlot + 36;
+             ++menuSlot) {
+            if (ItemStack* inventoryStack = playerInvSlot(m, menuSlot, p))
+                (void)gather(*inventoryStack);
+        }
+    }
+
+    if (blockContentsChanged && m.blockKey != -1 &&
+        m.type != MenuType::Crafting)
+        io.blockEntityChanged(m.blockKey);
     return collected > 0;
 }
 
