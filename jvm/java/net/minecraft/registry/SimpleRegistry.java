@@ -35,6 +35,7 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     /** Fabric Registry Sync's alias map; initialized with the registry object. */
     private final Map<net.minecraft.util.Identifier, net.minecraft.util.Identifier> aliases = new HashMap<>();
     private final Map<net.minecraft.util.Identifier, T> values = new LinkedHashMap<>();
+    private final Map<net.minecraft.util.Identifier, T> registeredValues = new LinkedHashMap<>();
     private final Map<T, net.minecraft.util.Identifier> reverse = new HashMap<>();
     private final Map<net.minecraft.registry.tag.TagKey<T>, Set<T>> tags = new HashMap<>();
     private final Map<RegistryKey<T>, RegistryEntry.Reference<T>> keyToEntry = new LinkedHashMap<>();
@@ -47,6 +48,8 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     private final TagLookup tagLookup = new TagLookup();
     private boolean frozen;
     private final List<Registry.EntryAddedListener<T>> entryListeners = new ArrayList<>();
+    private int nativeRegistrySizeCache = -1;
+    private List<net.minecraft.util.Identifier> nativeRegistryIdsCache = List.of();
 
     public SimpleRegistry(RegistryKey<?> key, Lifecycle lifecycle, boolean intrusive) {
         this.key = key;
@@ -112,19 +115,28 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     }
     @Override public synchronized Optional<RegistryEntry<T>> getEntry(int rawId) {
         if (rawId < 0) return Optional.empty();
-        int index = 0;
-        for (T value : values.values()) {
-            if (index++ == rawId) return Optional.of(entry(getId(value), value));
+        List<net.minecraft.util.Identifier> nativeIds = nativeRegistryIdsInRawOrder();
+        if (rawId < nativeIds.size()) {
+            net.minecraft.util.Identifier id = nativeIds.get(rawId);
+            return id == null ? Optional.empty() : getEntry(id);
         }
-        String name = NativeAccess.registryEntryName(nativeRegistryName(), rawId);
-        net.minecraft.util.Identifier id = net.minecraft.util.Identifier.tryParse(name);
-        return id == null ? Optional.empty() : getEntry(id);
+        int registeredIndex = rawId - nativeIds.size();
+        for (Map.Entry<net.minecraft.util.Identifier, T> registered : registeredValues.entrySet()) {
+            if (registeredIndex-- == 0)
+                return Optional.of(entry(registered.getKey(), registered.getValue()));
+        }
+        return Optional.empty();
     }
 
     @Override public synchronized net.minecraft.util.Identifier getId(T value) {
         if (value == null) return null;
         net.minecraft.util.Identifier id = reverse.get(value);
         if (id != null) return id;
+        id = identifierOf(value);
+        if (id != null && (registeredValues.containsKey(id) || nativeRawId(id) >= 0)) {
+            reverse.put(value, id);
+            return id;
+        }
         for (Map.Entry<net.minecraft.util.Identifier, T> entry : values.entrySet()) {
             if (entry.getValue() == value || entry.getValue().equals(value)) return entry.getKey();
         }
@@ -133,37 +145,47 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     @Override public synchronized int getRawId(T value) {
         net.minecraft.util.Identifier id = getId(value);
         if (id == null) return -1;
-        int raw = 0;
-        for (net.minecraft.util.Identifier candidate : getIds()) {
-            if (candidate.equals(id)) return raw;
-            raw++;
+        int nativeRawId = nativeRawId(id);
+        if (nativeRawId >= 0) return nativeRawId;
+        int registeredIndex = 0;
+        for (net.minecraft.util.Identifier registeredId : registeredValues.keySet()) {
+            if (registeredId.equals(id))
+                return nativeRegistryIdsInRawOrder().size() + registeredIndex;
+            registeredIndex++;
         }
         return -1;
     }
-    @Override public synchronized int size() { return Math.max(values.size(), nativeSize()); }
+    @Override public synchronized int size() {
+        return nativeRegistryIdsInRawOrder().size() + registeredValues.size();
+    }
 
     @Override public synchronized Set<net.minecraft.util.Identifier> getIds() {
-        LinkedHashSet<net.minecraft.util.Identifier> result = new LinkedHashSet<>(values.keySet());
-        int count = nativeSize();
-        for (int rawId = 0; rawId < count; rawId++) {
-            net.minecraft.util.Identifier id = net.minecraft.util.Identifier.tryParse(
-                NativeAccess.registryEntryName(nativeRegistryName(), rawId));
+        LinkedHashSet<net.minecraft.util.Identifier> result = new LinkedHashSet<>();
+        for (net.minecraft.util.Identifier id : nativeRegistryIdsInRawOrder())
             if (id != null) result.add(id);
-        }
+        result.addAll(registeredValues.keySet());
         return Collections.unmodifiableSet(result);
     }
     @Override public synchronized Set<Map.Entry<net.minecraft.util.Identifier, T>> entrySet() {
-        return Collections.unmodifiableSet(new LinkedHashSet<>(values.entrySet()));
+        LinkedHashSet<Map.Entry<net.minecraft.util.Identifier, T>> result = new LinkedHashSet<>();
+        for (net.minecraft.util.Identifier id : getIds()) {
+            T value = get(id);
+            if (value != null)
+                result.add(new java.util.AbstractMap.SimpleImmutableEntry<>(id, value));
+        }
+        return Collections.unmodifiableSet(result);
     }
-    @Override public synchronized Stream<T> stream() { return new ArrayList<>(values.values()).stream(); }
-    @Override public synchronized Iterator<T> iterator() { return new ArrayList<>(values.values()).iterator(); }
+    @Override public synchronized Stream<T> stream() { return valuesInRawOrder().stream(); }
+    @Override public synchronized Iterator<T> iterator() { return valuesInRawOrder().iterator(); }
     @Override public synchronized boolean containsId(net.minecraft.util.Identifier id) { return get(id) != null; }
 
     @Override public synchronized void registerValue(net.minecraft.util.Identifier id, T value) {
         if (id == null || value == null) throw new NullPointerException("id/value");
-        if (values.containsKey(id)) throw new IllegalArgumentException("duplicate registry id: " + id);
-        int rawId = Math.max(values.size(), nativeSize());
+        if (registeredValues.containsKey(id) || nativeRawId(id) >= 0)
+            throw new IllegalArgumentException("duplicate registry id: " + id);
+        int rawId = nativeRegistryIdsInRawOrder().size() + registeredValues.size();
         values.put(id, value);
+        registeredValues.put(id, value);
         reverse.put(value, id);
         @SuppressWarnings("unchecked") RegistryKey<T> valueKey = (RegistryKey<T>) RegistryKey.of(key, id);
         RegistryEntry.Reference<T> reference = new RegistryEntry.Reference<>(value, valueKey);
@@ -223,30 +245,64 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     }
     private String nativeRegistryName() {
         if (key == null || key.getValue() == null) return "";
-        net.minecraft.util.Identifier value = key.getValue();
-        return "minecraft".equals(value.getNamespace()) ? value.getPath() : value.toString();
+        return key.getValue().toString();
     }
     private int nativeSize() {
         return switch (nativeRegistryName()) {
-            case "item", "block", "entity_type", "fluid" ->
+            case "minecraft:item", "minecraft:block",
+                 "minecraft:entity_type", "minecraft:fluid" ->
                 Math.max(0, NativeAccess.registryEntryCount(nativeRegistryName()));
             default -> 0;
         };
     }
+    private List<net.minecraft.util.Identifier> nativeRegistryIdsInRawOrder() {
+        int count = nativeSize();
+        if (nativeRegistrySizeCache == count) return nativeRegistryIdsCache;
+        List<net.minecraft.util.Identifier> ids = new ArrayList<>(count);
+        for (int rawId = 0; rawId < count; rawId++) {
+            ids.add(net.minecraft.util.Identifier.tryParse(
+                NativeAccess.registryEntryName(nativeRegistryName(), rawId)));
+        }
+        nativeRegistryIdsCache = Collections.unmodifiableList(ids);
+        nativeRegistrySizeCache = count;
+        return nativeRegistryIdsCache;
+    }
+    private int nativeRawId(net.minecraft.util.Identifier id) {
+        if (id == null) return -1;
+        List<net.minecraft.util.Identifier> ids = nativeRegistryIdsInRawOrder();
+        for (int rawId = 0; rawId < ids.size(); rawId++)
+            if (id.equals(ids.get(rawId))) return rawId;
+        return -1;
+    }
+    private List<T> valuesInRawOrder() {
+        List<T> result = new ArrayList<>(size());
+        for (net.minecraft.util.Identifier id : getIds()) {
+            T value = get(id);
+            if (value != null) result.add(value);
+        }
+        return result;
+    }
+    private static net.minecraft.util.Identifier identifierOf(Object value) {
+        if (value instanceof Block block) return block.getId();
+        if (value instanceof Item item) return item.getId();
+        if (value instanceof EntityType<?> entityType) return entityType.getId();
+        if (value instanceof Fluid fluid) return fluid.getId();
+        return null;
+    }
     @SuppressWarnings("unchecked")
     private T resolveNative(net.minecraft.util.Identifier id) {
         return switch (nativeRegistryName()) {
-            case "item" -> {
+            case "minecraft:item" -> {
                 int rawId = NativeAccess.registryItemId(id.toString());
                 yield rawId < 0 ? null : (T) new Item(id, rawId);
             }
-            case "block" -> {
+            case "minecraft:block" -> {
                 int rawState = NativeAccess.registryBlockState(id.toString());
                 yield rawState < 0 ? null : (T) new Block(rawState, id);
             }
-            case "entity_type" -> hasNativeEntry(id)
+            case "minecraft:entity_type" -> hasNativeEntry(id)
                 ? (T) new EntityType<>(id, () -> null, 0.6f, 1.8f) : null;
-            case "fluid" -> hasNativeEntry(id) ? (T) new Fluid(id) : null;
+            case "minecraft:fluid" -> hasNativeEntry(id) ? (T) new Fluid(id) : null;
             default -> null;
         };
     }

@@ -17,10 +17,13 @@ integration boundary, and verification evidence.
   clean-room methodology, and contribution workflow.
 - [Verification](VERIFICATION.md) — reproducible commands, evidence, and the
   interpretation of passing and bounded results.
-- [Real-client verification](MC_PILOT_REAL_TEST.md) — the mc-pilot-managed
-  Fabric client probe, PrismLauncher check, fixes, and tool assessment.
+- [Real-client verification](MC_PILOT_REAL_TEST.md) — bounded checks with a
+  mc-pilot-managed Fabric client and PrismLauncher, including their scope and
+  limitations.
 - [Current status](CURRENT_STATE.md) — the latest measured state and remaining
   limitations.
+- [Archive handoff](ARCHIVE_HANDOFF.md) — architecture evolution, project-management
+  workflow, verification practice, and lessons for a successor project.
 
 ## Supported target
 
@@ -29,19 +32,26 @@ integration boundary, and verification evidence.
 | Minecraft | Java Edition 1.21.4 |
 | Protocol | 769 |
 | World data | DataVersion 4189 |
-| Runtime | C++20 server; the embedded HotSpot/JNI path is enabled by default in a binary built with JDK/JNI and when a compatible runtime JDK is available |
+| Runtime | C++20 server; the embedded HotSpot/JNI path is enabled by default in a binary built with JDK/JNI and requires Java 21 or newer at runtime |
 
 The Java integration is a deliberately bounded extension surface. JDK 17+ must
 be available at configure/build time for the JNI bridge and embedded shadow
 classes; a JDK installed only after a native-only build cannot add JVM support
-to that existing binary. At runtime, a JNI-capable binary needs a compatible
-JDK and fails open to the native server unless strict startup is requested. The
-shadow-runtime build accepts JDK 17+, while the pinned real-mod probes use JDK
-21; a mod's own Java requirement can be higher. It provides a version-locked
-shadow API, selected Fabric-style callbacks, and a structural bytecode
+to that existing binary. At runtime, a JNI-capable 1.21.4 binary requires Java
+21 or newer; runtimes below 21 are rejected. Without a usable runtime JDK, the
+non-strict launcher can fall back to the native server, while strict startup
+fails. The shadow-runtime build accepts JDK 17+, while the pinned real-mod
+probes use JDK 21; a mod's own Java requirement can be higher. It provides a
+version-locked shadow API, selected Fabric-style callbacks, and a structural bytecode
 transformer for the tested server-side use cases. It is not the official Mojang
 server runtime and does not claim universal compatibility with arbitrary JVM
-mods, client code, or GUI behavior.
+mods, client code, or GUI behavior. Selected JNI callbacks may overlap across
+session and tick threads; native mutations are queued to the server thread, but
+Fabric's exact callback thread affinity is not reproduced. Normal startup uses
+cppfm's bounded compatibility loader. The pinned official Fabric Loader/Knot
+path is a separate opt-in via `CPPFM_FABRIC_RUNTIME` or the
+`cppfm.fabric-runtime` Java property; it requires provisioned runtime artifacts
+and still launches against cppfm's shadow provider, not Mojang's GameProvider.
 
 With Python 3 available at configure/build time, repository-owned data is
 embedded in the executable; when `javac` and JNI are also available, the Java
@@ -78,127 +88,25 @@ default-on strict JVM startup without an external classes/assets override.
 
 ## Verification at a glance
 
-The 2026-09-19 integrated working-tree baseline recorded:
+The project uses CMake and CTest for focused unit, wire-format, gameplay,
+integration, persistence-recovery, and operational checks. The optional
+Mineflayer probe connects independent Minecraft 1.21.4 clients to a fresh local
+server and exercises login, chat, movement, block interaction, and selected
+inventory/command paths, including filled-shulker dispenser placement into cave
+air. A separate bounded probe covers the selected Java
+extension and mod-loading surface.
 
-- The 2026-09-19 integrated rerun is non-nightly CTest `52/52 PASS`
-  in `441.35s`; the separately run source-tree smoke matrix reports
-  `224 PASS / 0 FAIL`, Plan43 reports `87 PASS / 0 FAIL`, and the full
-  `test_server_full.py` matrix reports `240 PASS / 0 FAIL / 240 total`.
-  The named focused targets also pass: settings `27`, properties `33`,
-  recovery `55`, core safety `45`, and the specification wire vectors `417`,
-  all with zero failures.
-- The implemented vanilla-facing server-settings subset has focused results of
-  `settings_matrix` `49/49`, `properties` `64/64`, and `secure_chat_policy`
-  `12/12`. Combined snapshot `bac90dfb` passed non-nightly CTest `55/55` in
-  `544.84s` in [GitHub Actions](https://github.com/nico2525nn/cpp-fabricmc/actions/runs/35828644414).
-  Unsupported vanilla settings and several runtime effects remain partial;
-  offline fake-client launchers explicitly disable both authentication checks.
-  Full commands and limitations are recorded in
-  [Verification](VERIFICATION.md#vanilla-server-settings-compatibility-follow-up-2026-09-23-exact-head-evidence).
-- The 120-client stress gate joined `120/120` in `68.5s`; the 300-second soak
-  passed with 150 keepalives, 0 disconnects, 2,899 actions, and `0.2%`
-  post-fill RSS growth. The strict synthetic view-distance-32 benchmark
-  passed all p50/p95/RSS/hit-rate and OOM/kick criteria for 4,225 chunks.
-  The separate package/JVM gates remain distinct when available.
-- Focused gameplay checks confirmed for the current working tree include
-  gameplay `806 PASS / 0 FAIL`, redstone `42 PASS / 0 FAIL`, fluids
-  `23 PASS / 0 FAIL`, and menu logic `41 PASS / 0 FAIL`; enchanting and crafter
-  coverage is bounded and does not
-  establish complete vanilla menu parity.
-- The locally generated ignored Linux one-file package contains exactly one
-  executable; its clean extracted-directory `test_server_full` run is
-  `234 PASS / 0 FAIL`, and the separate `package_jvm_smoke` gate also passes.
-  This package is a local ignored `build/` output, not a tracked/public artifact.
-- The class-file linkage tooling and fail-closed runtime-diagnostic contract both
-  pass. Static official-provider scans remain conservative diagnostics because raw
-  Mixin classes can reference members added only after transformation.
-- The bounded historical Java fixture corpus reports `25/25`; its harness also
-  passes the auxiliary functional API fixture. The standalone Shadow ABI gate
-  reports `906` source classes, `763` class files, and `8,297` audited members; and
-  the pinned offline Loader/Knot probe passes.
-- The locked server-side Modrinth corpus (Lithium, FerriteCore, and Carpet)
-  passes individually and in combination under Java 21, with zero classified
-  runtime linkage/bootstrap diagnostics. This proves only bounded JVM/mod
-  bootstrap and owned clean shutdown for those artifacts, not gameplay,
-  registry, rendering, client, GUI, or arbitrary-mod parity. A wider 12-entry
-  screening has 8 target-compatible runtime passes and 4 explicit non-target/
-  invalid classifications. The latest bounded report is the ignored local
-  build output
-  `build/real-mod-candidates/compatibility-candidates-report-final-20260908.json`;
-  the available Create archives have no matching Fabric 1.21.4 server artifact
-  in the lock and therefore were not counted as runtime passes.
-- A 120-client synthetic load run and 300-, 600-, and 1800-second diagnostics
-  pass. A local mc-pilot-managed Fabric 1.21.4 client also logged in, entered
-  the world, stayed connected for more than one minute, and completed chat,
-  command, block, status, and screenshot probes. The installed PrismLauncher
-  11.1.0 also launched a Fabric 1.21.4 client through its CLI and joined the
-  same server with an existing authenticated account. These are local checks,
-  not retained release assets; the exact scope is in [Real-client
-  verification](MC_PILOT_REAL_TEST.md).
+These checks establish only the behavior and scenarios they exercise; they are
+not a universal compatibility percentage. In particular, arbitrary Fabric
+mods, the complete vanilla world-generation random-call sequence, configured
+feature execution, full GUI behavior, and accepted multi-hour soak evidence
+remain outside the current compatibility claim. The optional `/place feature`
+probe tests safe block mutation for a small fixed-pattern subset, not vanilla
+configured-feature parity.
 
-### 2026-09-19 working-tree hardening baseline
-
-The final deterministic settings/security/authority pass reports
-`test_settings_matrix` `27 PASS / 0 FAIL`, `test_properties` `33 PASS / 0 FAIL`,
-`test_recovery` `55 PASS / 0 FAIL` with recovery files under `/dev/shm`,
-`test_core_safety` `45 PASS / 0 FAIL`, Plan43 `87 PASS / 0 FAIL`, smoke80
-`224 PASS / 0 FAIL`, and the full `tests/test_server_full.py` matrix
-`240 PASS / 0 FAIL / 240 total`. The feature adversarial review scores this
-tree `10/10` with no P0/P1/P2 finding; the quality review scores `9.5/10`
-with no P0/P1.
-
-The network path keeps state transitions serialized while encoding frames under
-the simulation gate and handing them to a per-connection writer. The writer queue
-is capped at 4 MiB per client; encrypted frames remain FIFO; graceful close drains
-for at most 100 ms before teardown. Secure-profile rejection is terminal, block
-events are cancellable before mutation (including callback revalidation), item
-command sources retain their dimension, and background piston snapshot barriers
-run under the simulation gate. Signed command argument transcripts are
-intentionally fail-closed and remain a declared limitation.
-
-Network admission also bounds pending sessions and Status probes separately.
-Login reserves `max-players` before Play registration, including rejecting
-ordinary logins when the configured limit is zero. A frame's 30-second deadline
-starts with its first length byte, so an idle connection does not consume the
-frame budget while a slow-drip frame cannot extend it indefinitely.
-
-These are named-scenario results, not a universal compatibility percentage. The
-latest package-target rebuild, clean extracted-package checks, and full
-non-nightly CTest gates pass. The declared E-14, full world-generation L3, long-run, and real-client
-boundaries remain open.
-The Java/Minecraft RNG primitive and splitter vectors are covered by
-`test_rng_parity` (`25 PASS / 0 FAIL`), but exact random-call ordering and
-structure-NBT parity for every generation path, arbitrary Fabric
-JVM mods, accepted two-hour or 24-hour soak evidence, first-time Microsoft
-interactive login, and a retained real-client/GUI release artifact remain
-outside the current claim. See [Verification](VERIFICATION.md) and [Real-client
-verification](MC_PILOT_REAL_TEST.md) for dates, commands, and failure
-interpretation.
-
-The Plan54 cleanup is intentionally recorded as `PARTIAL`: its protected-path
-hashes are unchanged and the focused reductions preserved behavior, but the strict
-18,341 mutable-line target was not reached. No fixture, assertion, or generated
-input was deleted to manufacture a reduction.
-
-### Active bounded goal run
-
-The current goal evidence is indexed in [the audit directory](audit/README.md).
-It records a fixed dirty-tree baseline, a 90-row feature ledger (`14 PASS`,
-`38 PARTIAL`, `38 UNVERIFIED`), three real launches, a real command/entity
-transcript, 23 reproducible network and
-gameplay fixes, an official Mojang bug oracle, adversarial security guards, and
-safe cleanup measurements. The accepted scope still excludes arbitrary Fabric
-mods, full world-generation L3, signed-command transcripts, GUI parity, moving
-piston NBT, and an accepted two-hour/24-hour soak. The scoped production cleanup
-measurement now includes behavior-preserving refactors in redstone, menu,
-stairs, JVM, and session helpers; the fixed whole-tree eligible ledger still
-counts retained regression tests and evidence.
-The requested 10,000-line deletion is not claimed because it would require
-removing protected or feature-bearing code.
-The current feature-entry CTest is `1/1 PASS` in `42.56s`; the existing focused
-ASan/UBSan and full non-nightly CTest counts remain recorded in their run logs.
-The two-launch live matrix is `PASS`, while the requested 7200-second soak
-failed at `t=1200s` with server exit `-9`; see `audit/goal-gui-soak.md`.
+Use [Verification](VERIFICATION.md) for reproducible commands and evidence
+boundaries, [Current status](CURRENT_STATE.md) for dated results, and [Real-client
+verification](MC_PILOT_REAL_TEST.md) for the bounded desktop-client record.
 
 ## Clean-room boundary
 

@@ -549,14 +549,13 @@ void GameServer::initScoreboardCommandsPart4() {
             const auto sel = c.arg("targets").asSelector();
             const std::string t = c.arg("tag").asStr();
             int added = 0;
-            // Player tags are stored as scoreboard tags? For now store in Player:: cookies? Use simple set in Player (not persistent)
-            // We'll use a static map for entity tags
             for (auto& n : sel.playerNames) {
-                if (Player* p = findPlayer(*this, n)) {
-                    // Use player's tags via a hidden set (reuse cookies as tag marker)
-                    if (p->cookies.count("tag:" + t) == 0) { p->cookies["tag:" + t] = {}; added++; }
-                }
+                const auto player = findPlayerRef(*this, n);
+                if (player) added += player->addScoreboardTag(t) ? 1 : 0;
             }
+            if (added == 0)
+                throw std::runtime_error(
+                    "Unable to add tag to any entity");
             sendFeedback(src, "Added tag " + t + " to " + std::to_string(added));
             return added;
         };
@@ -569,7 +568,16 @@ void GameServer::initScoreboardCommandsPart4() {
             const auto sel = c.arg("targets").asSelector();
             const std::string t = c.arg("tag").asStr();
             int removed = 0;
-            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) if (p->cookies.erase("tag:" + t)) removed++;
+            for (auto& n : sel.playerNames) {
+                const auto player = findPlayerRef(*this, n);
+                if (player) {
+                    std::lock_guard playerLock(player->stateMtx);
+                    removed += player->scoreboardTags.erase(t) != 0 ? 1 : 0;
+                }
+            }
+            if (removed == 0)
+                throw std::runtime_error(
+                    "Unable to remove tag from any entity");
             sendFeedback(src, "Removed tag " + t + " from " + std::to_string(removed));
             return removed;
         };
@@ -580,8 +588,18 @@ void GameServer::initScoreboardCommandsPart4() {
             Player* src = static_cast<Player*>(c.source.player);
             const auto sel = c.arg("targets").asSelector();
             std::string out;
-            for (auto& n : sel.playerNames) if (Player* p = findPlayer(*this, n)) {
-                for (auto& kv : p->cookies) if (kv.first.rfind("tag:",0)==0) out += kv.first.substr(4) + " ";
+            for (auto& n : sel.playerNames) {
+                const auto player = findPlayerRef(*this, n);
+                if (!player) continue;
+                std::vector<std::string> tags;
+                {
+                    std::lock_guard playerLock(player->stateMtx);
+                    tags.assign(player->scoreboardTags.begin(),
+                                player->scoreboardTags.end());
+                }
+                std::sort(tags.begin(), tags.end());
+                for (const auto& playerTag : tags)
+                    out += playerTag + " ";
             }
             sendFeedback(src, out.empty() ? "no tags" : out);
             return 1;

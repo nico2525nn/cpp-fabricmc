@@ -98,7 +98,15 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     /** Register class bytes with the config's named-to-intermediary refmap. */
     public void registerMixin(String binaryName, byte[] bytes, String configName,
                               MixinReferenceMap referenceMap) {
+        registerMixin(binaryName, bytes, configName, referenceMap, 0);
+    }
+
+    /** Register class bytes with the injector requirement inherited from its config. */
+    public void registerMixin(String binaryName, byte[] bytes, String configName,
+                              MixinReferenceMap referenceMap, int defaultRequire) {
         if (bytes == null) throw new NullPointerException("bytes");
+        if (defaultRequire < 0)
+            throw new IllegalArgumentException("defaultRequire must be non-negative");
         ClassFileModel model = ClassFileModel.parse(bytes);
         String mixinName = model.binaryName();
         if (binaryName != null && !binaryName.isEmpty()) mixinName = binaryName.replace('/', '.');
@@ -127,7 +135,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         List<String> targets = List.copyOf(targetSet);
         MixinDefinition definition = new MixinDefinition(mixinName, model, targets,
             annotation.integer("priority", 1000), nextRegistrationOrder.getAndIncrement(), configName,
-            referenceMap == null ? MixinReferenceMap.EMPTY : referenceMap);
+            referenceMap == null ? MixinReferenceMap.EMPTY : referenceMap,
+            defaultRequire);
         for (String target : targets) {
             List<MixinDefinition> targetDefinitions = definitions.computeIfAbsent(
                 normalizeInternal(target), ignored -> new CopyOnWriteArrayList<>());
@@ -161,7 +170,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     reportConfigurationResource("mixin class not found: " + mixin, configuration.isRequired());
                     continue;
                 }
-                registerMixin(mixin, readAll(stream), null, referenceMap);
+                registerMixin(mixin, readAll(stream), null, referenceMap,
+                    configuration.defaultRequire());
             } catch (IOException failure) {
                 reportConfigurationResource("cannot read mixin class " + mixin + ": " + failure,
                     configuration.isRequired());
@@ -800,7 +810,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         int matchedSites = 0;
         for (AtSpec at : atSpecs) {
             for (String methodName : methodNames) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, true)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     CodeModel code = destination.code(target.pool);
                     if (code == null) throw unsupported("cannot inject into abstract/native method: " + destination.name(target.pool));
                     BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
@@ -880,7 +891,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 }
             }
         }
-        validateMatchCount(annotation, matchedSites, "@Inject " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@Inject " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1123,7 +1135,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot redirect abstract/native method: " + methodName);
                 BytecodeInstructions.Editor editor = new BytecodeInstructions.Editor(code, target.pool);
@@ -1156,7 +1169,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@Redirect " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@Redirect " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1318,7 +1332,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (!at.value.equals("RETURN"))
                 throw unsupported("@ModifyReturnValue requires RETURN, got " + at.value);
             for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destination.descriptor(target.pool));
                     if (destinationDescriptor.returnType.voidType)
                         throw unsupported("@ModifyReturnValue cannot target a void method: "
@@ -1355,7 +1370,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             }
         }
         validateMatchCount(annotation, matchedSites,
-            "@ModifyReturnValue " + source.name(prepared.definition.model.pool));
+            "@ModifyReturnValue " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1376,7 +1391,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
                 throw unsupported("@ModifyExpressionValue requires INVOKE or FIELD, got " + at.value);
             for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
                         throw unsupported("non-static @ModifyExpressionValue handler targets a static method: " + handler.name);
                     CodeModel code = destination.code(target.pool);
@@ -1418,7 +1434,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             }
         }
         validateMatchCount(annotation, matchedSites,
-            "@ModifyExpressionValue " + source.name(prepared.definition.model.pool));
+            "@ModifyExpressionValue " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1437,7 +1453,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
                 throw unsupported("@WrapWithCondition requires INVOKE or FIELD, got " + at.value);
             for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
                         throw unsupported("non-static @WrapWithCondition handler targets a static method: " + handler.name);
                     CodeModel code = destination.code(target.pool);
@@ -1495,7 +1512,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             }
         }
         validateMatchCount(annotation,
-            matchedSites, "@WrapWithCondition " + source.name(prepared.definition.model.pool));
+            matchedSites, "@WrapWithCondition " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1512,7 +1529,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             if (!at.value.equals("INVOKE") && !at.value.equals("FIELD"))
                 throw unsupported("@WrapOperation requires INVOKE or FIELD, got " + at.value);
             for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
                         throw unsupported("non-static @WrapOperation handler targets a static method: " + handler.name);
                     CodeModel code = destination.code(target.pool);
@@ -1559,7 +1577,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             }
         }
         validateMatchCount(annotation,
-            matchedSites, "@WrapOperation " + source.name(prepared.definition.model.pool));
+            matchedSites, "@WrapOperation " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1574,7 +1592,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedMethods = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 String destinationName = destination.name(target.pool);
                 String destinationDescriptorString = destination.descriptor(target.pool);
                 Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destinationDescriptorString);
@@ -1629,7 +1648,7 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             }
         }
         validateMatchCount(annotation, matchedMethods,
-            "@WrapMethod " + source.name(prepared.definition.model.pool));
+            "@WrapMethod " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1780,7 +1799,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify abstract/native method");
                 Descriptor.MethodDesc targetDescriptor = Descriptor.method(destination.descriptor(target.pool));
@@ -1850,7 +1870,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@ModifyArg " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyArg " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1865,7 +1886,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify constant in abstract/native method");
                 rejectConstructorOperation(target, destination, "@ModifyConstant");
@@ -1899,7 +1921,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@ModifyConstant " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyConstant " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -1922,7 +1945,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
             int matchedSites = 0;
             int explicitIndex = annotation.integer("index", -1);
             for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-                for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+                for (MemberModel destination : selectMethods(target, methodName,
+                        handler.isStatic, annotation, prepared)) {
                     rejectUnsafeConstructorInjection(target, destination, at);
                     Descriptor.MethodDesc destinationDescriptor = Descriptor.method(destination.descriptor(target.pool));
                     int argumentIndex = explicitIndex >= 0
@@ -1954,8 +1978,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                     changed = true;
                 }
             }
-            validateMatchCount(annotation, matchedSites,
-                "@ModifyVariable " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyVariable " + source.name(prepared.definition.model.pool), prepared);
             return changed;
         }
         if (sharedReference && at.value.equals("INVOKE"))
@@ -1969,7 +1993,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify variable in abstract/native method");
                 rejectUnsafeConstructorInjection(target, destination, at);
@@ -2013,7 +2038,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@ModifyVariable " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyVariable " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -2035,7 +2061,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 if (!handler.isStatic && (destination.access & ClassFileModel.ACC_STATIC) != 0)
                     throw unsupported("non-static @ModifyVariable handler targets a static method: " + handler.name);
                 CodeModel code = destination.code(target.pool);
@@ -2100,7 +2127,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@ModifyVariable " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyVariable " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -2129,7 +2157,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         boolean changed = false;
         int matchedSites = 0;
         for (String methodName : targetMethodTokens(annotation, prepared, target)) {
-            for (MemberModel destination : selectMethods(target, methodName, handler.descriptor, false)) {
+            for (MemberModel destination : selectMethods(target, methodName,
+                    handler.isStatic, annotation, prepared)) {
                 CodeModel code = destination.code(target.pool);
                 if (code == null) throw unsupported("cannot modify variable in abstract/native method");
                 rejectUnsafeConstructorInjection(target, destination, at);
@@ -2204,7 +2233,8 @@ public final class MixinClassTransformer implements ClassFileTransformer {
                 changed = true;
             }
         }
-        validateMatchCount(annotation, matchedSites, "@ModifyVariable " + source.name(prepared.definition.model.pool));
+        validateMatchCount(annotation, matchedSites,
+            "@ModifyVariable " + source.name(prepared.definition.model.pool), prepared);
         return changed;
     }
 
@@ -2231,41 +2261,60 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         return selected;
     }
 
-    private List<MemberModel> selectMethods(ClassFileModel target, String token, String handlerDescriptor,
-                                            boolean injection) {
-        String name = token;
-        String descriptor = null;
-        int open = token.indexOf('(');
-        if (open >= 0) {
-            name = token.substring(0, open);
-            descriptor = token.substring(open);
-        }
-        name = resolver.resolveMethod(target.internalName(), name, descriptor);
+    private List<MemberModel> selectMethods(ClassFileModel target, String token,
+                                            boolean handlerStatic,
+                                            AnnotationModel annotation,
+                                            PreparedMixin prepared) {
+        return selectMethods(target, token, handlerStatic,
+            requiredMatches(annotation, prepared) == 0);
+    }
+
+    private List<MemberModel> selectMethods(ClassFileModel target, String token,
+                                            boolean handlerStatic,
+                                            boolean allowMissingTarget) {
+        MixinMemberSelector selector = MixinMemberSelector.parse(token);
+        String descriptor = selector.descriptor();
+        if (descriptor != null && descriptor.startsWith(":"))
+            throw unsupported("method selector contains a field descriptor: " + token);
+        String sourceOwner = selector.hasOwner()
+            ? selector.owner() : target.internalName();
+        if (selector.hasOwner() && !target.internalName().equals(
+                resolver.resolveOwner(sourceOwner)))
+            throw unsupported("selector owner does not match target class: " + token);
+        String name = selector.member().isEmpty() ? ""
+            : resolver.resolveMethod(sourceOwner, selector.member(), descriptor);
         ArrayList<MemberModel> output = new ArrayList<>();
-        for (MemberModel method : target.methodsNamed(name)) {
-            if (descriptor != null && descriptor.equals(method.descriptor(target.pool))) output.add(method);
-            else if (descriptor == null && injection) output.add(method);
-            else if (descriptor == null && Descriptor.method(method.descriptor(target.pool)).returnType != null) output.add(method);
+        List<MemberModel> candidates = selector.member().isEmpty()
+            ? target.methods : target.methodsNamed(name);
+        for (MemberModel method : candidates) {
+            if (descriptor == null || descriptor.equals(method.descriptor(target.pool)))
+                output.add(method);
         }
-        if (descriptor == null && injection && output.size() > 1) {
-            Descriptor.MethodDesc handlerMethod = Descriptor.method(handlerDescriptor);
-            int callback = callbackIndex(handlerMethod);
-            if (callback >= 0) {
-                List<MemberModel> matching = new ArrayList<>();
-                for (MemberModel method : output) {
-                    Descriptor.MethodDesc targetMethod = Descriptor.method(method.descriptor(target.pool));
-                    if (callback <= targetMethod.arguments.size()) {
-                        boolean same = true;
-                        for (int i = 0; i < callback; ++i)
-                            same &= compatible(targetMethod.arguments.get(i), handlerMethod.arguments.get(i));
-                        if (same) matching.add(method);
-                    }
-                }
-                if (!matching.isEmpty()) output = new ArrayList<>(matching);
-            }
+        if (selector.hasQuantifier() &&
+            output.size() < selector.minimumMatches())
+            throw unsupported("target method selector " + token + " matched " +
+                output.size() + " method(s), expected at least " +
+                selector.minimumMatches());
+        int maximumMatches = selector.hasQuantifier()
+            ? selector.maximumMatches()
+            : 1;
+        if (output.size() > maximumMatches)
+            output.subList(maximumMatches, output.size()).clear();
+        // Mixin counts every matching member toward the selector quantifier,
+        // then excludes static targets for instance handlers. Applying this
+        // after the cap also prevents a later overload from silently replacing
+        // the selector's first match.
+        if (!handlerStatic && maximumMatches > 1)
+            output.removeIf(method -> (method.access & ClassFileModel.ACC_STATIC) != 0);
+        if (output.isEmpty()) {
+            // Minimum/maximum constraints count matched methods before the
+            // handler-static compatibility filter, just as Mixin does. A
+            // filtered-empty target set is left to injector `require` policy.
+            if (selector.hasQuantifier() || allowMissingTarget)
+                return List.of();
+            throw unsupported(
+                "target method not found in " + target.internalName() + ": " + token);
         }
-        if (output.isEmpty())
-            throw unsupported("target method not found in " + target.internalName() + ": " + token);
         return output;
     }
 
@@ -3256,13 +3305,22 @@ public final class MixinClassTransformer implements ClassFileTransformer {
     }
 
     /** Enforce the hard injector bounds; Mixin's {@code expect} is advisory. */
-    private void validateMatchCount(AnnotationModel annotation, int matched, String operation) {
-        int required = annotation.integer("require", -1);
-        if (required >= 0 && matched < required)
+    private int requiredMatches(AnnotationModel annotation, PreparedMixin prepared) {
+        int explicit = annotation.integer("require", -1);
+        return explicit >= 0 ? explicit : prepared.definition.defaultRequire;
+    }
+
+    private void validateMatchCount(AnnotationModel annotation, int matched,
+                                    String operation, PreparedMixin prepared) {
+        int required = requiredMatches(annotation, prepared);
+        if (matched < required)
             throw unsupported(operation + " matched " + matched + " site(s), require=" + required);
-        int allowed = annotation.integer("allow", -1);
-        if (allowed >= 0 && matched > allowed)
-            throw unsupported(operation + " matched " + matched + " site(s), allow=" + allowed);
+        if (annotation.value("allow") != null) {
+            int allowed = annotation.integer("allow", -1);
+            int maximum = Math.max(Math.max(required, 1), allowed);
+            if (matched > maximum)
+                throw unsupported(operation + " matched " + matched + " site(s), allow=" + maximum);
+        }
     }
 
     /**
@@ -3598,11 +3656,14 @@ public final class MixinClassTransformer implements ClassFileTransformer {
         final long registrationOrder;
         final String configName;
         final MixinReferenceMap referenceMap;
+        final int defaultRequire;
         MixinDefinition(String name, ClassFileModel model, List<String> targets, int priority,
-                        long registrationOrder, String configName, MixinReferenceMap referenceMap) {
+                        long registrationOrder, String configName,
+                        MixinReferenceMap referenceMap, int defaultRequire) {
             this.name = name; this.model = model; this.targets = List.copyOf(new LinkedHashSet<>(targets));
             this.priority = priority; this.registrationOrder = registrationOrder; this.configName = configName;
             this.referenceMap = referenceMap == null ? MixinReferenceMap.EMPTY : referenceMap;
+            this.defaultRequire = defaultRequire;
         }
     }
 

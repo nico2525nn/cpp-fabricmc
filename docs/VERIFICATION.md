@@ -527,8 +527,7 @@ that fallback does not claim JVM-mod compatibility.
 | `jvm_runtime` | `PASS` | embedded HotSpot, fixture entrypoint, World API, command registration, lifecycle, selected Mixin hooks, and owned clean shutdown |
 | `package_jvm_smoke` | `PASS` | exact CPack ZIP, clean extraction, default-on strict JVM startup without a classes/assets override, embedded classes/assets, and owned clean shutdown |
 | `jvm_transformer` | `PASS` | pre-definition class-file transformation, verifier-safe stack/local preservation, transform-order contract, MixinExtras operations, `@Share`, and `@Local` selectors |
-| `jvm_compatibility` | `PASS` | all 25 historical dependency-free fixture cases pass in one `cppfm` process; the same harness also passes the auxiliary functional API fixture; three consecutive direct reruns passed after the stream-capture hardening |
-| `jvm_corpus` | `PASS` | the 25-case compatibility report and auxiliary functional API evidence pass through the executable corpus harness |
+| `jvm_compatibility` | `PASS` | one serialized end-to-end run compiles and loads all 25 historical dependency-free fixtures plus the auxiliary functional API fixture; the compatibility report and process evidence are retained under `build/jvm/`; the server-evidence deadline is 90 seconds to tolerate loaded build hosts |
 | `shadow_abi` | `PASS` | standalone dependency-complete compile/reflection gate; 906 source classes, 763 class files, and 8,297 declared/audited members |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | official Fabric API/Yarn ABI audit | `PASS / INFORMATIONAL` | Fabric API `0.119.4+1.21.4` common/server-side surface cross-checked against Yarn `1.21.4+build.8`: 206 top-level classes and 1,699 public members audited; no exact class/member descriptor gap in the selected surface; client, datagen, renderer, and internal-only classes are excluded |

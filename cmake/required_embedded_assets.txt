@@ -1,0 +1,6 @@
+# Representative runtime inputs required in every self-contained server package.
+registry/tags.bin
+registry/registry_minecraft__worldgen_biome.bin
+entities/pig.json
+data/loot_tables/blocks/stone.json
+data/recipes/stone_bricks.json

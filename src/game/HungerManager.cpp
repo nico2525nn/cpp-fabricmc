@@ -1,56 +1,19 @@
 #include "HungerManager.hpp"
 #include "GameServer.hpp"
+#include "DamageSource.hpp"
 #include "Items.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <mutex>
 
 namespace cppfm {
 
 void HungerManager::addExhaustion(Player& p, float amount) {
     if (p.gamemode != 0) return;
     p.exhaustion += amount;
-}
-
-void HungerManager::addFoodAndSaturation(Player& p, int food, float sat) {
-    p.food = std::clamp(p.food + food, 0, 20);
-    p.saturation = std::clamp(p.saturation + sat, 0.f, static_cast<float>(p.food));
-    if (p.saturation > static_cast<float>(p.food)) p.saturation = static_cast<float>(p.food);
-}
-
-
-void HungerManager::handleFoodConsume(Player& p, const std::string& itemName, GameServer& srv) {
-    auto it = foodTable().find(itemName);
-    if (it != foodTable().end()) {
-        addFoodAndSaturation(p, it->second.food, it->second.saturation);
-        if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-            auto pit = gen::itemIdByName().find("minecraft:bowl");
-            if (pit != gen::itemIdByName().end()) {
-                srv.addToInventory(p, pit->second, 1);
-                srv.resendInventory(p);
-            }
-        }
-        if (itemName == "minecraft:honey_bottle") {
-            auto pit = gen::itemIdByName().find("minecraft:glass_bottle");
-            if (pit != gen::itemIdByName().end()) {
-                srv.addToInventory(p, pit->second, 1);
-                srv.resendInventory(p);
-            }
-        }
-        srv.sendSetHealth(p);
-        return;
-    }
-    if (itemName.find("stew") != std::string::npos || itemName.find("soup") != std::string::npos) {
-        addFoodAndSaturation(p, 6, 7.2f);
-        auto pit = gen::itemIdByName().find("minecraft:bowl");
-        if (pit != gen::itemIdByName().end()) { srv.addToInventory(p, pit->second, 1); srv.resendInventory(p); }
-        srv.sendSetHealth(p);
-    } else if (itemName.find("cake") != std::string::npos) {
-        addFoodAndSaturation(p, 2, 0.4f);
-        srv.sendSetHealth(p);
-    }
 }
 
 bool HungerManager::handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -61,7 +24,9 @@ bool HungerManager::handleCakeBlockConsume(GameServer& srv, Player& p, std::int3
     if (p.food >= 20) return false;
     int bites = 0;
     for (auto& kv : gen::propsOf(st)) if (kv.first == "bites") bites = std::stoi(std::string(kv.second));
-    handleFoodConsume(p, "minecraft:cake", srv);
+    // Cake is eaten from the placed block, not by consuming its inventory
+    // item. Keep this block-only rule separate from FoodComponent items.
+    addFoodAndSaturation(p, 2, 0.4f);
     addExhaustion(p, EXHAUST_EAT);
     if (bites >= 6) {
         w.setBlock(x, y, z, 0);
@@ -92,44 +57,45 @@ void HungerManager::tickRegenAndStarve(Player& p, int64_t tickNo, GameServer& sr
     try { diff = srv.difficultyPublic(); } catch(...) { diff = "normal"; }
     std::transform(diff.begin(), diff.end(), diff.begin(), [](unsigned char c){ return std::tolower(c); });
 
+    bool sendHealth = false;
+    bool applyStarvationDamage = false;
     // Fast healing with saturation when food==20 and saturation>0 — Yarn HungerManager: heal 1 per 10t at cost 6 exhaustion
-    if (naturalRegeneration && p.saturation > 0.f && p.food >= FULL_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
-        ++p.foodTickTimer;
-        if (p.foodTickTimer >= FAST_HEALING_INTERVAL) {
-            p.health = std::min(20.f, p.health + 1.f);
-            p.exhaustion += EXHAUSTION_PER_HEAL;
-            p.foodTickTimer = 0;
-            srv.sendSetHealth(p);
-        }
-        return;
-    }
-    // Slow healing when food >=18
-    if (naturalRegeneration && p.food >= SLOW_HEALING_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
-        ++p.foodTickTimer;
-        if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
-            p.health = std::min(20.f, p.health + 1.f);
-            p.exhaustion += EXHAUSTION_PER_HEAL;
-            p.foodTickTimer = 0;
-            srv.sendSetHealth(p);
-        }
-        return;
-    }
-    // Starvation when food ==0 — difficulty gates: PEACEFUL 0, EASY health>10, NORMAL health>1, HARD health>0 per Yarn
-    if (p.food <= STARVING_FOOD_LEVEL) {
-        ++p.foodTickTimer;
-        if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
-            bool canStarve = canStarveForDifficulty(diff, p.health);
-            if (canStarve) {
-                p.health = std::max(0.f, p.health - 1.f);
-                srv.sendSetHealth(p);
-                if (p.health <= 0.f) srv.killPlayer(p, "starve");
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        if (naturalRegeneration && p.saturation > 0.f &&
+            p.food >= FULL_FOOD_LEVEL && p.health > 0.f && p.health < 20.f) {
+            ++p.foodTickTimer;
+            if (p.foodTickTimer >= FAST_HEALING_INTERVAL) {
+                p.health = std::min(20.f, p.health + 1.f);
+                p.exhaustion += EXHAUSTION_PER_HEAL;
+                p.foodTickTimer = 0;
+                sendHealth = true;
             }
+        } else if (naturalRegeneration &&
+                   p.food >= SLOW_HEALING_FOOD_LEVEL &&
+                   p.health > 0.f && p.health < 20.f) {
+            // Slow healing when food >=18
+            ++p.foodTickTimer;
+            if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
+                p.health = std::min(20.f, p.health + 1.f);
+                p.exhaustion += EXHAUSTION_PER_HEAL;
+                p.foodTickTimer = 0;
+                sendHealth = true;
+            }
+        } else if (p.food <= STARVING_FOOD_LEVEL) {
+            // Starvation when food ==0 — difficulty gates match Yarn.
+            ++p.foodTickTimer;
+            if (p.foodTickTimer >= SLOW_HEALING_INTERVAL) {
+                applyStarvationDamage = canStarveForDifficulty(diff, p.health);
+                p.foodTickTimer = 0;
+            }
+        } else {
             p.foodTickTimer = 0;
         }
-        return;
     }
-    // otherwise reset timer
-    p.foodTickTimer = 0;
+    if (sendHealth) srv.sendSetHealth(p);
+    if (applyStarvationDamage)
+        srv.applyDamage(p, 1.0F, DamageSource::starve());
 }
 
 void HungerManager::onPlayerMove(Player& p, double oldX, double /*oldY*/, double oldZ,

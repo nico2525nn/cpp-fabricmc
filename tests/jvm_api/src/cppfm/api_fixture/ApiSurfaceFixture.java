@@ -13,20 +13,32 @@ import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking;
 import net.minecraft.network.PacketByteBuf;
+import net.minecraft.entity.Entity;
+import net.minecraft.entity.mob.MobEntity;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.util.ActionResult;
 import net.minecraft.util.Identifier;
+import net.minecraft.resource.ResourceManager;
 import net.minecraft.network.packet.CustomPayload;
 
 /** A no-native fixture that exercises the public server-side API contracts. */
 public final class ApiSurfaceFixture implements ModInitializer {
     public static final AtomicInteger STARTED = new AtomicInteger();
+    public static final AtomicInteger DATA_PACK_RELOAD_START = new AtomicInteger();
+    public static final AtomicInteger DATA_PACK_RELOAD_END = new AtomicInteger();
+    public static final AtomicInteger DATA_PACK_RELOAD_SUCCESS = new AtomicInteger();
+    public static final AtomicReference<Thread> DATA_PACK_RELOAD_THREAD = new AtomicReference<>();
+    public static final AtomicReference<ResourceManager> DATA_PACK_RELOAD_MANAGER =
+        new AtomicReference<>();
     public static final AtomicInteger TICK_START = new AtomicInteger();
     public static final AtomicInteger TICK_END = new AtomicInteger();
     public static final AtomicInteger PLAYER_JOIN = new AtomicInteger();
     public static final AtomicInteger PLAYER_LEAVE = new AtomicInteger();
     public static final AtomicInteger ENTITY_LOAD = new AtomicInteger();
+    public static final AtomicInteger ENTITY_UNLOAD = new AtomicInteger();
+    public static final AtomicInteger MOB_WRAPPER_LOAD = new AtomicInteger();
+    public static final AtomicReference<Entity> LOADED_MOB_WRAPPER = new AtomicReference<>();
     public static final AtomicInteger COMMAND_VALUE = new AtomicInteger();
     public static final AtomicInteger PAYLOAD_RECEIVED = new AtomicInteger();
     public static final AtomicReference<String> CHAT = new AtomicReference<>();
@@ -35,11 +47,29 @@ public final class ApiSurfaceFixture implements ModInitializer {
 
     @Override public void onInitialize() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> STARTED.incrementAndGet());
+        ServerLifecycleEvents.START_DATA_PACK_RELOAD.register((server, manager) -> {
+            DATA_PACK_RELOAD_THREAD.set(Thread.currentThread());
+            DATA_PACK_RELOAD_MANAGER.set(manager);
+            DATA_PACK_RELOAD_START.incrementAndGet();
+        });
+        ServerLifecycleEvents.END_DATA_PACK_RELOAD.register((server, manager, success) -> {
+            DATA_PACK_RELOAD_THREAD.set(Thread.currentThread());
+            DATA_PACK_RELOAD_MANAGER.set(manager);
+            DATA_PACK_RELOAD_END.incrementAndGet();
+            if (success) DATA_PACK_RELOAD_SUCCESS.incrementAndGet();
+        });
         ServerTickEvents.START_SERVER_TICK.register(server -> TICK_START.incrementAndGet());
         ServerTickEvents.END_SERVER_TICK.register(server -> TICK_END.incrementAndGet());
         ServerPlayerEvents.JOIN.register((handler, player) -> PLAYER_JOIN.incrementAndGet());
         ServerPlayerEvents.LEAVE.register((handler, player) -> PLAYER_LEAVE.incrementAndGet());
-        ServerEntityEvents.LOAD.register((entity, world) -> ENTITY_LOAD.incrementAndGet());
+        ServerEntityEvents.LOAD.register((entity, world) -> {
+            ENTITY_LOAD.incrementAndGet();
+            if (entity instanceof MobEntity) {
+                MOB_WRAPPER_LOAD.incrementAndGet();
+                LOADED_MOB_WRAPPER.set(entity);
+            }
+        });
+        ServerEntityEvents.UNLOAD.register((entity, world) -> ENTITY_UNLOAD.incrementAndGet());
         ServerLivingEntityEvents.ALLOW_DAMAGE.register((entity, source, amount) -> amount < 5.0f);
         UseBlockCallback.EVENT.register((player, world, hand, hit) -> ActionResult.CONSUME);
         ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {

@@ -1,6 +1,5 @@
 package net.minecraft.entity;
 
-import cppfm.bridge.WrapperCache;
 import net.minecraft.item.ItemStack;
 import net.minecraft.block.BlockState;
 import net.minecraft.registry.entry.RegistryEntry;
@@ -26,31 +25,47 @@ public class LivingEntity extends Entity {
     protected LivingEntity(EntityType<?> type, World world) { super(type, world); }
     protected LivingEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
     public static LivingEntity of(long handle) {
-        return WrapperCache.get(LivingEntity.class, handle, LivingEntity::new);
+        if (handle == 0L) return null;
+        Entity entity = Entity.of(handle);
+        return entity instanceof LivingEntity living ? living : null;
     }
     public float getHealth() { return nativeHandle == 0 ? health : NativeAccess.entityHealth(nativeHandle); }
-    public float getMaxHealth() { return maxHealth; }
-    public void setHealth(float value) {
-        health = Math.max(0.0f, Math.min(maxHealth, value));
-        if (nativeHandle != 0) NativeAccess.setEntityHealth(nativeHandle, health);
+    public float getMaxHealth() {
+        return nativeHandle == 0L ? maxHealth
+            : NativeAccess.entityMaxHealth(nativeHandle);
     }
-    public void setMaxHealth(float value) { maxHealth = Math.max(0.0f, value); setHealth(health); }
+    @Override public boolean isAlive() {
+        // Vanilla LivingEntity is alive only while it is not removed and its
+        // health is positive. Entity.isAlive() alone only checks removal (or
+        // the native entity's removal state), which leaves a vetoed lethal
+        // hit reporting both isAlive() and isDead() as true.
+        return super.isAlive() && getHealth() > 0.0f;
+    }
+    public void setHealth(float value) {
+        float bounded = Math.max(0.0f, Math.min(getMaxHealth(), value));
+        if (nativeHandle != 0L) {
+            NativeAccess.setEntityHealth(nativeHandle, bounded);
+            return;
+        }
+        health = bounded;
+    }
+    public void setMaxHealth(float value) {
+        maxHealth = Math.max(0.0f, value);
+        if (nativeHandle == 0L) setHealth(health);
+    }
     public boolean damage(net.minecraft.entity.damage.DamageSource source, float amount) {
         if (!isAlive() || !Float.isFinite(amount) || amount <= 0.0f || isInvulnerableTo(source)) return false;
         net.minecraft.entity.damage.DamageSource damageSource = source == null
             ? new net.minecraft.entity.damage.DamageSource("generic") : source;
+        if (nativeHandle != 0L)
+            return NativeAccess.damageEntity(nativeHandle, amount, damageSource.getName());
         if (!net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.invoker()
                 .allowDamage(this, damageSource, amount)) return false;
         net.minecraft.entity.DamageSource legacySource = new net.minecraft.entity.DamageSource(
             damageSource.getName(), damageSource.getSource(), damageSource.getAttacker());
         if (!net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.ALLOW_DAMAGE.invoker()
                 .allowDamage(this, legacySource, amount)) return false;
-        float before = health;
-        if (nativeHandle != 0 && !NativeAccess.entityDead(nativeHandle)) {
-            float observed = getHealth();
-            if (observed > 0.0f) before = observed;
-        }
-        float next = Math.max(0.0f, before - amount);
+        float next = Math.max(0.0f, health - amount);
         setHealth(next);
         boolean died = next <= 0.0f;
         if (died) {
@@ -62,13 +77,23 @@ public class LivingEntity extends Entity {
                 allowed &= net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents.ALLOW_DEATH.invoker()
                     .allowDeath(player, damageSource, amount);
             if (allowed) remove(RemovalReason.KILLED);
-            else { died = false; setHealth(Math.max(1.0f, Math.min(maxHealth, before))); }
+            else {
+                // ALLOW_DEATH cancels the death transition, not the damage.
+                // As in Fabric 1.21.4, listeners must restore positive health
+                // themselves if they intend the entity to survive.
+                died = false;
+            }
         }
-        final boolean blocked = false;
-        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
-            .afterDamage(this, damageSource, amount, Math.max(0.0f, before - getHealth()), blocked);
-        net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
-            .afterDamage(this, legacySource, amount, Math.max(0.0f, before - getHealth()), blocked);
+        // Fabric's AFTER_DAMAGE hook is gated by the entity's post-callback
+        // dead state: a veto alone leaves health at zero, while a listener
+        // that restores health before vetoing gets the callback.
+        if (!isDead()) {
+            final boolean blocked = false;
+            net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
+                .afterDamage(this, damageSource, amount, amount, blocked);
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerLivingEntityEvents.AFTER_DAMAGE.invoker()
+                .afterDamage(this, legacySource, amount, amount, blocked);
+        }
         if (died) {
             net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH.invoker()
                 .afterDeath(this, damageSource);
@@ -98,8 +123,13 @@ public class LivingEntity extends Entity {
         return damage(source instanceof net.minecraft.entity.damage.DamageSource d
             ? d : new net.minecraft.entity.damage.DamageSource("generic"), amount);
     }
-    public void heal(float amount) { if (amount > 0.0f) setHealth(health + amount); }
-    public boolean isDead() { return !isAlive() || (nativeHandle == 0 ? health <= 0.0f : NativeAccess.entityDead(nativeHandle)); }
+    public void heal(float amount) {
+        if (!Float.isFinite(amount) || amount <= 0.0f) return;
+        float current = getHealth();
+        if (!Float.isFinite(current) || current <= 0.0f) return;
+        setHealth(current + amount);
+    }
+    public boolean isDead() { return !isAlive(); }
     public boolean isInvulnerable() { return false; }
     public boolean isInvulnerableTo(net.minecraft.entity.damage.DamageSource source) { return isInvulnerable(); }
     public boolean isInvulnerableTo(DamageSource source) { return isInvulnerableTo((net.minecraft.entity.damage.DamageSource) source); }

@@ -1157,10 +1157,28 @@ public final class MixinHooks {
         return returnable(result, method + ":HEAD", value);
     }
 
+    public static <T> CallbackInfoReturnable<T> invokeHeadReturnWithDescriptor(
+            Object target, String method, String descriptor, T value,
+            Object... args) {
+        DispatchResult result = dispatch(InvocationSite.builder(target, method)
+            .descriptor(descriptor).at("HEAD").returnValue(value)
+            .arguments(args).build());
+        return returnable(result, method + ":HEAD", value);
+    }
+
     public static <T> CallbackInfoReturnable<T> invokeReturn(Object target, String method,
                                                                T value, Object... args) {
         DispatchResult result = dispatch(InvocationSite.builder(target, method).at("RETURN")
             .returnValue(value).arguments(args).build());
+        return returnable(result, method + ":RETURN", value);
+    }
+
+    public static <T> CallbackInfoReturnable<T> invokeReturnWithDescriptor(
+            Object target, String method, String descriptor, T value,
+            Object... args) {
+        DispatchResult result = dispatch(InvocationSite.builder(target, method)
+            .descriptor(descriptor).at("RETURN").returnValue(value)
+            .arguments(args).build());
         return returnable(result, method + ":RETURN", value);
     }
 
@@ -1172,6 +1190,15 @@ public final class MixinHooks {
                                                                   T value, Object... args) {
         DispatchResult result = dispatch(InvocationSite.builder(target, method).at("TAIL")
             .returnValue(value).arguments(args).build());
+        return returnable(result, method + ":TAIL", value);
+    }
+
+    public static <T> CallbackInfoReturnable<T> invokeTailReturnWithDescriptor(
+            Object target, String method, String descriptor, T value,
+            Object... args) {
+        DispatchResult result = dispatch(InvocationSite.builder(target, method)
+            .descriptor(descriptor).at("TAIL").returnValue(value)
+            .arguments(args).build());
         return returnable(result, method + ":TAIL", value);
     }
 

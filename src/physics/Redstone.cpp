@@ -1,30 +1,20 @@
-// Redstone implementation.
+// Redstone signal and neighbor-response implementation.
 #include "Redstone.hpp"
+#include "RedstoneInternal.hpp"
 #include "../game/BlockEntities.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
 #include "../game/MenuInteraction.hpp" // maxStackForId single truth
-#include <unordered_map>
-#include <unordered_set>
-#include <cstdlib>
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <limits>
 #include <mutex>
 #include <string>
-#include <limits>
+#include <string_view>
 
 namespace cppfm {
-
-namespace {
-std::int64_t redstoneTick(const std::int64_t* plain,
-                          const std::atomic<std::int64_t>* atomic) {
-    if (atomic) return atomic->load(std::memory_order_relaxed);
-    return plain ? *plain : 0;
-}
-}
-
-
 
 RedstoneEngine::Comp RedstoneEngine::classify(std::uint16_t state) {
     const gen::BlockDef* b = gen::blockByState(state);
@@ -180,12 +170,13 @@ static bool isConductiveBlock(std::uint16_t st) {
 
 int RedstoneEngine::analogOutputAt(std::int32_t x, std::int32_t y, std::int32_t z) {
     if (!beStore_) return 0;
-    BlockEntity* be = beStore_->getAt(x,y,z);
+    const auto be = beStore_->getAt(x, y, z);
     if (!be) {
         // also check if block is chest etc without BE? Try to treat as empty
         return 0;
     }
-    return analogOutputForContainer(be);
+    std::lock_guard lock(*be->stateMtx);
+    return analogOutputForContainer(be.get());
 }
 
 int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int32_t y, std::int32_t z) {
@@ -223,14 +214,9 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
         else if (facing=="up") by-=1;
         else if (facing=="down") by+=1;
         int directContainerSig = analogOutputAt(bx,by,bz);
-        BlockEntity* rearBE = beStore_ ? beStore_->getAt(bx,by,bz) : nullptr;
-        bool hasDirectContainer = (rearBE != nullptr && directContainerSig>=0) ? true : (rearBE!=nullptr);
-        // actually analogOutputAt returns 0 both for empty container and no container, so check BE presence
-        if (rearBE && directContainerSig==0) {
-            // distinguish empty container (filled==0) vs no container: analogOutputForContainer returns 0 for empty, but BE exists -> treat as container present with signal 0
-        } else if (!rearBE) {
-            hasDirectContainer = false;
-        }
+        const auto rearBE = beStore_ ? beStore_->getAt(bx, by, bz)
+                                     : BlockEntityStore::Owner{};
+        const bool hasDirectContainer = static_cast<bool>(rearBE);
         int containerSig = directContainerSig;
         uint16_t rearSt = world_.getBlock(bx,by,bz);
         bool rearConductive = isConductiveBlock(rearSt);
@@ -240,7 +226,8 @@ int RedstoneEngine::emissionLevel(std::uint16_t state, std::int32_t x, std::int3
             int dx = bx - x, dy = by - y, dz = bz - z;
             int bx2 = bx + dx, by2 = by + dy, bz2 = bz + dz;
             int sig2 = analogOutputAt(bx2,by2,bz2);
-            BlockEntity* be2 = beStore_ ? beStore_->getAt(bx2,by2,bz2) : nullptr;
+            const auto be2 = beStore_ ? beStore_->getAt(bx2, by2, bz2)
+                                      : BlockEntityStore::Owner{};
             if (be2) {
                 containerSig = sig2;
                 // check overpower: if conductive block is powered to 15, output 15 irrespective of analog
@@ -330,7 +317,7 @@ bool RedstoneEngine::isPoweredHereImpl(std::int32_t x, std::int32_t y,
     constexpr std::int32_t kMinCoord = -(1 << 25);
     constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
     if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
-        y < kMinY || y >= kMaxY) return false;
+        y < world_.minY() || y >= world_.maxY()) return false;
     // A directly powered input (notably a redstone block) is power at this
     // position.  The old query only inspected neighbours, so repeaters fed
     // directly by a source never latched.
@@ -362,16 +349,9 @@ bool RedstoneEngine::isPoweredHereImpl(std::int32_t x, std::int32_t y,
 
 void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
                                     std::int32_t z) {
-    constexpr std::int32_t kMinCoord = -(1 << 25);
-    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
-    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
-        y < kMinY || y >= kMaxY) return;
+    if (!enqueueBlockChanged(x, y, z)) return;
     {
         std::lock_guard<std::mutex> notificationLock(notificationMutex_);
-        pendingBlockChanges_.insert(posKey(x, y, z));
-        // A World::setBlock callback must only enqueue.  The operation that
-        // caused the callback owns operationMutex_ and will drain this set
-        // after its current world mutation returns.
         if (processingBlockChanges_) return;
     }
 
@@ -389,6 +369,17 @@ void RedstoneEngine::onBlockChanged(std::int32_t x, std::int32_t y,
         std::lock_guard<std::mutex> notificationLock(notificationMutex_);
         processingBlockChanges_ = false;
     }
+}
+
+bool RedstoneEngine::enqueueBlockChanged(std::int32_t x, std::int32_t y,
+                                         std::int32_t z) {
+    constexpr std::int32_t kMinCoord = -(1 << 25);
+    constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
+    if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
+        y < world_.minY() || y >= world_.maxY()) return false;
+    std::lock_guard<std::mutex> notificationLock(notificationMutex_);
+    pendingBlockChanges_.insert(posKey(x, y, z));
+    return true;
 }
 
 void RedstoneEngine::drainBlockChanges() {
@@ -451,7 +442,8 @@ void RedstoneEngine::processBlockChanged(std::int32_t x, std::int32_t y,
             // trigger only if not already pulsing
             std::int64_t key = posKey(ox,oy,oz);
             if (observerPulseEnd_.count(key)) continue;
-            std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
+            std::int64_t now = redstone_detail::currentTick(
+                tickRef_, atomicTickRef_);
             handleObserverTrigger(ox,oy,oz, now);
         }
     }
@@ -460,8 +452,11 @@ void RedstoneEngine::processBlockChanged(std::int32_t x, std::int32_t y,
     for (int d=0; d<6; ++d) handleComparator(x+DX[d], y+DY[d], z+DZ[d]);
 
     // Repeater delay handling: check repeaters near change
-    handleRepeaterDelay(x,y,z, redstoneTick(tickRef_, atomicTickRef_));
-    for (int d=0; d<6; ++d) handleRepeaterDelay(x+DX[d], y+DY[d], z+DZ[d], redstoneTick(tickRef_, atomicTickRef_));
+    const std::int64_t now = redstone_detail::currentTick(
+        tickRef_, atomicTickRef_);
+    handleRepeaterDelay(x, y, z, now);
+    for (int d = 0; d < 6; ++d)
+        handleRepeaterDelay(x + DX[d], y + DY[d], z + DZ[d], now);
 }
 
 void RedstoneEngine::handleObserverTrigger(std::int32_t x, std::int32_t y, std::int32_t z, std::int64_t now) {
@@ -741,171 +736,6 @@ void RedstoneEngine::recomputeRailShape(std::int32_t x, std::int32_t y, std::int
     world_.setBlock(x,y,z, ns);
 }
 
-static bool isStickyBlock(const std::string& name) {
-    // glazed is explicitly not sticky (Yarn GlazedTerracottaBlock PUSH_ONLY)
-    if(name.find("glazed_terracotta")!=std::string::npos) return false;
-    return name=="minecraft:slime_block" || name=="minecraft:honey_block";
-}
-static bool isGlazedTerracotta(const std::string& name){
-    return name.find("glazed_terracotta")!=std::string::npos;
-}
-static bool isGlazedTerracotta(std::uint16_t st){
-    const gen::BlockDef* bd=gen::blockByState(st);
-    return bd && std::string(bd->name).find("glazed_terracotta")!=std::string::npos;
-}
-static bool sticksTogether(const std::string& a, const std::string& b) {
-    if(isGlazedTerracotta(a) || isGlazedTerracotta(b)) return false; // B17
-    bool aSticky=isStickyBlock(a), bSticky=isStickyBlock(b);
-    if (!aSticky && !bSticky) return false;
-    if (a=="minecraft:slime_block" && b=="minecraft:honey_block") return false;
-    if (a=="minecraft:honey_block" && b=="minecraft:slime_block") return false;
-    return true;
-}
-enum class PistonBehavior { NORMAL, BLOCK, PUSH_ONLY };
-static PistonBehavior getPistonBehavior(std::uint16_t st){
-    if(st==0) return PistonBehavior::NORMAL;
-    if(isGlazedTerracotta(st)) return PistonBehavior::PUSH_ONLY;
-    const gen::BlockDef* bd=gen::blockByState(st);
-    if(!bd) return PistonBehavior::BLOCK;
-    if(bd->hardness < 0) return PistonBehavior::BLOCK;
-    if(bd->name=="minecraft:obsidian"||bd->name=="minecraft:bedrock"||bd->name=="minecraft:reinforced_deepslate") return PistonBehavior::BLOCK;
-    if(bd->name=="minecraft:moving_piston"||bd->name=="minecraft:piston_head") return PistonBehavior::BLOCK;
-    if(std::string(bd->name).find("chest")!=std::string::npos) return PistonBehavior::BLOCK;
-    if(std::string(bd->name).find("furnace")!=std::string::npos) return PistonBehavior::BLOCK;
-    if(std::string(bd->name).find("shulker")!=std::string::npos) return PistonBehavior::BLOCK;
-    return PistonBehavior::NORMAL;
-}
- // B17 PUSH_ONLY: glazed can be pushed (retract==false) but not pulled (retract==true)
-static bool isMovable(std::uint16_t st, bool retract){
-    auto beh=getPistonBehavior(st);
-    if(beh==PistonBehavior::BLOCK) return false;
-    if(beh==PistonBehavior::PUSH_ONLY) return !retract; // B17
-    return true;
-}
-
-struct PistonPosition { int x, y, z; };
-struct PistonExtension {
-    std::vector<PistonPosition> blocks;
-    std::unordered_set<std::int64_t> occupied;
-    bool valid = false;
-};
-
-static std::int64_t pistonPositionKey(int x, int y, int z) {
-    return (static_cast<std::int64_t>(static_cast<std::uint32_t>(x)) << 32) ^
-           (static_cast<std::int64_t>(y & 0xFFF) << 20) ^
-           static_cast<std::uint32_t>(z);
-}
-
-static PistonExtension collectPistonExtension(
-    World& world, int x, int y, int z, int dx, int dy, int dz,
-    bool checkBeyond) {
-    PistonExtension result;
-    bool fail = false;
-    for (int i = 1; i <= 12; ++i) {
-        const int px = x + dx * i;
-        const int py = y + dy * i;
-        const int pz = z + dz * i;
-        const std::uint16_t state = world.getBlock(px, py, pz);
-        if (state == 0) break;
-        if (!isMovable(state, false)) { fail = true; break; }
-        result.blocks.push_back({px, py, pz});
-        result.occupied.insert(pistonPositionKey(px, py, pz));
-        if (checkBeyond && i == 12 &&
-            world.getBlock(px + dx, py + dy, pz + dz) != 0)
-            fail = true;
-    }
-    if (!fail) {
-        std::queue<PistonPosition> pending;
-        for (const auto& position : result.blocks) {
-            const auto* block = gen::blockByState(
-                world.getBlock(position.x, position.y, position.z));
-            if (block && isStickyBlock(std::string(block->name)))
-                pending.push(position);
-        }
-        static constexpr int sideX[6] = {1, -1, 0, 0, 0, 0};
-        static constexpr int sideY[6] = {0, 0, 1, -1, 0, 0};
-        static constexpr int sideZ[6] = {0, 0, 0, 0, 1, -1};
-        while (!pending.empty() && !fail) {
-            const auto current = pending.front();
-            pending.pop();
-            const auto* currentBlock = gen::blockByState(
-                world.getBlock(current.x, current.y, current.z));
-            if (!currentBlock) continue;
-            const std::string currentName(currentBlock->name);
-            for (int side = 0; side < 6; ++side) {
-                const int nx = current.x + sideX[side];
-                const int ny = current.y + sideY[side];
-                const int nz = current.z + sideZ[side];
-                const auto key = pistonPositionKey(nx, ny, nz);
-                if (result.occupied.count(key) ||
-                    (nx == x && ny == y && nz == z)) continue;
-                const std::uint16_t state = world.getBlock(nx, ny, nz);
-                if (state == 0) continue;
-                const auto* neighbor = gen::blockByState(state);
-                if (!neighbor) continue;
-                const std::string neighborName(neighbor->name);
-                if (!sticksTogether(currentName, neighborName)) continue;
-                if (!isMovable(state, false) || result.occupied.size() >= 12) {
-                    fail = true;
-                    break;
-                }
-                result.occupied.insert(key);
-                result.blocks.push_back({nx, ny, nz});
-                if (isStickyBlock(neighborName)) pending.push({nx, ny, nz});
-            }
-        }
-        if (!fail) {
-            for (const auto& position : result.blocks) {
-                const int nx = position.x + dx;
-                const int ny = position.y + dy;
-                const int nz = position.z + dz;
-                if (world.getBlock(nx, ny, nz) != 0 &&
-                    !result.occupied.count(pistonPositionKey(nx, ny, nz))) {
-                    fail = true;
-                    break;
-                }
-            }
-        }
-    }
-    result.valid = !fail && result.blocks.size() <= 12;
-    return result;
-}
-
-void RedstoneEngine::handlePiston(std::int32_t x, std::int32_t y, std::int32_t z) {
-    std::uint16_t st = world_.getBlock(x,y,z);
-    Comp c = classify(st);
-    if (c!=Comp::Piston && c!=Comp::StickyPiston) return;
-    const gen::BlockDef* b = gen::blockByState(st);
-    if (!b) return;
-    std::string facing="north";
-    bool extended=false;
-    for (auto& [k,v] : gen::propsOf(st)) {
-        if (k=="facing") facing=std::string(v);
-        if (k=="extended") extended = (v=="true");
-    }
-    bool powered = isQuasiPowered(x,y,z);
-    bool wantExtend = powered;
-    if (wantExtend == extended) {
-        // cancel any pending piston if state already matches
-        pistonQueue_.erase(std::remove_if(pistonQueue_.begin(), pistonQueue_.end(),
-            [&](const PistonEntity& pe){ return pe.x==x && pe.y==y && pe.z==z; }), pistonQueue_.end());
-        return;
-    }
-    // check if already scheduled
-    for (auto &pe : pistonQueue_) if (pe.x==x && pe.y==y && pe.z==z) return;
-    std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
-    int face=0;
-    if (facing=="down") face=0; else if (facing=="up") face=1; else if (facing=="north") face=2; else if (facing=="south") face=3; else if (facing=="west") face=4; else if (facing=="east") face=5;
-    if (wantExtend) {
-        int dx=0,dy=0,dz=0;
-        if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
-        const PistonExtension extension =
-            collectPistonExtension(world_, x, y, z, dx, dy, dz, true);
-        if (!extension.valid) return;
-    }
-    pistonQueue_.push_back({x,y,z, 0.f, wantExtend, now+2, face});
-}
-
 void RedstoneEngine::handleDoor(std::int32_t x, std::int32_t y, std::int32_t z) {
     // handle both halves; only process lower half to avoid double
     std::uint16_t st = world_.getBlock(x,y,z);
@@ -1059,304 +889,6 @@ void RedstoneEngine::setBroadcastFn(std::function<void(std::int32_t,std::int32_t
     broadcastFn_ = std::move(fn);
 }
 
-void RedstoneEngine::processPendingPistonCommits(
-    std::int64_t now,
-    std::optional<std::pair<std::int32_t, std::int32_t>> chunk) {
-    for (auto it = pendingPistonCommits_.begin(); it != pendingPistonCommits_.end(); ) {
-        if (chunk) {
-            const auto [cx, cz] = *chunk;
-            bool touchesChunk = (it->pistonX >> 4) == cx && (it->pistonZ >> 4) == cz;
-            if (!touchesChunk) {
-                for (const auto& entry : it->entries) {
-                    const bool sourceInChunk = (entry.x >> 4) == cx &&
-                                               (entry.z >> 4) == cz;
-                    const bool destinationInChunk =
-                        ((entry.x + it->dx) >> 4) == cx &&
-                        ((entry.z + it->dz) >> 4) == cz;
-                    if (sourceInChunk || destinationInChunk) {
-                        touchesChunk = true;
-                        break;
-                    }
-                }
-            }
-            if (!touchesChunk) { ++it; continue; }
-        }
-        if (it->dueTick > now) { ++it; continue; }
-        // finalize extend
-        if (it->extend) {
-            // clear moving_piston blocks (their BEs still hold state)
-            for (auto &e : it->entries) {
-                if (beStore_) beStore_->remove(posKey(e.x,e.y,e.z));
-                // ensure block is cleared before placing shifted (already moving_piston)
-                setBlockAndBroadcast(e.x,e.y,e.z, 0);
-            }
-            // place shifted blocks farthest first entries are original positions; shifted = entry + delta
-            std::vector<typename PendingPistonCommit::Entry> sorted = it->entries;
-            std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
-                int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
-                int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
-                return da>db;
-            });
-            for (auto &e : sorted) {
-                int nx=e.x+it->dx, ny=e.y+it->dy, nz=e.z+it->dz;
-                setBlockAndBroadcast(nx,ny,nz, e.state);
-            }
-            // piston head
-            const gen::BlockDef* headDef = gen::blockByName("minecraft:piston_head");
-            if (headDef) {
-                std::vector<std::pair<std::string_view,std::string_view>> hp;
-                hp.emplace_back("facing", it->facing);
-                hp.emplace_back("type", it->isSticky?"sticky":"normal");
-                hp.emplace_back("short", "false");
-                std::uint16_t headSt = static_cast<std::uint16_t>(gen::stateWithProps(*headDef, hp));
-                setBlockAndBroadcast(it->hx,it->hy,it->hz, headSt);
-            }
-        } else {
-            if (beStore_) beStore_->remove(posKey(it->hx,it->hy,it->hz));
-            setBlockAndBroadcast(it->hx,it->hy,it->hz, 0);
-            // handle sticky pull entries (original pullEntries holds original positions+states)
-            if (!it->pullEntries.empty()) {
-                // clear originals
-                for (auto &e : it->pullEntries) {
-                    setBlockAndBroadcast(e.x,e.y,e.z, 0);
-                }
-                // sort by distance farthest first for moving toward piston
-                std::vector<typename PendingPistonCommit::Entry> sorted = it->pullEntries;
-                std::sort(sorted.begin(), sorted.end(), [&](const auto &a, const auto &b){
-                    int da=std::abs(a.x-it->pistonX)+std::abs(a.y-it->pistonY)+std::abs(a.z-it->pistonZ);
-                    int db=std::abs(b.x-it->pistonX)+std::abs(b.y-it->pistonY)+std::abs(b.z-it->pistonZ);
-                    return da>db;
-                });
-                for (auto &e : sorted) {
-                    int nx=e.x - it->dx, ny=e.y - it->dy, nz=e.z - it->dz;
-                    // create briefly moving_piston then finalize to state (2-tick handled by keeping same tick? we finalize directly after 2t)
-                    if (beStore_) {
-                        auto mvIt = gen::blockNameToState().find("minecraft:moving_piston");
-                        if (mvIt != gen::blockNameToState().end()) {
-                            uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
-                            // transient moving for completeness (will be immediately replaced, but preserves BE tick logic)
-                            BlockEntity* be2 = beStore_->getAt(nx,ny,nz);
-                            if(!be2) be2 = &beStore_->create(posKey(nx,ny,nz), BlockEntity::Kind::MovingPiston);
-                            else be2->kind = BlockEntity::Kind::MovingPiston;
-                            be2->movingPiston.state = e.state;
-                            be2->movingPiston.facing = it->face;
-                            be2->movingPiston.extending = false;
-                            be2->movingPiston.progress = 0.f;
-                            setBlockAndBroadcast(nx,ny,nz, mvSt);
-                            setBlockAndBroadcast(nx,ny,nz, e.state);
-                            beStore_->remove(posKey(nx,ny,nz));
-                            continue;
-                        }
-                    }
-                    setBlockAndBroadcast(nx,ny,nz, e.state);
-                }
-            }
-        }
-        it = pendingPistonCommits_.erase(it);
-    }
-    // also tick existing moving_piston BEs progress (0->1 over 2 ticks) for strict audit visibility
-    if (beStore_ && (tickRef_ || atomicTickRef_)) {
-        beStore_->forEach([&](std::int64_t, BlockEntity& be) {
-            if (be.kind != BlockEntity::Kind::MovingPiston) return;
-            if (be.movingPiston.finishTick==0) return;
-            int64_t rem = be.movingPiston.finishTick - redstoneTick(tickRef_, atomicTickRef_);
-            if (rem <0) rem=0;
-            float prog = 1.f - float(rem)/2.f;
-            if (prog<0) prog=0;
-            if (prog>1) prog=1;
-            be.movingPiston.progress = prog;
-        });
-    }
-}
-void RedstoneEngine::handlePistonScheduled(std::int32_t x, std::int32_t y, std::int32_t z, bool extendNow) {
-    std::uint16_t st = world_.getBlock(x,y,z);
-    Comp c = classify(st);
-    if (c!=Comp::Piston && c!=Comp::StickyPiston) return;
-    const gen::BlockDef* b = gen::blockByState(st);
-    if (!b) return;
-    bool curExt=false;
-    for (auto& [k,v] : gen::propsOf(st)) if (k=="extended") curExt=(v=="true");
-    if (curExt==extendNow) return;
-    std::string facing="north";
-    for (auto& [k,v] : gen::propsOf(st)) if (k=="facing") facing=std::string(v);
-    std::vector<std::pair<std::string_view,std::string_view>> props;
-    for (auto& [k,v] : gen::propsOf(st)) if (k!="extended") props.emplace_back(k,v);
-    props.emplace_back("extended", extendNow?"true":"false");
-    std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-    setBlockAndBroadcast(x,y,z, ns);
-    int dx=0,dy=0,dz=0;
-    if (facing=="north") dz=-1; else if (facing=="south") dz=1; else if (facing=="west") dx=-1; else if (facing=="east") dx=1; else if (facing=="up") dy=1; else if (facing=="down") dy=-1;
-    int face=0;
-    if(facing=="down") face=0; else if(facing=="up") face=1; else if(facing=="north") face=2; else if(facing=="south") face=3; else if(facing=="west") face=4; else if(facing=="east") face=5;
-    std::int32_t hx=x+dx, hy=y+dy, hz=z+dz;
-    std::int64_t now = redstoneTick(tickRef_, atomicTickRef_);
-    if (extendNow) {
-        const PistonExtension extension =
-            collectPistonExtension(world_, x, y, z, dx, dy, dz, false);
-        if (!extension.valid) {
-            // revert piston state and abort
-            setBlockAndBroadcast(x,y,z, st);
-            return;
-        }
-        const auto& toPush = extension.blocks;
-        PendingPistonCommit commit;
-        commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
-        commit.hx=hx; commit.hy=hy; commit.hz=hz;
-        commit.extend=true;
-        commit.face=face;
-        commit.facing=facing;
-        commit.dx=dx; commit.dy=dy; commit.dz=dz;
-        commit.isSticky = (c==Comp::StickyPiston);
-        commit.dueTick = now + 2;
-        commit.entries.reserve(toPush.size());
-        for (auto &p: toPush) {
-            uint16_t s = world_.getBlock(p.x,p.y,p.z);
-            commit.entries.push_back({p.x,p.y,p.z, s});
-        }
-        if(beStore_){
-            auto mvIt=gen::blockNameToState().find("minecraft:moving_piston");
-            if(mvIt!=gen::blockNameToState().end()){
-                uint16_t mvSt = static_cast<uint16_t>(mvIt->second);
-                for(auto &e: commit.entries){
-                    BlockEntity* be = beStore_->getAt(e.x,e.y,e.z);
-                    if(!be) be = &beStore_->create(posKey(e.x,e.y,e.z), BlockEntity::Kind::MovingPiston);
-                    else be->kind = BlockEntity::Kind::MovingPiston;
-                    be->movingPiston.state = e.state;
-                    be->movingPiston.facing = face;
-                    be->movingPiston.extending = true;
-                    be->movingPiston.progress = 0.f;
-                    be->movingPiston.finishTick = now + 2;
-                    setBlockAndBroadcast(e.x,e.y,e.z, mvSt);
-                }
-            }
-        }
-        pendingPistonCommits_.push_back(std::move(commit));
-    } else {
-        std::uint16_t head = world_.getBlock(hx,hy,hz);
-        const gen::BlockDef* hb = gen::blockByState(head);
-        if (hb && hb->name=="minecraft:piston_head") {
-            // Create moving_piston at head for 2-tick animation, defer removal/pull
-            PendingPistonCommit commit;
-            commit.pistonX=x; commit.pistonY=y; commit.pistonZ=z;
-            commit.hx=hx; commit.hy=hy; commit.hz=hz;
-            commit.extend=false;
-            commit.face=face;
-            commit.facing=facing;
-            commit.dx=dx; commit.dy=dy; commit.dz=dz;
-            commit.isSticky = (c==Comp::StickyPiston);
-            commit.dueTick = now + 2;
-            commit.entries.push_back({hx,hy,hz, head});
-            if(beStore_){
-                auto mvItR = gen::blockNameToState().find("minecraft:moving_piston");
-                if(mvItR!=gen::blockNameToState().end()){
-                    uint16_t mvSt = static_cast<uint16_t>(mvItR->second);
-                    BlockEntity* be = beStore_->getAt(hx,hy,hz);
-                    if(!be) be = &beStore_->create(posKey(hx,hy,hz), BlockEntity::Kind::MovingPiston);
-                    else be->kind = BlockEntity::Kind::MovingPiston;
-                    be->movingPiston.state = head;
-                    be->movingPiston.facing = face;
-                    be->movingPiston.extending = false;
-                    be->movingPiston.progress = 0.f;
-                    be->movingPiston.finishTick = now + 2;
-                    setBlockAndBroadcast(hx,hy,hz, mvSt);
-                }
-            }
-            if (c==Comp::StickyPiston) {
-                std::int32_t px=hx+dx, py=hy+dy, pz=hz+dz;
-                std::uint16_t frontSt = world_.getBlock(px,py,pz);
-                if(frontSt!=0 && isMovable(frontSt,true)){
-                    struct Pos{int x,y,z;};
-                    std::vector<Pos> toPull;
-                    std::unordered_set<std::int64_t> visited;
-                    auto key3 = [&](int px_,int py_,int pz_){ return (static_cast<std::int64_t>(static_cast<std::uint32_t>(px_))<<32) ^ (static_cast<std::int64_t>(py_ & 0xFFF)<<20) ^ static_cast<std::uint32_t>(pz_); };
-                    bool fail=false;
-                    toPull.push_back({px,py,pz});
-                    visited.insert(key3(px,py,pz));
-                    std::queue<Pos> q;
-                    const gen::BlockDef* frontBd = gen::blockByState(frontSt);
-                    if(frontBd && isStickyBlock(std::string(frontBd->name))) q.push({px,py,pz});
-                    static constexpr int SDX[6]={1,-1,0,0,0,0};
-                    static constexpr int SDY[6]={0,0,1,-1,0,0};
-                    static constexpr int SDZ[6]={0,0,0,0,1,-1};
-                    while(!q.empty() && !fail){
-                        Pos cur=q.front(); q.pop();
-                        std::uint16_t curSt=world_.getBlock(cur.x,cur.y,cur.z);
-                        const gen::BlockDef* curBd=gen::blockByState(curSt);
-                        if(!curBd) continue;
-                        std::string curName(curBd->name);
-                        for(int d=0; d<6; ++d){
-                            int nx=cur.x+SDX[d], ny=cur.y+SDY[d], nz=cur.z+SDZ[d];
-                            std::int64_t k=key3(nx,ny,nz);
-                            if(visited.count(k)) continue;
-                            if(nx==x && ny==y && nz==z) continue;
-                            if(nx==hx && ny==hy && nz==hz) continue;
-                            const std::uint16_t neighborState =
-                                world_.getBlock(nx,ny,nz);
-                            if(neighborState==0) continue;
-                            const gen::BlockDef* nd=gen::blockByState(neighborState);
-                            if(!nd) continue;
-                            std::string nName(nd->name);
-                            if(!isMovable(neighborState,true)) continue;
-                            if(!sticksTogether(curName, nName)) continue;
-                            if((int)visited.size()>=12){ fail=true; break; }
-                            visited.insert(k);
-                            toPull.push_back({nx,ny,nz});
-                            if(isStickyBlock(nName)) q.push({nx,ny,nz});
-                        }
-                    }
-                    if((int)toPull.size()>12) fail=true;
-                    if(!fail){
-                        for(auto &p: toPull){
-                            int nx=p.x - dx, ny=p.y - dy, nz=p.z - dz;
-                            std::uint16_t dst=world_.getBlock(nx,ny,nz);
-                            if(dst==0) continue;
-                            if(nx==hx && ny==hy && nz==hz) continue;
-                            if(visited.count(key3(nx,ny,nz))) continue;
-                            if(nx==x && ny==y && nz==z){ fail=true; break; }
-                            if(dst!=0){ fail=true; break; }
-                        }
-                    }
-                    if(!fail){
-                        for(auto &p: toPull){
-                            uint16_t s = world_.getBlock(p.x,p.y,p.z);
-                            commit.pullEntries.push_back({p.x,p.y,p.z, s});
-                        }
-                    } else {
-                        if((int)toPull.size()>12){
-                            // 12 overflow -> piston fails to retract (vanilla: sticky pull >12 -> no movement)
-                            setBlockAndBroadcast(x,y,z, st);
-                            if(beStore_) beStore_->remove(posKey(hx,hy,hz));
-                            setBlockAndBroadcast(hx,hy,hz, head);
-                            return;
-                        }
-                        commit.pullEntries.clear();
-                    }
-                }
-            }
-            pendingPistonCommits_.push_back(std::move(commit));
-        }
-    }
-}
-void RedstoneEngine::processPistonQueue(std::int64_t now) {
-    const int budget = 32;
-    int done = 0;
-    for (std::size_t i = 0; i < pistonQueue_.size() && done < budget; ) {
-        if (pistonQueue_[i].dueTick <= now) {
-            PistonEntity pe = pistonQueue_[i];
-            pistonQueue_.erase(pistonQueue_.begin() + static_cast<std::ptrdiff_t>(i));
-            handlePistonScheduled(pe.x, pe.y, pe.z, pe.extended);
-            ++done;
-            // don't advance: the slot at i now holds the next entry (or new end)
-        } else ++i;
-    }
-    processPendingPistonCommits(now);
-}
-void RedstoneEngine::flushPendingPistons(std::int32_t chunkX, std::int32_t chunkZ) {
-    std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
-    processPendingPistonCommits(std::numeric_limits<std::int64_t>::max(),
-                                std::make_pair(chunkX, chunkZ));
-}
-
 void RedstoneEngine::tick(std::int64_t now) {
     std::lock_guard<std::recursive_mutex> operationLock(operationMutex_);
     {
@@ -1368,7 +900,8 @@ void RedstoneEngine::tick(std::int64_t now) {
     // set and are drained after the current World mutation returns.
     drainBlockChanges();
     processPistonQueue(now);
-    processPendingPistonCommits(now);
+    processPendingPistonCommits(now, std::nullopt,
+                                std::numeric_limits<std::size_t>::max(), true);
     int budget = 4096;
     while (!queue_.empty() && queue_.top().dueTick <= now && --budget > 0) {
         const RedstoneTick t = queue_.top();
@@ -1441,196 +974,6 @@ void RedstoneEngine::tick(std::int64_t now) {
     {
         std::lock_guard<std::mutex> notificationLock(notificationMutex_);
         processingBlockChanges_ = false;
-    }
-}
-
-void RedstoneEngine::setPoweredAt(std::int32_t x, std::int32_t y,
-                                  std::int32_t z, std::uint8_t level) {
-    const std::uint16_t st = world_.getBlock(x, y, z);
-    const gen::BlockDef* b = gen::blockByState(st);
-    if (!b || b->name != "minecraft:redstone_wire") return;
-    std::vector<std::pair<std::string_view, std::string_view>> props;
-    for (auto& [k, v] : gen::propsOf(st))
-        if (k != "power") props.emplace_back(k, v);
-    const std::string power = std::to_string(level);
-    props.emplace_back("power", power);
-    const std::uint16_t ns =
-        static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-    if (ns != st) world_.setBlock(x, y, z, ns);
-}
-
-void RedstoneEngine::recomputeAround(std::int32_t x, std::int32_t y,
-                                     std::int32_t z) {
-    static constexpr int DX[6] = {1,-1,0,0,0,0};
-    static constexpr int DY[6] = {0,0,1,-1,0,0};
-    static constexpr int DZ[6] = {0,0,0,0,1,-1};
-    updateWireNetwork(x, y, z);
-    for (int d = 0; d < 6; ++d)
-        updateWireNetwork(x + DX[d], y + DY[d], z + DZ[d]);
-
-    // lamps & torches react to adjacent power
-    for (int d = 0; d < 6; ++d) {
-        const std::int32_t nx = x + DX[d], ny = y + DY[d], nz = z + DZ[d];
-        reactToPower(nx, ny, nz);
-    }
-    reactToPower(x, y, z);
-    // pistons also react
-    handlePiston(x,y,z);
-    for (int d=0; d<6; ++d) handlePiston(x+DX[d], y+DY[d], z+DZ[d]);
-    // comparators update
-    handleComparator(x,y,z);
-    for (int d=0; d<6; ++d) handleComparator(x+DX[d], y+DY[d], z+DZ[d]);
-}
-
-void RedstoneEngine::reactToPower(std::int32_t x, std::int32_t y,
-                                  std::int32_t z) {
-    const std::uint16_t st = world_.getBlock(x, y, z);
-    const gen::BlockDef* b = gen::blockByState(st);
-    if (!b) return;
-
-    // gather strongest adjacent wire/source power using emissionLevel
-    int power = 0;
-    for (int d = 0; d < 6; ++d) {
-        const std::uint16_t ns = world_.getBlock(x + (d==0?1:d==1?-1:0), y + (d==2?1:d==3?-1:0), z + (d==4?1:d==5?-1:0));
-        int lvl = emissionLevel(ns, x + (d==0?1:d==1?-1:0), y + (d==2?1:d==3?-1:0), z + (d==4?1:d==5?-1:0));
-        if (lvl > power) power = lvl;
-        Comp nc = classify(ns);
-        if (nc == Comp::Wire) {
-            for (auto& [k, v] : gen::propsOf(ns))
-                if (k == "power") power = std::max(power, std::atoi(std::string(v).c_str()));
-        }
-    }
-
-    if (b->name == "minecraft:redstone_lamp") {
-        const bool litNow = classify(st) == Comp::LampLit;
-        const bool wantLit = power > 0;
-        if (litNow != wantLit) {
-            const std::uint16_t ns = static_cast<std::uint16_t>(
-                gen::stateWithProps(*b, {{"lit", wantLit ? "true" : "false"}}));
-            world_.setBlock(x, y, z, ns);
-        }
-    } else if (b->name == "minecraft:redstone_torch" ||
-               b->name == "minecraft:redstone_wall_torch") {
-        const std::uint16_t support = world_.getBlock(x, y - 1, z);
-        int sp = 0;
-        // check emission at support
-        sp = emissionLevel(support, x, y-1, z);
-        if (classify(support)==Comp::Wire) {
-            for (auto& [k, v] : gen::propsOf(support))
-                if (k == "power") sp = std::max(sp, std::atoi(std::string(v).c_str()));
-        }
-        const bool litNow = classify(st) == Comp::TorchOn;
-        const bool wantLit = sp == 0;
-        if (litNow != wantLit) {
-            const std::uint16_t ns = static_cast<std::uint16_t>(
-                gen::stateWithProps(*b, {{"lit", wantLit ? "true" : "false"}}));
-            world_.setBlock(x, y, z, ns);
-        }
-    } else if (b->name=="minecraft:powered_rail" || b->name=="minecraft:activator_rail") {
-        // rail powered state follows adjacent power
-        bool curPowered=false;
-        for (auto& [k,v] : gen::propsOf(st)) if (k=="powered" && v=="true") curPowered=true;
-        bool wantPowered = power>0;
-        if (curPowered != wantPowered) {
-            std::vector<std::pair<std::string_view,std::string_view>> props;
-            for (auto& [k,v] : gen::propsOf(st)) if (k!="powered") props.emplace_back(k,v);
-            props.emplace_back("powered", wantPowered?"true":"false");
-            std::uint16_t ns = static_cast<std::uint16_t>(gen::stateWithProps(*b, props));
-            world_.setBlock(x,y,z, ns);
-        }
-    } else if (b->name=="minecraft:detector_rail") {
-        // detector rail powers when minecart above? For now treat as powered rail same
-        // No minecart check, just propagate power inversion? Keep as is
-    }
-}
-
-void RedstoneEngine::updateWireNetwork(std::int32_t sx, std::int32_t sy,
-                                       std::int32_t sz) {
-    struct Node { std::int32_t x, y, z; };
-    static constexpr int DX[6] = {1,-1,0,0,0,0};
-    static constexpr int DY[6] = {0,0,1,-1,0,0};
-    static constexpr int DZ[6] = {0,0,0,0,1,-1};
-
-    // First collect the complete connected component.  The previous
-    // implementation only visited wires reached from a powered seed, so a
-    // wire that lost its last source could never be visited and retained its
-    // old power forever.
-    std::vector<Node> component;
-    std::unordered_map<std::int64_t, std::size_t> componentIndex;
-    std::queue<Node> pending;
-    auto enqueueWire = [&](std::int32_t x, std::int32_t y,
-                           std::int32_t z) {
-        if (classify(world_.getBlock(x, y, z)) != Comp::Wire) return;
-        const std::int64_t key = posKey(x, y, z);
-        if (componentIndex.emplace(key, component.size()).second) {
-            component.push_back({x, y, z});
-            pending.push({x, y, z});
-        }
-    };
-
-    enqueueWire(sx, sy, sz);
-    if (component.empty()) {
-        for (int d = 0; d < 6; ++d)
-            enqueueWire(sx + DX[d], sy + DY[d], sz + DZ[d]);
-    }
-    while (!pending.empty()) {
-        const Node n = pending.front();
-        pending.pop();
-        for (int d = 0; d < 6; ++d)
-            enqueueWire(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
-    }
-    if (component.empty()) return;
-
-    // Seed a max-heap with every non-wire emitter touching the component, then
-    // relax wire neighbours.  This is a multi-source shortest-path update:
-    // each edge costs one redstone level and every wire is assigned the
-    // strongest source reachable through the component.  Recomputing from
-    // zero is what makes power removal and source replacement symmetric with
-    // power insertion.
-    std::vector<int> levels(component.size(), 0);
-    std::priority_queue<std::pair<int, std::size_t>> frontier;
-    for (std::size_t i = 0; i < component.size(); ++i) {
-        const Node n = component[i];
-        for (int d = 0; d < 6; ++d) {
-            const std::int32_t nx = n.x + DX[d];
-            const std::int32_t ny = n.y + DY[d];
-            const std::int32_t nz = n.z + DZ[d];
-            const std::uint16_t state = world_.getBlock(nx, ny, nz);
-            if (classify(state) == Comp::Wire) continue;
-            const int emitted = std::clamp(emissionLevel(state, nx, ny, nz), 0, 15);
-            if (emitted > levels[i]) {
-                levels[i] = emitted;
-                frontier.push({emitted, i});
-            }
-        }
-    }
-
-    while (!frontier.empty()) {
-        const auto [power, index] = frontier.top();
-        frontier.pop();
-        if (power != levels[index] || power <= 1) continue;
-        const Node n = component[index];
-        for (int d = 0; d < 6; ++d) {
-            const std::int64_t key = posKey(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
-            const auto it = componentIndex.find(key);
-            if (it == componentIndex.end()) continue;
-            const std::size_t neighbour = it->second;
-            const int candidate = power - 1;
-            if (candidate > levels[neighbour]) {
-                levels[neighbour] = candidate;
-                frontier.push({candidate, neighbour});
-            }
-        }
-    }
-
-    for (std::size_t i = 0; i < component.size(); ++i) {
-        const Node n = component[i];
-        setPoweredAt(n.x, n.y, n.z, static_cast<std::uint8_t>(levels[i]));
-    }
-    for (const Node n : component) {
-        for (int d = 0; d < 6; ++d)
-            reactToPower(n.x + DX[d], n.y + DY[d], n.z + DZ[d]);
-        reactToPower(n.x, n.y, n.z);
     }
 }
 

@@ -6,6 +6,9 @@
   "environment": "*",
   "mixins": ["cppfm_fixture.mixins.json"],
   "entrypoints": {
-    "server": ["cppfm.fixture.FixtureMod"]
+    "server": [
+      "cppfm.fixture.FixtureMod",
+      "cppfm.fixture.NetworkProbeMod"
+    ]
   }
 }

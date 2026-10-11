@@ -9,6 +9,7 @@
 
 #include "generated/BlockStates.hpp"
 #include "game/MiningCalculator.hpp"
+#include "game/MiningProgress.hpp"
 
 static int g_pass = 0, g_fail = 0, g_total = 0;
 static const char* curSection = "";
@@ -183,6 +184,39 @@ int main() {
   CHECK(!MC::blastSurvives(*glass, 4.f), "TNT: glass destroyed");
   CHECK(!MC::blastSurvives(*planks, 4.f), "TNT: planks destroyed");
   CHECK(MC::blastSurvives(*dirt, 4.f, 0.05f), "TNT far: dirt survives (exposure)");
+
+  curSection = "progress-state";
+  MiningProgress progress;
+  const auto idle = progress.snapshot();
+  CHECK(!idle.active && idle.revision == 0,
+        "progress state: starts idle at revision zero");
+  const auto firstAttempt = progress.start(4, 70, -2, 12, 8, 3);
+  CHECK(firstAttempt.active && firstAttempt.x == 4 &&
+        firstAttempt.y == 70 && firstAttempt.z == -2 &&
+        firstAttempt.totalTicks == 8,
+        "progress state: start publishes one coherent snapshot");
+  CHECK(!progress.setStageIfCurrent(firstAttempt.revision - 1, 4),
+        "progress state: stale stage update is rejected");
+  CHECK(progress.setStageIfCurrent(firstAttempt.revision, 4) &&
+        progress.snapshot().lastStage == 4,
+        "progress state: current stage update is accepted");
+  const auto canceled = progress.cancel(firstAttempt.revision);
+  CHECK(canceled && canceled->active &&
+        !progress.snapshot().active &&
+        progress.snapshot().revision == firstAttempt.revision + 1,
+        "progress state: cancel atomically retires the current attempt");
+  CHECK(!progress.cancel(firstAttempt.revision),
+        "progress state: stale cancel cannot retire a newer revision");
+  const auto secondAttempt = progress.start(1, 2, 3, 30, 2, 0);
+  const auto finishedRevision =
+      progress.finishIfCurrent(secondAttempt.revision);
+  CHECK(finishedRevision &&
+        progress.inactiveAtRevision(*finishedRevision),
+        "progress state: finish returns its inactive revision");
+  const auto invalidated = progress.cancel(std::nullopt, true);
+  CHECK(invalidated && !invalidated->active &&
+        progress.snapshot().revision == *finishedRevision + 1,
+        "progress state: dimension transition invalidates idle work");
 
   std::printf("mining_full: %d/%d passed %d failed\n", g_pass, g_total, g_fail);
   return g_fail ? 1 : 0;

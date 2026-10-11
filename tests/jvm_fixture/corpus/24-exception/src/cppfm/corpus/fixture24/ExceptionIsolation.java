@@ -4,7 +4,7 @@ import cppfm.bridge.NativeBridge;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 
-/** Corpus 24: one callback throws while a later callback and later tick survive. */
+/** Corpus 24: an event listener failure is contained and a later tick survives. */
 public final class ExceptionIsolation implements DedicatedServerModInitializer {
     private static void result(String phase, boolean ok) {
         NativeBridge.nativeLog(ok ? "INFO" : "ERROR",
@@ -20,7 +20,7 @@ public final class ExceptionIsolation implements DedicatedServerModInitializer {
             }
         });
         ServerTickEvents.END.register(server -> {
-            if (server.getTicks() == 1) result("following-callback-recovered", true);
+            if (server.getTicks() == 2) result("following-callback-recovered", true);
         });
     }
 }

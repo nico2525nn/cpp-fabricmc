@@ -125,11 +125,10 @@ public final class CppfmGameProvider implements GameProvider {
         // then add the shadow directory for Knot transformation.
         launcher.setValidParentClassPath(new ArrayList<>(launcher.getClassPath()));
         launcher.addToClassPath(shadowClasses);
-        // The verifier (and production callers) must provide a shadow path
-        // without net.fabricmc/org.spongepowered stubs.  These names must
-        // come from pinned official jars, otherwise Java sees two unrelated
-        // ModInitializer/Mixin type identities.  Restrict the remaining
-        // shadow source to the namespaces used by this runtime.
+        // Loader, ModInitializer, and Mixin stubs are omitted. Fabric API
+        // shims remain available for classes absent from installed modules;
+        // KnotLauncher removes exact duplicate class files before adding this
+        // directory, so an official module class cannot be shadowed here.
         launcher.setAllowedPrefixes(shadowClasses, "net.minecraft.", "com.mojang.",
                 "cppfm.", "net.fabricmc.fabric.api.", "net.fabricmc.fabric.impl.");
         // KnotClassDelegate calls transform() for every transformable class,

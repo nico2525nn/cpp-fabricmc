@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include <chrono>
+#include <atomic>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
@@ -339,32 +340,44 @@ static void liveTests(const char* bin) {
     capacityOptions.portBase = 26050;
     capacityOptions.portSpan = 500;
     capacityOptions.viewDistance = 4;
-    capacityOptions.worldPrefix = "/tmp/floodnet-capacity-";
+    capacityOptions.worldPrefix = temporaryWorldPrefix("floodnet-capacity");
     capacityOptions.maxPlayers = 1;
     ServerProcess capacityServer;
     CHECK(capacityServer.start(bin, capacityOptions),
           "server boot for concurrent player-admission reservation test");
     if (capacityServer.pid > 0) {
-        const int firstFd = rawConnect(capacityServer.port);
-        CHECK(firstFd >= 0, "connect first pending capacity login");
-        if (firstFd >= 0) {
-            Connection first(firstFd);
-            sendLoginStart(first, capacityServer.port, "CapacityFirst", 1);
-            const int firstResponse = readLoginResponse(first);
-
-            const int secondFd = rawConnect(capacityServer.port);
-            CHECK(secondFd >= 0, "connect second pending capacity login");
-            if (secondFd >= 0) {
-                Connection second(secondFd);
-                sendLoginStart(second, capacityServer.port, "CapacitySecond", 2);
-                const int secondResponse = readLoginResponse(second);
-                CHECK(firstResponse == proto::lo::sc::GameProfile &&
-                          secondResponse == proto::lo::sc::Disconnect,
-                      "pending login reservation prevents exceeding maxPlayers before PLAY");
-                second.close();
-            }
-            first.close();
+        TestClient first;
+        TestClient second;
+        const bool firstConnected = first.connect("127.0.0.1", capacityServer.port);
+        const bool secondConnected = second.connect("127.0.0.1", capacityServer.port);
+        CHECK(firstConnected, "connect first concurrent capacity login");
+        CHECK(secondConnected, "connect second concurrent capacity login");
+        if (firstConnected && secondConnected) {
+            std::atomic<bool> startTogether{false};
+            bool firstJoined = false;
+            bool secondJoined = false;
+            std::thread firstLogin([&] {
+                while (!startTogether.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                firstJoined = first.join("CapacityFirst");
+            });
+            std::thread secondLogin([&] {
+                while (!startTogether.load(std::memory_order_acquire))
+                    std::this_thread::yield();
+                secondJoined = second.join("CapacitySecond");
+            });
+            startTogether.store(true, std::memory_order_release);
+            firstLogin.join();
+            secondLogin.join();
+            const bool exactlyOneJoined = firstJoined != secondJoined;
+            const bool rejectedAtPlayAdmission = firstJoined
+                ? second.lastError() == "kicked at play-enter"
+                : first.lastError() == "kicked at play-enter";
+            CHECK(exactlyOneJoined && rejectedAtPlayAdmission,
+                  "concurrent FinishAcknowledgements reserve only maxPlayers slots");
         }
+        first.close();
+        second.close();
         CHECK(capacityServer.stop(),
               "capacity reservation server and temporary world clean up");
     }
@@ -373,7 +386,8 @@ static void liveTests(const char* bin) {
     onlineCapacityOptions.portBase = 26050;
     onlineCapacityOptions.portSpan = 500;
     onlineCapacityOptions.viewDistance = 4;
-    onlineCapacityOptions.worldPrefix = "/tmp/floodnet-online-capacity-";
+    onlineCapacityOptions.worldPrefix =
+        temporaryWorldPrefix("floodnet-online-capacity");
     onlineCapacityOptions.maxPlayers = 1;
     onlineCapacityOptions.onlineMode = true;
     onlineCapacityOptions.enforceSecureProfile = false;
@@ -413,22 +427,24 @@ static void liveTests(const char* bin) {
     zeroCapacityOptions.portBase = 26050;
     zeroCapacityOptions.portSpan = 500;
     zeroCapacityOptions.viewDistance = 4;
-    zeroCapacityOptions.worldPrefix = "/tmp/floodnet-zero-capacity-";
+    zeroCapacityOptions.worldPrefix =
+        temporaryWorldPrefix("floodnet-zero-capacity");
     zeroCapacityOptions.maxPlayers = 0;
     ServerProcess zeroCapacityServer;
     CHECK(zeroCapacityServer.start(bin, zeroCapacityOptions),
           "server boot with zero player capacity");
     if (zeroCapacityServer.pid > 0) {
-        const int zeroCapacityFd = rawConnect(zeroCapacityServer.port);
-        CHECK(zeroCapacityFd >= 0, "connect to zero-capacity server");
-        if (zeroCapacityFd >= 0) {
-            Connection zeroCapacity(zeroCapacityFd);
-            sendLoginStart(zeroCapacity, zeroCapacityServer.port,
-                           "CapacityZero", 3);
-            CHECK(readLoginResponse(zeroCapacity) == proto::lo::sc::Disconnect,
-                  "maxPlayers=0 rejects login as vanilla server-full capacity");
-            zeroCapacity.close();
+        TestClient zeroCapacity;
+        const bool connected = zeroCapacity.connect(
+            "127.0.0.1", zeroCapacityServer.port);
+        CHECK(connected, "connect to zero-capacity server");
+        if (connected) {
+            const bool joined = zeroCapacity.join("CapacityZero");
+            CHECK(!joined &&
+                      zeroCapacity.lastError() == "kicked at play-enter",
+                  "maxPlayers=0 rejects play admission as vanilla server-full capacity");
         }
+        zeroCapacity.close();
         CHECK(zeroCapacityServer.stop(),
               "zero-capacity server and temporary world clean up");
     }
@@ -440,7 +456,7 @@ static void liveTests(const char* bin) {
     serverOptions.readyTimeoutMs = 20000;
     const char* floodWorldPrefix = std::getenv("CPPFM_FLOOD_WORLD_PREFIX");
     serverOptions.worldPrefix = (floodWorldPrefix && *floodWorldPrefix)
-        ? floodWorldPrefix : "/tmp/floodnet-";
+        ? floodWorldPrefix : temporaryWorldPrefix("floodnet");
     serverOptions.isolateRuntime = true;
     serverOptions.portProbe = &rawPortProbe;
     ServerProcess srv;

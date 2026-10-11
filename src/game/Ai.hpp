@@ -10,7 +10,7 @@
 #include <unordered_map>
 #include <vector>
 #include "../game/World.hpp"
-#include "../game/BlockEntities.hpp"
+#include "../game/BlockEntityPosition.hpp"
 #include "../generated/BlockStates.hpp"
 
 namespace cppfm::ai {
@@ -92,7 +92,7 @@ public:
                     const std::int32_t nx = cur.x + DX[d];
                     const std::int32_t ny = cur.y + dy;
                     const std::int32_t nz = cur.z + DZ[d];
-                    if (ny < kMinY + 1 || ny >= kMaxY - 1) continue;
+                    if (ny < world_.minY() + 1 || ny >= world_.maxY() - 1) continue;
                     if (!walkable(nx, ny, nz)) continue;
                     const float step =
                         dy > 0 ? 1.6f : 1.f;             // jump costs extra

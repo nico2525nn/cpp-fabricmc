@@ -1,5 +1,6 @@
 package net.minecraft.server.network;
 
+import cppfm.bridge.NativeBridge;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.text.Text;
 import net.fabricmc.fabric.api.networking.v1.PacketSender;
@@ -34,7 +35,8 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     private int vehicleFloatingTicks;
     private boolean vehicleFloating;
     public ServerPlayNetworkHandler(ServerPlayerEntity player) {
-        this(player == null ? null : player.getServer(), new ClientConnection(), player,
+        this(player == null ? null : player.getServer(),
+            new ClientConnection(player == null ? 0L : player.nativeHandle(), 1), player,
             new ConnectedClientData());
     }
     public ServerPlayNetworkHandler(MinecraftServer server, ClientConnection connection,
@@ -45,12 +47,20 @@ public class ServerPlayNetworkHandler extends ServerCommonNetworkHandler {
     }
     public ServerPlayerEntity getPlayer() { return player; }
     public void sendPacket(Packet<?> packet) {
-        if (packet != null && player != null) ServerPlayNetworking.send(player, packet);
+        if (packet != null && player != null) super.sendPacket(packet);
     }
     public void disconnect(Text reason) {
         if (disconnected) return;
         disconnected = true;
-        if (player != null) player.sendMessage(reason, false);
+        if (player == null) return;
+        String message = reason == null ? "Disconnected" : reason.getString();
+        try {
+            if (NativeBridge.nativePlayerDisconnect(
+                    player.nativeHandle(), message)) return;
+        } catch (LinkageError | RuntimeException ignored) {
+            // Java-only fixtures and standalone API tests have no native server.
+        }
+        player.sendMessage(reason, false);
     }
     public boolean isConnectionOpen() { return player != null && !disconnected && !player.isRemoved(); }
     public boolean isDisconnected() { return disconnected; }

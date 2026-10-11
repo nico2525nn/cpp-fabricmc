@@ -5,9 +5,11 @@
 #include "../src/game/Scoreboard.hpp"
 #include "../src/game/Teams.hpp"
 #include "../src/game/Items.hpp"
+#include "../src/game/EquipmentComponent.hpp"
 #include "../src/game/Particles.hpp"
 #include "../src/game/MetadataTypes.hpp"
 #include "../src/game/ChunkCodec.hpp"
+#include "../src/game/PositionPackets.hpp"
 #include "../src/game/World.hpp"
 #include "../src/game/Stats.hpp"
 #include "../src/proto/Ids.hpp"
@@ -109,8 +111,10 @@ static void test_primitives_bitfield(){
     WriteBuffer rb; rb.varint(enc); expectEq(rb.data, std::vector<uint8_t>{0xb2,0x22}, "record 4402 B2 22");
     WriteBuffer ang; ang.i8(64); expectEq(ang.data, std::vector<uint8_t>{0x40}, "angle i8 64 (90deg)");
     WriteBuffer nb; nbt::writeTextComponent(nb,"hi"); check(nb.data[0]==0x0A && nb.data.back()==0x00,"anonymousNbt hi wrapper");
-    check(ItemStack::kDamageComponentId==3 && ItemStack::kRepairCostComponentId==17 && ItemStack::kTrimComponentIdReal==45, "slot component ids 3/17/45");
-    ItemStack s=ItemStack::of(1,1); s.setDamage(5); WriteBuffer sb; s.write(sb); check(sb.data.size()>=7,"slot damage 5 wire");
+    check(ItemStack::kDamageComponentId==3 && ItemStack::kRepairCostComponentId==17 && ItemStack::kTrimComponentId==45, "slot component ids 3/17/45");
+    ItemStack s=ItemStack::of(1,1); s.setDamage(5); WriteBuffer sb; s.write(sb);
+    expectEq(sb.data, std::vector<std::uint8_t>{0x01,0x01,0x01,0x00,0x03,0x05},
+             "slot damage 5 wire: count, item, added, removed, id, payload");
     WriteBuffer mp; mp.varint(8); expectEq(mp.data, std::vector<uint8_t>{0x08}, "mapper generic.fall_damage_multiplier 8");
     check(attributeMapperId(Attribute::ARMOR)==0 && attributeMapperId(Attribute::GRAVITY)==11, "mapper armor 0 gravity 11");
 }
@@ -183,7 +187,7 @@ static void test_packet_ids_131(){
     check(proto::pl::sc::PlayerInfoUpdate==0x40,"PlayerInfoUpdate 0x40");
     check(proto::pl::sc::FacePlayer==0x41,"FacePlayer 0x41 unsent");
     check(proto::pl::sc::PlayerPosition==0x42,"PlayerPosition 0x42");
-    check(proto::pl::sc::PlayerRotation==0x43,"PlayerRotation 0x43 unsent");
+    check(proto::pl::sc::PlayerRotation==0x43,"PlayerRotation 0x43 sent for rotation-only changes");
     check(proto::pl::sc::RecipeBookAdd==0x44,"RecipeBookAdd 0x44");
     check(proto::pl::sc::RecipeBookRemove==0x45,"RecipeBookRemove 0x45");
     check(proto::pl::sc::RecipeBookSettings==0x46,"RecipeBookSettings 0x46");
@@ -313,7 +317,9 @@ static void test_0x0E_ChunkBiomes_gap(){
     std::printf("[P0E] ChunkBiomes 0x0E omitted — LevelChunkWithLight 0x28 alternative\n");
     check(proto::pl::sc::ChunkBiomes==0x0E && proto::pl::sc::LevelChunkWithLight==0x28,
           "ChunkBiomes 0x0E id lock + LevelChunkWithLight 0x28 exists (alternative)");
-    Chunk ch; ch.blocks.fill(0); ch.biomes.fill(40); // 40 = plains per ChunkCodec
+    Chunk ch;
+    { ChunkBuildWriter writer(ch); writer.blocks.fill(0); }
+    ch.biomes.fill(40); // 40 = plains per ChunkCodec
     WriteBuffer out; serializeLevelChunkBody(out, 0, 0, ch, 40);
     bool hasPlains=false; for(size_t i=0;i+2<out.data.size();++i) if(out.data[i]==0x00 && out.data[i+1]==0x28 && out.data[i+2]==0x00){hasPlains=true;break;}
     check(hasPlains, "ChunkBiomes omitted but LevelChunkWithLight 0x28 biomes paletted 00 28 00 present (alternative)");
@@ -437,9 +443,71 @@ static void test_0x27_KeepAlive(){
     std::printf("[P27] KeepAlive 0x27 i64\n");
     WriteBuffer b; b.i64(12345); check(b.data.size()==8,"KeepAlive 8");
 }
+static void test_block_entity_chunk_records(){
+    std::printf("[P28] LevelChunk block-entity records: packed position, registry id, optional update NBT\n");
+    check(blockEntityWireTypeId("minecraft:furnace")==0 &&
+              blockEntityWireTypeId("minecraft:chest")==1 &&
+              blockEntityWireTypeId("minecraft:sign")==7 &&
+              blockEntityWireTypeId("minecraft:brewing_stand")==12 &&
+              blockEntityWireTypeId("minecraft:hopper")==18 &&
+              blockEntityWireTypeId("minecraft:barrel")==27 &&
+              blockEntityWireTypeId("minecraft:crafter")==42,
+          "1.21.4 registry ids match official map_chunk captures");
+
+    auto entries = nbt::Value::makeList(nbt::Compound);
+    auto emptyChest = nbt::Value::makeCompound();
+    emptyChest.set("id", nbt::Value::makeString("minecraft:chest"));
+    emptyChest.set("x", nbt::Value::makeInt(16));
+    emptyChest.set("y", nbt::Value::makeInt(70));
+    emptyChest.set("z", nbt::Value::makeInt(-1));
+    emptyChest.set("keepPacked", nbt::Value::makeByte(0));
+    emptyChest.set("Items", nbt::Value::makeList(nbt::Compound));
+    entries.list.push_back(std::move(emptyChest));
+
+    auto namedSign = nbt::Value::makeCompound();
+    namedSign.set("id", nbt::Value::makeString("minecraft:sign"));
+    namedSign.set("x", nbt::Value::makeInt(31));
+    namedSign.set("y", nbt::Value::makeInt(-2));
+    namedSign.set("z", nbt::Value::makeInt(-2));
+    namedSign.set("keepPacked", nbt::Value::makeByte(0));
+    namedSign.set("CustomName", nbt::Value::makeString("wire-test"));
+    entries.list.push_back(std::move(namedSign));
+
+    auto unsupported = nbt::Value::makeCompound();
+    unsupported.set("id", nbt::Value::makeString("example:unknown"));
+    unsupported.set("x", nbt::Value::makeInt(16));
+    unsupported.set("y", nbt::Value::makeInt(70));
+    unsupported.set("z", nbt::Value::makeInt(-1));
+    entries.list.push_back(std::move(unsupported));
+
+    WriteBuffer encoded;
+    check(writeChunkBlockEntities(encoded, 1, -1, &entries)==2,
+          "known entries in the requested chunk are emitted; unknown ids are skipped");
+    ReadBuffer in(encoded.data);
+    check(in.varint()==2, "chunk block-entity record count");
+    check(in.u8()==0x0f && in.i16()==70 && in.varint()==1 &&
+              in.u8()==nbt::End,
+          "empty chest uses packed X/Z, world Y, registry id and absent optional NBT");
+    const auto signPosition = in.u8();
+    const auto signY = in.i16();
+    const auto signType = in.varint();
+    check(signPosition==0xfe && signY==-2 && signType==7,
+          "sign record uses the high-X/low-Z nibble order and sign registry id");
+    nbt::Parser parser(in);
+    const auto update = parser.readAnonymousRoot();
+    check(update.tag==nbt::Compound &&
+              update.get("CustomName") &&
+              !update.get("id") && !update.get("x") &&
+              !update.get("y") && !update.get("z") &&
+              !update.get("keepPacked"),
+          "client update NBT contains payload only, not persistence identity fields");
+    check(in.remaining()==0, "chunk block-entity records consume exact wire bytes");
+}
 static void test_0x28_LevelChunk(){
     std::printf("[P28] LevelChunkWithLight 0x28 i32+ NBT + varint blob + light\n");
-    Chunk ch; ch.blocks.fill(0); ch.biomes.fill(40); // plains uniform
+    Chunk ch;
+    { ChunkBuildWriter writer(ch); writer.blocks.fill(0); }
+    ch.biomes.fill(40); // plains uniform
     WriteBuffer out; serializeLevelChunkBody(out, 0, 0, ch, 40);
     check(out.data.size()>50,"LevelChunk body >50");
     ReadBuffer r(out.data); check(r.i32()==0,"chunk x 0"); check(r.i32()==0,"chunk z 0"); // second i32
@@ -460,7 +528,9 @@ static void test_0x2A_WorldParticles(){
 }
 static void test_0x2B_UpdateLight(){
     std::printf("[P2B] UpdateLight 0x2B varint varint lightPayload\n");
-    Chunk ch; ch.blocks.fill(0); ch.biomes.fill(0);
+    Chunk ch;
+    { ChunkBuildWriter writer(ch); writer.blocks.fill(0); }
+    ch.biomes.fill(0);
     WriteBuffer out; serializeUpdateLightBody(out, 0,-1, ch);
     expectEq(std::vector<uint8_t>(out.data.begin(), out.data.begin()+6), std::vector<uint8_t>{0x00,0xff,0xff,0xff,0xff,0x0f}, "UpdateLight varint 0,-1");
 }
@@ -579,15 +649,32 @@ static void test_0x41_FacePlayer_gap(){
     check(b.data.size()==4, "EntityLook 0x32 body alternative present");
 }
 static void test_0x42_PlayerPosition(){
-    std::printf("[P42] PlayerPosition 0x42 f64*3 f32*2 u8 varint\n");
-    WriteBuffer b; b.f64(0); b.f64(64); b.f64(0); b.f32(0); b.f32(0); b.u8(0); b.varint(7); check(b.data.size()==24+8+1+1,"PlayerPosition 34");
+    std::printf("[P42] PlayerPosition 0x42 teleport id + PlayerPosition + flags\n");
+    check(proto::pl::sc::PlayerPosition==0x42, "PlayerPosition id 0x42");
+    const auto b = makePlayerPositionLookBody(
+        300, 8.5, -60.0, 8.5, 0.0, 0.0, 0.0, 45.0f, 10.0f);
+    std::vector<std::uint8_t> expected{
+        0xAC, 0x02,
+        0x40,0x21,0x00,0x00,0x00,0x00,0x00,0x00,
+        0xC0,0x4E,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x40,0x21,0x00,0x00,0x00,0x00,0x00,0x00,
+    };
+    expected.insert(expected.end(), 24, 0x00); // delta movement doubles
+    expected.insert(expected.end(), {0x42,0x34,0x00,0x00,
+                                     0x41,0x20,0x00,0x00,
+                                     0x00,0x00,0x00,0x00});
+    expectEq(b.data, expected, "PlayerPosition body includes delta and i32 flags");
 }
-static void test_0x43_PlayerRotation_gap(){
-    std::printf("[P43] PlayerRotation 0x43 omitted — PlayerPosition alternative\n");
-    check(proto::pl::sc::PlayerRotation==0x43, "PlayerRotation 0x43 id lock (omitted)");
-    check(proto::pl::sc::PlayerPosition==0x42, "PlayerPosition 0x42 alternative exists for PlayerRotation");
-    WriteBuffer b; b.f64(0); b.f64(64); b.f64(0); b.f32(0); b.f32(0); b.u8(0); b.varint(7);
-    check(b.data.size()==34, "PlayerPosition 0x42 body alternative present");
+static void test_0x43_PlayerRotation(){
+    std::printf("[P43] PlayerRotation 0x43 rotation-only correction\n");
+    check(proto::pl::sc::PlayerRotation==0x43, "PlayerRotation 0x43 id lock");
+    check(proto::pl::sc::PlayerPosition==0x42,
+          "PlayerPosition 0x42 remains the position-correction packet");
+    const auto b = makePlayerRotationBody(17.25f, -6.5f);
+    const std::vector<std::uint8_t> expected{
+        0x41, 0x8A, 0x00, 0x00, 0xC0, 0xD0, 0x00, 0x00};
+    expectEq(b.data, expected,
+             "PlayerRotation body is yaw f32 followed by pitch f32");
 }
 static void test_0x44_RecipeBook(){
     std::printf("[P44] RecipeBookAdd 0x44 / Remove 0x45 / Settings 0x46\n");
@@ -704,9 +791,33 @@ static void test_0x5F_EntityVelocity(){
     WriteBuffer b; b.varint(42); b.i16(800); b.i16(-400); b.i16(0); expectEq(b.data, std::vector<uint8_t>{0x2a,0x03,0x20,0xfe,0x70,0x00,0x00}, "EntityVelocity 2a 03 20 fe 70 00 00");
 }
 static void test_0x60_SetEquipment(){
-    std::printf("[P60] SetEquipment 0x60 varint array u8 Slot\n");
-    WriteBuffer b; b.varint(10); b.u8(0x00); ItemStack s=ItemStack::of(1,1); s.write(b); b.u8(0xff); // terminator? Actually topBitSetTerminatedArray: high bit terminates
-    check(b.data[0]==0x0a,"SetEquipment eid 10");
+    std::printf("[P60] SetEquipment 0x60 byte-marked equipment array\n");
+    std::array<ItemStack, EquipmentComponent::COUNT> slots{};
+    slots[EquipmentComponent::SLOT_MAINHAND] =
+        ItemStack::ofName("minecraft:stone");
+    slots[EquipmentComponent::SLOT_OFFHAND] =
+        ItemStack::ofName("minecraft:diamond");
+    EquipmentComponent equipment(slots);
+    WriteBuffer actual;
+    actual.varint(10);
+    equipment.writePayload(actual);
+
+    WriteBuffer expected;
+    expected.varint(10);
+    expected.u8(0x80);  // main hand, with another equipment entry following
+    slots[EquipmentComponent::SLOT_MAINHAND].write(expected);
+    expected.u8(0x01);  // offhand, final entry
+    slots[EquipmentComponent::SLOT_OFFHAND].write(expected);
+    expectEq(actual.data, expected.data,
+             "multiple equipment slots use one-byte continuation markers");
+
+    WriteBuffer single;
+    equipment.writePayloadSingle(single, EquipmentComponent::SLOT_OFFHAND);
+    WriteBuffer expectedSingle;
+    expectedSingle.u8(EquipmentComponent::SLOT_OFFHAND);
+    slots[EquipmentComponent::SLOT_OFFHAND].write(expectedSingle);
+    expectEq(single.data, expectedSingle.data,
+             "single-slot equipment update uses one slot byte");
 }
 static void test_0x61_SetExperience(){
     std::printf("[P61] SetExperience 0x61 f32 varint varint\n");
@@ -926,6 +1037,7 @@ int main(){
     test_0x25_HurtAnimation();
     test_0x26_InitializeWorldBorder();
     test_0x27_KeepAlive();
+    test_block_entity_chunk_records();
     test_0x28_LevelChunk();
     test_0x29_WorldEvent();
     test_0x2A_WorldParticles();
@@ -952,7 +1064,7 @@ int main(){
     test_0x40_PlayerInfoUpdate();
     test_0x41_FacePlayer_gap();
     test_0x42_PlayerPosition();
-    test_0x43_PlayerRotation_gap();
+    test_0x43_PlayerRotation();
     test_0x44_RecipeBook();
     test_0x47_RemoveEntities();
     test_0x48_RemoveMobEffect();

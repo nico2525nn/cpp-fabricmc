@@ -29,11 +29,11 @@ def main():
             "secure profile parser remains independent from secure chat")
 
     session = (ROOT / "src/game/GameServer_session.cpp").read_text()
-    chat = between(session, "void Session::onChatMessage(ReadBuffer& in)",
-                   "void Session::onChatCommand(ReadBuffer& in)")
+    chat = between(session, "void Session::onChatMessage(",
+                   "void Session::onChatCommand(")
     verified = chat.index("ChatMessageProcessor::verify")
     event = chat.index("srv_.events().chat.fire")
-    jvm = chat.index("srv_.jvmRuntime()->onChat")
+    jvm = chat.index("runtime->onChat(")
     require(verified < event < jvm,
             "chat callbacks run only after signature and replay verification")
     require("secure_chat_policy::classifyMessage(" in chat and
@@ -71,19 +71,33 @@ def main():
 
     core = (ROOT / "src/game/GameServer_core.cpp").read_text()
     server_header = (ROOT / "src/game/GameServer.hpp").read_text()
-    stop = between(server_header, "void stop()", "Persistence& persistence()")
+    lifecycle_source = (ROOT / "src/game/GameServer_lifecycle.cpp").read_text()
+    stop = between(lifecycle_source, "void GameServer::stop()",
+                   "void GameServer::stopIngress()")
     require("sessionThreadOwner_ == this" in stop,
             "session callbacks defer full server teardown to the external owner")
     require("SessionThreadScope sessionThreadScope(this);" in core,
             "every session worker is marked for re-entrant shutdown detection")
-    mutation = between(core, "bool GameServer::runOnServerThread",
-                       "void GameServer::drainServerThreadTasks")
+    mutation = between(
+        core,
+        "ServerThreadTaskOutcome GameServer::runOnServerThreadDetailed(",
+        "bool GameServer::runOnServerThread(")
+    wait_lock = mutation.find("std::unique_lock waitLock(request->waitMtx);")
+    timeout_cancel = mutation.find("request->state.compare_exchange_strong(", wait_lock)
     require("request->waitCv.wait_for" in mutation and
-            "request->state.compare_exchange_strong" in mutation and
-            "State::Pending" in mutation and "State::Cancelled" in mutation and
-            "return false;" in mutation and
-            "request->waitCv.wait(waitLock" not in mutation,
-            "foreign server mutations have a bounded wait and owned running task")
+                "request->state.compare_exchange_strong" in mutation and
+                wait_lock >= 0 and timeout_cancel > wait_lock and
+                "waitLock.unlock()" not in mutation[wait_lock:timeout_cancel] and
+                "State::Pending" in mutation and "State::Cancelled" in mutation and
+                "if (state == ServerThreadTask::State::Running &&\n"
+                "            waitPolicy == ServerThreadTaskWaitPolicy::WaitIfRunning)"
+                in mutation and
+                "request->waitCv.wait(waitLock" in mutation and
+                "if (state == ServerThreadTask::State::Running)\n"
+                "            return ServerThreadTaskOutcome::Indeterminate;"
+                in mutation and
+                "ServerThreadTaskWaitPolicy::Bounded" in server_header,
+            "pending calls cancel at deadline; running calls either remain owned until terminal state or return Indeterminate")
 
     wait_tasks = between(core, "void GameServer::waitForServerThreadTasks",
                          "bool GameServer::runOnServerThread")
@@ -95,14 +109,29 @@ def main():
         r"std::lock_guard\s+\w+\(serverThreadTasksMtx_\);\s*"
         r"activeServerThreadTasks_\.fetch_sub", drain) is not None,
         "server task completion updates the condition predicate under its mutex")
+    require(re.search(
+        r"void finish\(State terminalState\)\s*\{\s*\{\s*"
+        r"std::lock_guard\s+\w+\(waitMtx\);\s*"
+        r"state\.store\(terminalState, std::memory_order_release\);\s*\}\s*"
+        r"waitCv\.notify_all\(\);", server_header) is not None and
+        re.search(
+            r"bool cancelPending\(\)\s*\{[\s\S]*?"
+            r"std::lock_guard\s+\w+\(waitMtx\);[\s\S]*?"
+            r"state\.compare_exchange_strong\(", server_header) is not None and
+        "request->finish(ServerThreadTask::State::Completed)" in drain and
+        "request->finish(ServerThreadTask::State::Failed)" in drain,
+        "task terminal transitions are synchronized with each waiter's condition mutex")
 
     block_event = (ROOT / "src/game/BlockEvent.hpp").read_text()
     clear = between(block_event, "void clearLegacyHandlers()", "api::EventHook")
     require("placeHandlers_.clear()" in clear and "landHandlers_.clear()" in clear,
             "legacy block handlers have a synchronized unload removal path")
 
-    predicates = (ROOT / "src/game/DatapackManager.hpp").read_text()
-    require("predicateRandom01(ctx)" in predicates and "lootingLevel" in predicates,
+    predicates = (ROOT / "src/game/PredicateEvaluator.cpp").read_text()
+    predicate_context = (ROOT / "src/game/PredicateEvaluator.hpp").read_text()
+    require("predicateRandom01(ctx)" in predicates and
+                "lootingLevel" in predicates and
+                "lootingLevel" in predicate_context,
             "loot predicates use seeded randomness and looting context")
 
     server_process = (ROOT / "tests/ServerProcess.hpp").read_text()
@@ -117,18 +146,81 @@ def main():
             "shared fixture retains independent explicit true options for online scenarios")
     require_offline_auth_flags("ServerProcess", spawn_args)
 
-    admission = between(server_header, "bool reservePlayerAdmission()",
-                        "void releasePlayerAdmission()")
+    admission = between(
+        server_header,
+        "std::optional<PlayerDirectory::ReservationId> reservePlayerAdmission(",
+        "std::optional<PlayerLoginHandoffCoordinator::Lease>")
     require("std::max(0, cfg_.maxPlayers)" in admission and
-            "cfg_.maxPlayers > 0" not in admission,
-            "zero max-player capacity remains a real admission limit")
+            "playerDirectory_.reserve(maximum, candidate)" in admission and
+            "PlayerDirectory::ReservationId reservation" in admission,
+            "max-player admission uses identity-scoped reservation tokens")
     login = between(session, "void Session::handleLogin()",
                     "void Session::handleConfiguration()")
     require(login.index("if (srv_.config().onlineMode)") <
-                login.index("srv_.reservePlayerAdmission()") and
+                login.index("conn_->sendPacket(lo::sc::GameProfile") and
             login.index("if (srv_.config().enforceSecureProfile && !self_->onlineAuthenticated)") <
-                login.index("srv_.reservePlayerAdmission()"),
-            "player capacity is reserved only after authentication and secure-profile checks")
+                login.index("conn_->sendPacket(lo::sc::GameProfile"),
+            "login authentication and secure-profile checks precede login success")
+    configuration = between(session, "void Session::handleConfiguration()",
+                            "void Session::onEnterPlay(")
+    play_entry = between(session, "void Session::onEnterPlay(",
+                         "void Session::sendDeclareCommands()")
+    require(configuration.index("ConfigWaitResult::FinishAck") <
+                configuration.index("onEnterPlay(simulationLock)") and
+            "srv_.reservePlayerAdmission(*self_)" in play_entry,
+            "player capacity is reserved only after authentication and configuration acknowledgement")
+    handoff_lookup = between(
+        session,
+        "std::vector<std::shared_ptr<Player>> Session::playersForLoginHandoff() const",
+        "void Session::onEnterPlay(")
+    game_server = (ROOT / "src/game/GameServer.hpp").read_text()
+    player_directory_source = (ROOT / "src/game/PlayerDirectory.cpp").read_text()
+    identity_match = between(
+        player_directory_source,
+        "bool PlayerDirectory::Identity::matches(",
+        "void PlayerDirectory::applyIdentity(")
+    duplicate_lookup = between(
+        player_directory_source,
+        "PlayerDirectory::DuplicatePlayers PlayerDirectory::duplicatesFor(",
+        "} // namespace cppfm")
+    require("playersForLoginHandoff()" in play_entry and
+            "playersMatchingAdmissionIdentity(*self_)" in handoff_lookup and
+            "playerDirectory_.findDuplicatesFor(candidate)" in game_server and
+            "playerIdentities_[index].matches(incoming)" in duplicate_lookup and
+            "uuid == other.uuid" in identity_match and
+            "name == other.name" in identity_match,
+            "UUID and name replacements use frozen admission identity lookup before publication")
+    login_publication_source = (ROOT / "src/game/GameServer_session_login.cpp").read_text()
+    publication = between(login_publication_source,
+                          "void Session::publishPlayerForLogin()",
+                          "void Session::completePlayerLogin(")
+    directory = (ROOT / "src/game/PlayerDirectory.cpp").read_text()
+    require(publication.index("srv_.addPlayer(self_, *playerAdmissionReservation_") <
+            publication.index("sendPlayerInfoAddSelf()") and
+            "const auto requiredCapacity = players_.size() + pendingPublications_ + 1;" in directory and
+            "players_.reserve(requiredCapacity);" in directory and
+            "playerIdentities_.reserve(requiredCapacity);" in directory,
+            "player list packets follow committed admission after both aligned roster arrays reserve all in-flight publications")
+
+    player_directory = (ROOT / "src/game/GameServer_player_directory.cpp").read_text()
+    duplicate_retirement = between(
+        player_directory,
+        "for (const auto& target : targets) {",
+        "std::fprintf(\n                    stderr,\n                    \"[cppfm] duplicate login")
+    begin_retirement = duplicate_retirement.index(
+        "jvmRuntime_->beginPlayerRetirement")
+    quit_callback = duplicate_retirement.index("jvmRuntime_->onPlayerQuit")
+    require(begin_retirement < quit_callback and
+            "jvmRuntime_->invalidatePlayer" not in duplicate_retirement,
+            "duplicate retirement claims the shared Fabric quit callback without racing its handle invalidation")
+    publication_tail = between(
+        player_directory,
+        "bool GameServer::addPlayer(",
+        "void GameServer::removePlayer(")
+    require("reportPostCommitFailure" in publication_tail and
+            "publishedConnection->close();" in publication_tail and
+            "return added;" in publication_tail,
+            "post-commit publication failures fail the connection closed without unwinding past committed membership")
 
     lifecycle = (ROOT / "tests/test_lifecycle_matrix.py").read_text()
     require_offline_auth_flags(

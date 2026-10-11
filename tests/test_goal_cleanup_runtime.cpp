@@ -1,12 +1,20 @@
 #include "../src/brigadier/Arguments.hpp"
+#include "../src/brigadier/Tree.hpp"
 #include "../src/jvm/JavaObjectCache.hpp"
 #include "../src/jvm/NativeHandleTable.hpp"
 #include "../src/worldgen/StructurePlacer.hpp"
+#include "../src/game/BlockPredicate.hpp"
+#include "../src/game/PlayerLoginHandoff.hpp"
+#include "../src/game/SimulationDispatchGuard.hpp"
 
 #include <cstdint>
+#include <chrono>
+#include <future>
 #include <iostream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -39,6 +47,61 @@ void testNestedArguments() {
         rejected = true;
     }
     require(rejected, "unterminated NBT was accepted");
+
+    auto blockPredicate = cppfm::brigadier::args::blockPredicateArg();
+    cppfm::brigadier::StringReader tagReader(
+        "#minecraft:logs[axis=x,waterlogged=false]");
+    require(blockPredicate.parse(tagReader, context).asStr() ==
+                "#minecraft:logs[axis=x,waterlogged=false]" &&
+                tagReader.remainingLength() == 0,
+            "block-tag predicate did not preserve partial state properties");
+    bool malformedTagRejected = false;
+    try {
+        cppfm::brigadier::StringReader malformedTag(
+            "#minecraft:logs[axis=x");
+        (void)blockPredicate.parse(malformedTag, context);
+    } catch (const cppfm::brigadier::StringReader::ParseError&) {
+        malformedTagRejected = true;
+    }
+    require(malformedTagRejected,
+            "unterminated block-tag properties were accepted");
+
+    bool trailingPropertyRejected = false;
+    try {
+        (void)cppfm::block_predicate::parseBlockPredicate(
+            "minecraft:oak_log[axis=x,]");
+    } catch (const std::runtime_error&) {
+        trailingPropertyRejected = true;
+    }
+    require(trailingPropertyRejected,
+            "block predicate silently ignored an empty trailing property");
+
+    const auto bareBlock = cppfm::block_predicate::parseBlockPredicate("stone");
+    require(bareBlock.name == "minecraft:stone" && !bareBlock.tag &&
+                bareBlock.properties.empty(),
+            "bare vanilla block names resolve to the default namespace");
+}
+
+void testFailedCommandBranchRestoresArguments() {
+    using namespace cppfm::brigadier;
+    CommandDispatcher dispatcher;
+    auto incompleteBranch = CommandNode::argument(
+        "stale", args::stringWord());
+    incompleteBranch->then(CommandNode::literal("not-the-input"));
+    dispatcher.root->then(incompleteBranch);
+
+    bool sawStaleArgument = false;
+    auto validBranch = CommandNode::argument("selected", args::stringWord());
+    validBranch->executable = true;
+    validBranch->action = [&](CommandContext& context) {
+        sawStaleArgument = context.args.contains("stale");
+        return 1;
+    };
+    dispatcher.root->then(validBranch);
+
+    const auto result = dispatcher.execute("value", CommandSource{});
+    require(result.ok && !sawStaleArgument,
+            "failed argument branch leaked values into the selected command");
 }
 
 void testResourceLocations() {
@@ -141,14 +204,165 @@ void testJvmTables() {
     require(cache.size() == 0, "JVM object cache did not drain all typed entries");
 }
 
+void testPlayerHandoffCleanupPolicy() {
+    using cppfm::HandoffCleanupPolicy;
+    using cppfm::PlayerHandoffReadiness;
+    PlayerHandoffReadiness readiness;
+    int failuresReported = 0;
+    int laterStepsRun = 0;
+    const auto reportFailure = [&](std::string_view,
+                                   const std::exception* error) {
+        require(error != nullptr, "cleanup exception details were lost");
+        ++failuresReported;
+    };
+
+    cppfm::runPlayerHandoffCleanupStep(
+        "player quit event", HandoffCleanupPolicy::BestEffort, readiness,
+        [] { throw std::runtime_error("event callback failed"); },
+        reportFailure);
+    cppfm::runPlayerHandoffCleanupStep(
+        "player save", HandoffCleanupPolicy::RequiredForReplacement,
+        readiness, [&] { ++laterStepsRun; }, reportFailure);
+    require(readiness.ready() && failuresReported == 1 && laterStepsRun == 1,
+            "best-effort hook failure incorrectly fenced a saved player");
+
+    cppfm::runPlayerHandoffCleanupStep(
+        "required persistence", HandoffCleanupPolicy::RequiredForReplacement,
+        readiness, [] { throw std::runtime_error("save failed"); },
+        reportFailure);
+    require(!readiness.ready() && failuresReported == 2,
+            "required cleanup failure did not block unsafe player replacement");
+
+    std::promise<bool> pendingCleanup;
+    const auto completion = pendingCleanup.get_future().share();
+    const auto shortDeadline = std::chrono::steady_clock::now() +
+                               std::chrono::milliseconds(20);
+    const auto timedOut = cppfm::waitForPlayerHandoffCleanup(
+        completion, shortDeadline);
+    require(!timedOut,
+            "player handoff wait did not return at its deadline");
+    pendingCleanup.set_value(true);
+    const auto completed = cppfm::waitForPlayerHandoffCleanup(
+        completion, std::chrono::steady_clock::now() +
+                        std::chrono::seconds(1));
+    require(completed && *completed,
+            "completed player cleanup was not observed after a timeout");
+
+    std::promise<bool> failedCleanup;
+    failedCleanup.set_value(false);
+    const auto failed = cppfm::waitForPlayerHandoffCleanup(
+        failedCleanup.get_future().share(),
+        std::chrono::steady_clock::now() + std::chrono::seconds(1));
+    require(failed && !*failed,
+            "unsafe player cleanup result was not preserved");
+}
+
+void testPlayerHandoffLeaseDeadline() {
+    cppfm::PlayerLoginHandoffCoordinator coordinator;
+    const auto uuid = std::string("same-player-uuid");
+    auto expired = coordinator.enterUntil(
+        "expired-player-uuid",
+        cppfm::PlayerLoginHandoffCoordinator::Clock::now() -
+            std::chrono::milliseconds(1));
+    require(!expired, "expired identity lease deadline was accepted");
+
+    auto owner = coordinator.enterUntil(
+        uuid, cppfm::PlayerLoginHandoffCoordinator::Clock::now() +
+                  std::chrono::seconds(1));
+    require(owner.has_value() && !owner->waited(),
+            "first player handoff did not acquire its identity lease immediately");
+
+    const auto waitStarted = cppfm::PlayerLoginHandoffCoordinator::Clock::now();
+    auto contender = coordinator.enterUntil(
+        uuid, waitStarted + std::chrono::milliseconds(20));
+    const auto waitElapsed =
+        cppfm::PlayerLoginHandoffCoordinator::Clock::now() - waitStarted;
+    require(!contender && waitElapsed < std::chrono::seconds(1),
+            "same-UUID identity lease wait exceeded its deadline");
+
+    auto independent = coordinator.enterUntil(
+        "different-player-uuid",
+        cppfm::PlayerLoginHandoffCoordinator::Clock::now() +
+            std::chrono::seconds(1));
+    require(independent.has_value() && !independent->waited(),
+            "one player identity blocked an unrelated handoff");
+
+    auto nameOwner = coordinator.enterUntil(
+        "name:ReusedPlayer",
+        cppfm::PlayerLoginHandoffCoordinator::Clock::now() +
+            std::chrono::seconds(1));
+    require(nameOwner.has_value() && !nameOwner->waited(),
+            "name-based replacement could not acquire its independent handoff lease");
+    auto nameContender = coordinator.enterUntil(
+        "name:ReusedPlayer",
+        cppfm::PlayerLoginHandoffCoordinator::Clock::now() +
+            std::chrono::milliseconds(20));
+    require(!nameContender,
+            "same-name replacement was not serialized behind the incumbent handoff");
+}
+
+void testNestedSimulationDispatchRelease() {
+    std::recursive_mutex mutex;
+    cppfm::SimulationDispatchGuard outer(mutex);
+    cppfm::SimulationDispatchGuard inner(mutex);
+    std::promise<void> attempted;
+    std::promise<void> acquired;
+    auto attemptedFuture = attempted.get_future();
+    auto acquiredFuture = acquired.get_future();
+    std::thread waiter;
+    bool depthClearedDuringCallback = false;
+    bool waiterAcquiredDuringCallback = false;
+
+    cppfm::SimulationDispatchGuard::withCurrentLockReleased([&] {
+        depthClearedDuringCallback =
+            cppfm::activeSimulationDispatchDepth == 0;
+        waiter = std::thread([&] {
+            attempted.set_value();
+            std::lock_guard lock(mutex);
+            acquired.set_value();
+        });
+        attemptedFuture.wait();
+        waiterAcquiredDuringCallback =
+            acquiredFuture.wait_for(std::chrono::seconds(1)) ==
+            std::future_status::ready;
+    });
+
+    const bool callbackRestoredGuards =
+        outer.owns_lock() && inner.owns_lock() &&
+        cppfm::activeSimulationDispatchDepth == 2;
+
+    bool callbackThrew = false;
+    try {
+        inner.withLockReleased([] {
+            throw std::runtime_error("expected callback failure");
+        });
+    } catch (const std::runtime_error&) {
+        callbackThrew = true;
+    }
+    const bool exceptionRestoredGuards =
+        outer.owns_lock() && inner.owns_lock() &&
+        cppfm::activeSimulationDispatchDepth == 2;
+    inner.unlock();
+    outer.unlock();
+    if (waiter.joinable()) waiter.join();
+    require(depthClearedDuringCallback && waiterAcquiredDuringCallback,
+            "nested simulation guard kept the dispatch mutex held in callback");
+    require(callbackRestoredGuards && callbackThrew && exceptionRestoredGuards,
+            "nested simulation guards were not restored after callback exception");
+}
+
 } // namespace
 
 int main() {
     try {
         testNestedArguments();
+        testFailedCommandBranchRestoresArguments();
         testResourceLocations();
         testStructureOrigins();
         testJvmTables();
+        testPlayerHandoffCleanupPolicy();
+        testPlayerHandoffLeaseDeadline();
+        testNestedSimulationDispatchRelease();
         std::cout << "goal-cleanup-runtime: PASS\n";
         return 0;
     } catch (const std::exception& error) {

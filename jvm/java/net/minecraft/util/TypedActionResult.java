@@ -16,7 +16,7 @@ public final class TypedActionResult<T> {
     public boolean isAccepted() { return result.isAccepted(); }
     public static <T> TypedActionResult<T> success(T value) { return new TypedActionResult<>(ActionResult.SUCCESS, value); }
     public static <T> TypedActionResult<T> success(T value, boolean client) {
-        return new TypedActionResult<>(client ? ActionResult.SUCCESS_CLIENT : ActionResult.SUCCESS_SERVER, value);
+        return new TypedActionResult<>(client ? ActionResult.SUCCESS : ActionResult.SUCCESS_SERVER, value);
     }
     public static <T> TypedActionResult<T> pass(T value) { return new TypedActionResult<>(ActionResult.PASS, value); }
     public static <T> TypedActionResult<T> fail(T value) { return new TypedActionResult<>(ActionResult.FAIL, value); }

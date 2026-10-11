@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.entity.event.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.damage.DamageSource;
@@ -36,19 +35,19 @@ public final class ServerLivingEntityEvents {
                           EntityConversionContext conversionContext);
     }
 
-    public static final Event<AllowDamage> ALLOW_DAMAGE = new Event<>(CppModRuntime::registerAllowDamage,
+    public static final Event<AllowDamage> ALLOW_DAMAGE = EventFactory.createArrayBacked(
         AllowDamage.class, callbacks -> (entity, source, amount) -> {
             for (AllowDamage callback : callbacks) {
                 if (!callback.allowDamage(entity, source, amount)) return false;
             }
             return true;
         });
-    public static final Event<AfterDamage> AFTER_DAMAGE = new Event<>(CppModRuntime::registerAfterDamage,
+    public static final Event<AfterDamage> AFTER_DAMAGE = EventFactory.createArrayBacked(
         AfterDamage.class, callbacks -> (entity, source, baseDamageTaken, damageTaken, blocked) -> {
             for (AfterDamage callback : callbacks)
                 callback.afterDamage(entity, source, baseDamageTaken, damageTaken, blocked);
         });
-    public static final Event<AfterDeath> AFTER_DEATH = new Event<>(CppModRuntime::registerAfterDeath,
+    public static final Event<AfterDeath> AFTER_DEATH = EventFactory.createArrayBacked(
         AfterDeath.class, callbacks -> (entity, source) -> {
             for (AfterDeath callback : callbacks) callback.afterDeath(entity, source);
         });

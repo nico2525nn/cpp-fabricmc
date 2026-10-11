@@ -1,6 +1,7 @@
 package net.minecraft.server.network;
 
 import cppfm.bridge.WrapperCache;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.MinecraftServer;
@@ -21,13 +22,26 @@ public class ServerPlayerEntity extends PlayerEntity {
         super(0L, world, EntityType.PLAYER);
     }
     public static ServerPlayerEntity of(long handle) {
-        return WrapperCache.get(ServerPlayerEntity.class, handle, ServerPlayerEntity::new);
+        if (handle == 0L) return null;
+        return (ServerPlayerEntity) WrapperCache.get(
+            Entity.class, handle, NativeAccess::playerHandleLive,
+            ServerPlayerEntity::createNativeWrapper);
+    }
+    public static ServerPlayerEntity createNativeWrapper(long handle) {
+        return new ServerPlayerEntity(handle);
     }
     public ServerWorld getServerWorld() {
         return ServerWorld.of(NativeAccess.playerWorld(nativeHandle), getServer());
     }
     public MinecraftServer getServer() {
         return MinecraftServer.of(NativeAccess.serverHandle());
+    }
+    @Override public ServerWorld getWorld() {
+        if (nativeHandle == 0L && world instanceof ServerWorld serverWorld)
+            return serverWorld;
+        ServerWorld authoritative = getServerWorld();
+        if (world != authoritative) setWorld(authoritative);
+        return authoritative;
     }
     public void sendMessage(Text message) { sendMessage(message, false); }
     public void sendMessage(Text message, boolean overlay) {
@@ -38,8 +52,11 @@ public class ServerPlayerEntity extends PlayerEntity {
     public final ServerPlayNetworkHandler networkHandler = new ServerPlayNetworkHandler(this);
     public ServerPlayNetworkHandler getNetworkHandler() { return networkHandler; }
     public void teleport(double x, double y, double z) { super.teleport(x, y, z); }
-    /** Teleport-target overload used by server lifecycle mixins. */
-    public ServerPlayerEntity teleportTo(net.minecraft.world.TeleportTarget target) { return this; }
+    /** Uses the native session's ordered Respawn/position/tracking transfer. */
+    @Override public ServerPlayerEntity teleportTo(
+            net.minecraft.world.TeleportTarget target) {
+        return (ServerPlayerEntity) super.teleportTo(target);
+    }
     public void sendChatMessage(Text message) { sendMessage(message, false); }
     public boolean sendPluginMessage(Identifier channel, byte[] payload) {
         return NativeAccess.sendPluginMessage(nativeHandle, channel == null ? "" : channel.toString(), payload, 1);

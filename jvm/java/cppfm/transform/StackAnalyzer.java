@@ -100,7 +100,11 @@ final class StackAnalyzer {
         int opcode = instruction.opcode;
         switch (opcode) {
             case 0, 132, 167, 168, 169, 177, 200, 201 -> { }
-            case 1 -> state.stack.add(ref("java/lang/Object"));
+            // Keep the verifier's null type distinct from an ordinary
+            // java/lang/Object reference.  At control-flow joins the JVM
+            // merges null with the other reference type (for example
+            // ServerWorld-or-null) without widening the result to Object.
+            case 1 -> state.stack.add(NULL);
             case 2, 3, 4, 5, 6, 7, 8, 16, 17 -> state.stack.add(INT);
             case 9, 10 -> state.stack.add(LONG);
             case 11, 12, 13 -> state.stack.add(FLOAT);
@@ -379,16 +383,21 @@ final class StackAnalyzer {
         final int slots;
         final boolean reference;
         final boolean primitive;
+        /** True for the verifier's ITEM_Null value produced by ACONST_NULL. */
+        final boolean nullReference;
         /** Non-null only for JVM uninitializedThis/new values. */
         final Object uninitializedToken;
         Value(String descriptor, int slots, boolean reference, boolean primitive) {
-            this(descriptor, slots, reference, primitive, null);
+            this(descriptor, slots, reference, primitive, false, null);
         }
-        Value(String descriptor, int slots, boolean reference, boolean primitive, Object uninitializedToken) {
+        Value(String descriptor, int slots, boolean reference, boolean primitive,
+              boolean nullReference, Object uninitializedToken) {
             this.descriptor = descriptor; this.slots = slots; this.reference = reference;
-            this.primitive = primitive; this.uninitializedToken = uninitializedToken;
+            this.primitive = primitive; this.nullReference = nullReference;
+            this.uninitializedToken = uninitializedToken;
         }
         boolean isUninitialized() { return uninitializedToken != null; }
+        boolean isNull() { return nullReference; }
         boolean isUninitializedThis() {
             return uninitializedToken instanceof UninitializedToken token && token.thisReference;
         }
@@ -401,6 +410,7 @@ final class StackAnalyzer {
     private static final Value LONG = new Value("J", 2, false, true);
     private static final Value FLOAT = new Value("F", 1, false, true);
     private static final Value DOUBLE = new Value("D", 2, false, true);
+    private static final Value NULL = new Value("Ljava/lang/Object;", 1, true, false, true, null);
 
     private static Value value(Descriptor.Type type) {
         return new Value(type.descriptor, type.slots, type.reference, type.primitive);
@@ -414,7 +424,7 @@ final class StackAnalyzer {
         return ref(owner);
     }
     private static Value uninitializedRef(String owner, Object token) {
-        return new Value("L" + owner + ";", 1, true, false, token);
+        return new Value("L" + owner + ";", 1, true, false, false, token);
     }
 
     private static Value uninitializedThis(String owner) {
@@ -448,12 +458,15 @@ final class StackAnalyzer {
         }
         private static boolean same(Value a, Value b) {
             return a.descriptor.equals(b.descriptor) && a.slots == b.slots
+                && a.nullReference == b.nullReference
                 && a.uninitializedToken == b.uninitializedToken;
         }
         private static Value join(Value a, Value b) {
             if (same(a, b)) return a;
             if (a.isUninitialized() || b.isUninitialized())
                 throw new TransformException("uninitialized value crosses a control-flow merge");
+            if (a.reference && b.isNull()) return a;
+            if (a.isNull() && b.reference) return b;
             if (a.reference && b.reference) return ref("java/lang/Object");
             throw new TransformException("incompatible stack/local types at control-flow merge");
         }

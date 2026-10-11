@@ -1,6 +1,7 @@
 package cppfm.loader;
 
 import cppfm.transform.DescriptorResolver;
+import cppfm.transform.MixinMemberSelector;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -15,6 +16,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -37,6 +39,8 @@ import java.util.jar.JarFile;
  * discovered relative to the working directory and the loader URLs.</p>
  */
 public final class IntermediaryNamedMappings implements DescriptorResolver {
+    public enum MixinSelectorKind { ANY, METHOD, FIELD }
+
     public static final String SOURCE_NAMESPACE = "intermediary";
     public static final String TARGET_NAMESPACE = "named";
     public static final String VERSION = "1.21.4+build.8";
@@ -48,7 +52,10 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     private final Map<String, String> reverseClasses;
     private final Map<MemberKey, String> methods;
     private final Map<MemberKey, String> fields;
+    private final Map<OwnerNameKey, Set<String>> methodNamesByOwner;
+    private final Map<OwnerNameKey, Set<String>> fieldNamesByOwner;
     private final Map<String, String> uniqueMethodNames;
+    private final Map<NameDescriptorKey, String> uniqueMethodNamesByDescriptor;
     private final Map<String, String> uniqueFieldNames;
     private final String source;
 
@@ -61,7 +68,11 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
         this.reverseClasses = immutable(reverseClasses);
         this.methods = Collections.unmodifiableMap(new LinkedHashMap<>(methods));
         this.fields = Collections.unmodifiableMap(new LinkedHashMap<>(fields));
+        this.methodNamesByOwner = ownerNames(methods);
+        this.fieldNamesByOwner = ownerNames(fields);
         this.uniqueMethodNames = Collections.unmodifiableMap(uniqueNames(methods));
+        this.uniqueMethodNamesByDescriptor =
+            Collections.unmodifiableMap(uniqueMethodNamesByDescriptor(methods));
         this.uniqueFieldNames = Collections.unmodifiableMap(uniqueNames(fields));
         this.source = source == null ? "identity" : source;
     }
@@ -174,6 +185,17 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
         return dotted ? mapped.replace('/', '.') : mapped;
     }
 
+    /** Reverse-map one named class name to its intermediary source name. */
+    public String unmapClassName(String name) {
+        if (name == null || name.isEmpty()) return name;
+        if (name.charAt(0) == '[') return unmapDescriptor(name);
+        boolean dotted = name.indexOf('/') < 0 && name.indexOf('.') >= 0;
+        String internal = dotted ? name.replace('.', '/') : name;
+        String unmapped = reverseClasses.get(internal);
+        if (unmapped == null) return name;
+        return dotted ? unmapped.replace('/', '.') : unmapped;
+    }
+
     /** Map a JVM descriptor containing intermediary class names. */
     public String mapDescriptor(String descriptor) {
         return remapDescriptor(descriptor, classes);
@@ -188,11 +210,19 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     public String mapFieldName(String owner, String name, String descriptor) {
         String mapped = fields.get(new MemberKey(owner, name, descriptor));
         if (mapped != null) return mapped;
+        if (descriptor == null) {
+            Set<String> ownerMappings = fieldNamesByOwner.get(
+                new OwnerNameKey(owner, name));
+            if (ownerMappings != null)
+                return ownerMappings.size() == 1
+                    ? ownerMappings.iterator().next() : name;
+        }
         // The fallback is for Minecraft refs recorded against an inherited
         // owner.  Applying a short-name fallback to third-party libraries is
         // unsafe: fastutil and other dependencies legitimately use names
         // such as `a`, which can coincidentally be a unique Yarn field.
-        if (owner == null || !owner.startsWith("net/minecraft/")) return name;
+        if (owner == null || !owner.startsWith("net/minecraft/") ||
+            !classes.containsKey(owner)) return name;
         // Refmaps can name the concrete class even when Yarn records the
         // inherited member on an interface or superclass.  A globally unique
         // intermediary symbol is safe to resolve in that case.
@@ -203,11 +233,130 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
     public String mapMethodName(String owner, String name, String descriptor) {
         String mapped = methods.get(new MemberKey(owner, name, descriptor));
         if (mapped != null) return mapped;
-        if (owner == null || !owner.startsWith("net/minecraft/")) return name;
+        if (descriptor == null) {
+            Set<String> ownerMappings = methodNamesByOwner.get(
+                new OwnerNameKey(owner, name));
+            if (ownerMappings != null)
+                return ownerMappings.size() == 1
+                    ? ownerMappings.iterator().next() : name;
+        }
+        if (owner == null || !owner.startsWith("net/minecraft/") ||
+            !classes.containsKey(owner)) return name;
         // Refmaps can name the concrete class even when Yarn records the
         // inherited member on an interface or superclass.  A globally unique
         // intermediary symbol is safe to resolve in that case.
         return uniqueMethodNames.getOrDefault(name, name);
+    }
+
+    /**
+     * Map a method when an unmapped third-party interface inherits its
+     * contract from a mapped Minecraft ancestor. A descriptor-qualified,
+     * globally unambiguous lookup avoids guessing across unrelated overloads.
+     */
+    public String mapUniqueMethodName(String name, String descriptor) {
+        if (name == null || descriptor == null) return name;
+        return uniqueMethodNamesByDescriptor.getOrDefault(
+            new NameDescriptorKey(name, descriptor), name);
+    }
+
+    /**
+     * Remap a Mixin selector using its encoded owner or declared target class.
+     * Unqualified names are changed only when every known target resolves them
+     * to the same named symbol; this avoids guessing for multi-target Mixins.
+     */
+    public String mapMixinSelector(String selector, Set<String> targetOwners,
+                                   MixinSelectorKind kind) {
+        return mapMixinSelector(selector, targetOwners, kind, null);
+    }
+
+    /** Map an unqualified shadow selector using the annotated member descriptor. */
+    public String mapMixinSelector(String selector, Set<String> targetOwners,
+                                   MixinSelectorKind kind,
+                                   String contextualDescriptor) {
+        if (selector == null || selector.isEmpty()) return selector;
+        MixinMemberSelector parsed = MixinMemberSelector.parse(selector);
+        if (parsed.hasOwner())
+            return mapQualifiedSelector(parsed, kind);
+        if (targetOwners == null || targetOwners.isEmpty())
+            return mapSymbol(selector);
+
+        String mapped = null;
+        for (String owner : targetOwners) {
+            String candidate = mapUnqualifiedSelector(
+                parsed, owner, kind, contextualDescriptor);
+            if (mapped == null) mapped = candidate;
+            else if (!mapped.equals(candidate)) return selector;
+        }
+        return mapped == null ? selector : mapped;
+    }
+
+    /** Map a target class string without interpreting class-name tokens as members. */
+    public String mapMixinTarget(String target) {
+        return mapClassName(target);
+    }
+
+    private String mapQualifiedSelector(MixinMemberSelector selector,
+                                       MixinSelectorKind requestedKind) {
+        String owner = selector.owner();
+        return selector.format(mapClassName(owner),
+            mapMemberSelectorName(owner, selector, requestedKind, null),
+            mappedSelectorDescriptor(selector));
+    }
+
+    private String mapUnqualifiedSelector(MixinMemberSelector selector,
+                                          String owner,
+                                          MixinSelectorKind requestedKind,
+                                          String contextualDescriptor) {
+        return selector.formatMember(
+            mapMemberSelectorName(owner, selector, requestedKind,
+                contextualDescriptor), mappedSelectorDescriptor(selector));
+    }
+
+    private String mapMemberSelectorName(String owner,
+                                         MixinMemberSelector selector,
+                                         MixinSelectorKind requestedKind,
+                                         String contextualDescriptor) {
+        String encodedDescriptor = selector.descriptor();
+        boolean hasMethodDescriptor = encodedDescriptor != null &&
+            encodedDescriptor.startsWith("(");
+        boolean hasFieldDescriptor = encodedDescriptor != null &&
+            encodedDescriptor.startsWith(":");
+        String descriptor = hasMethodDescriptor ? encodedDescriptor
+            : hasFieldDescriptor ? encodedDescriptor.substring(1) : null;
+        String lookupDescriptor = descriptor == null
+            ? contextualDescriptor : descriptor;
+        MixinSelectorKind actualKind = hasMethodDescriptor
+            ? MixinSelectorKind.METHOD
+            : hasFieldDescriptor ? MixinSelectorKind.FIELD : requestedKind;
+
+        String sourceOwner = sourceOwner(owner);
+        String sourceDescriptor = lookupDescriptor != null && isNamedOwner(owner)
+            ? unmapDescriptor(lookupDescriptor) : lookupDescriptor;
+        String mappedName;
+        if (actualKind == MixinSelectorKind.METHOD) {
+            mappedName = mapMethodName(
+                sourceOwner, selector.member(), sourceDescriptor);
+        } else if (actualKind == MixinSelectorKind.FIELD) {
+            mappedName = mapFieldName(
+                sourceOwner, selector.member(), sourceDescriptor);
+        } else {
+            String methodName = mapMethodName(
+                sourceOwner, selector.member(), sourceDescriptor);
+            String fieldName = mapFieldName(
+                sourceOwner, selector.member(), sourceDescriptor);
+            mappedName = methodName.equals(selector.member()) ? fieldName
+                : fieldName.equals(selector.member()) || fieldName.equals(methodName)
+                    ? methodName : selector.member();
+        }
+        return mappedName;
+    }
+
+    private String mappedSelectorDescriptor(MixinMemberSelector selector) {
+        String descriptor = selector.descriptor();
+        if (descriptor == null) return null;
+        return descriptor.startsWith(":")
+            ? ":" + mapDescriptor(descriptor.substring(1))
+            : mapDescriptor(descriptor);
     }
 
     /** Map short intermediary symbols used by Mixin annotation strings. */
@@ -219,8 +368,13 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
         if (mapped != null) return mapped;
         mapped = uniqueFieldNames.get(value);
         if (mapped != null) return mapped;
-        if (looksLikeDescriptor(value)) return mapDescriptor(value);
-        return remapEmbeddedSymbols(value);
+        // A Mixin member selector can begin with an owner descriptor and then
+        // continue with a method or field symbol, for example
+        // `Lnet/minecraft/class_100;method_2()V`. Mapping only the descriptor
+        // part would leave the member in the intermediary namespace.
+        String mappedDescriptor = looksLikeDescriptor(value)
+            ? mapDescriptor(value) : value;
+        return remapEmbeddedSymbols(mappedDescriptor);
     }
 
     /** Number of unique intermediary symbols that can be mapped globally. */
@@ -436,9 +590,42 @@ public final class IntermediaryNamedMappings implements DescriptorResolver {
         return output;
     }
 
+    private static Map<NameDescriptorKey, String> uniqueMethodNamesByDescriptor(
+        Map<MemberKey, String> mappings) {
+        Map<NameDescriptorKey, String> output = new HashMap<>();
+        Set<NameDescriptorKey> ambiguous = new HashSet<>();
+        for (Map.Entry<MemberKey, String> entry : mappings.entrySet()) {
+            MemberKey member = entry.getKey();
+            NameDescriptorKey key = new NameDescriptorKey(
+                member.name, member.descriptor);
+            String previous = output.putIfAbsent(key, entry.getValue());
+            if (previous != null && !previous.equals(entry.getValue()))
+                ambiguous.add(key);
+        }
+        for (NameDescriptorKey key : ambiguous) output.remove(key);
+        return output;
+    }
+
+    private static Map<OwnerNameKey, Set<String>> ownerNames(
+        Map<MemberKey, String> mappings) {
+        Map<OwnerNameKey, Set<String>> collected = new LinkedHashMap<>();
+        for (Map.Entry<MemberKey, String> entry : mappings.entrySet()) {
+            MemberKey member = entry.getKey();
+            collected.computeIfAbsent(
+                new OwnerNameKey(member.owner, member.name),
+                ignored -> new LinkedHashSet<>()).add(entry.getValue());
+        }
+        Map<OwnerNameKey, Set<String>> result = new LinkedHashMap<>();
+        collected.forEach((key, names) -> result.put(
+            key, Collections.unmodifiableSet(new LinkedHashSet<>(names))));
+        return Collections.unmodifiableMap(result);
+    }
+
     private static <K, V> Map<K, V> immutable(Map<K, V> source) {
         return Collections.unmodifiableMap(new LinkedHashMap<>(source));
     }
 
     private record MemberKey(String owner, String name, String descriptor) { }
+    private record OwnerNameKey(String owner, String name) { }
+    private record NameDescriptorKey(String name, String descriptor) { }
 }

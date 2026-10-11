@@ -15,11 +15,83 @@ if(NOT IS_DIRECTORY "@CPPFM_PACKAGE_ASSET_ROOT@")
         "cppfm package refused: required asset directory is missing: "
         "@CPPFM_PACKAGE_ASSET_ROOT@")
 endif()
+if(IS_SYMLINK "@CPPFM_PACKAGE_ASSET_ROOT@")
+    message(FATAL_ERROR
+        "cppfm package refused: asset root must not be a symlink: "
+        "@CPPFM_PACKAGE_ASSET_ROOT@")
+endif()
 
 if(NOT IS_DIRECTORY "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@")
     message(FATAL_ERROR
         "cppfm package refused: required registry assets are missing: "
         "@CPPFM_PACKAGE_REQUIRED_ASSET_DIR@")
+endif()
+
+if(NOT EXISTS "@CPPFM_PACKAGE_REQUIRED_ASSET_MANIFEST@")
+    message(FATAL_ERROR
+        "cppfm package refused: required embedded-asset manifest is missing: "
+        "@CPPFM_PACKAGE_REQUIRED_ASSET_MANIFEST@")
+endif()
+
+file(STRINGS "@CPPFM_PACKAGE_REQUIRED_ASSET_MANIFEST@"
+     CPPFM_REQUIRED_EMBEDDED_ASSETS)
+set(CPPFM_REQUIRED_EMBEDDED_ASSET_COUNT 0)
+foreach(CPPFM_RELATIVE_ASSET IN LISTS CPPFM_REQUIRED_EMBEDDED_ASSETS)
+    string(STRIP "${CPPFM_RELATIVE_ASSET}" CPPFM_RELATIVE_ASSET)
+    if(CPPFM_RELATIVE_ASSET STREQUAL "" OR
+       CPPFM_RELATIVE_ASSET MATCHES "^#")
+        continue()
+    endif()
+    if(CPPFM_RELATIVE_ASSET MATCHES "(^|/)\\.\\.(/|$)" OR
+       CPPFM_RELATIVE_ASSET MATCHES "^/" OR
+       CPPFM_RELATIVE_ASSET MATCHES ":" OR
+       CPPFM_RELATIVE_ASSET MATCHES "\\\\")
+        message(FATAL_ERROR
+            "cppfm package refused: unsafe asset path in manifest: "
+            "${CPPFM_RELATIVE_ASSET}")
+    endif()
+    math(EXPR CPPFM_REQUIRED_EMBEDDED_ASSET_COUNT
+         "${CPPFM_REQUIRED_EMBEDDED_ASSET_COUNT} + 1")
+    set(CPPFM_REQUIRED_SOURCE_ASSET
+        "@CPPFM_PACKAGE_ASSET_ROOT@/${CPPFM_RELATIVE_ASSET}")
+    if(NOT EXISTS "${CPPFM_REQUIRED_SOURCE_ASSET}" OR
+       IS_DIRECTORY "${CPPFM_REQUIRED_SOURCE_ASSET}" OR
+       IS_SYMLINK "${CPPFM_REQUIRED_SOURCE_ASSET}")
+        message(FATAL_ERROR
+            "cppfm package refused: required embedded asset is missing or not "
+            "a regular source file: ${CPPFM_REQUIRED_SOURCE_ASSET}")
+    endif()
+    set(CPPFM_COMPONENT_PATH "@CPPFM_PACKAGE_ASSET_ROOT@")
+    string(REPLACE "/" ";" CPPFM_ASSET_COMPONENTS
+           "${CPPFM_RELATIVE_ASSET}")
+    list(LENGTH CPPFM_ASSET_COMPONENTS CPPFM_ASSET_COMPONENT_COUNT)
+    math(EXPR CPPFM_ASSET_PARENT_COUNT "${CPPFM_ASSET_COMPONENT_COUNT} - 1")
+    if(CPPFM_ASSET_PARENT_COUNT GREATER 0)
+        foreach(CPPFM_COMPONENT_INDEX RANGE 0 ${CPPFM_ASSET_PARENT_COUNT})
+            if(CPPFM_COMPONENT_INDEX EQUAL CPPFM_ASSET_PARENT_COUNT)
+                break()
+            endif()
+            list(GET CPPFM_ASSET_COMPONENTS ${CPPFM_COMPONENT_INDEX}
+                 CPPFM_ASSET_COMPONENT)
+            set(CPPFM_COMPONENT_PATH
+                "${CPPFM_COMPONENT_PATH}/${CPPFM_ASSET_COMPONENT}")
+            if(IS_SYMLINK "${CPPFM_COMPONENT_PATH}")
+                message(FATAL_ERROR
+                    "cppfm package refused: asset path has a symlinked parent: "
+                    "${CPPFM_COMPONENT_PATH}")
+            endif()
+        endforeach()
+    endif()
+    file(SIZE "${CPPFM_REQUIRED_SOURCE_ASSET}" CPPFM_REQUIRED_SOURCE_SIZE)
+    if(CPPFM_REQUIRED_SOURCE_SIZE EQUAL 0)
+        message(FATAL_ERROR
+            "cppfm package refused: required embedded asset is empty: "
+            "${CPPFM_REQUIRED_SOURCE_ASSET}")
+    endif()
+endforeach()
+if(CPPFM_REQUIRED_EMBEDDED_ASSET_COUNT EQUAL 0)
+    message(FATAL_ERROR
+        "cppfm package refused: required embedded-asset manifest has no paths")
 endif()
 
 file(GLOB_RECURSE CPPFM_REQUIRED_REGISTRY_FILES

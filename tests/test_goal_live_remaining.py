@@ -132,11 +132,19 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         # produce both damage and knockback wire consequences.
         before_spawn = len(client.spawn_entity_records)
         client.command("summon minecraft:pig 51 -60 50", "Summoned minecraft:pig")
-        pig_records = client.spawn_entity_records[before_spawn:]
+        spawned_records = client.spawn_entity_records[before_spawn:]
+        pig_records = [record for record in spawned_records
+                       if record[1] == 94]
         if not pig_records:
-            raise AssertionError("summon pig emitted no SpawnEntity")
-        pig_id = pig_records[-1][0]
-        attack_packets = client.use_entity(pig_id, mouse=1)
+            raise AssertionError(
+                "summon pig emitted no pig SpawnEntity: "
+                f"observed={spawned_records}"
+            )
+        pig_id, pig_type = pig_records[-1]
+        attack_started = time.monotonic()
+        attack_packets = client.use_entity(
+            pig_id, mouse=1, response_timeout=5.0)
+        attack_response_seconds = round(time.monotonic() - attack_started, 3)
         attack_ids = [packet_id for packet_id, _ in attack_packets]
         damage_ids = [parse_entity_id(payload) for packet_id, payload in attack_packets
                       if packet_id in (PLAY_DAMAGE_EVENT, PLAY_HURT_ANIMATION)]
@@ -151,6 +159,8 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             )
         observations["pvp"] = {
             "target_entity": pig_id,
+            "target_entity_type": pig_type,
+            "response_seconds": attack_response_seconds,
             "packet_ids": attack_ids,
             "damage_entity_ids": damage_ids,
             "hurt_entity_ids": hurt_ids,

@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.event.lifecycle.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.Entity;
@@ -17,12 +16,18 @@ public final class ServerEntityEvents {
         void onChange(LivingEntity livingEntity, EquipmentSlot equipmentSlot,
                       ItemStack previousStack, ItemStack currentStack);
     }
-    public static final Event<Load> LOAD = new Event<>(CppModRuntime::registerLegacyEntityLoad, Load.class, callbacks -> (entity, world) -> { for (Load callback : callbacks) callback.onLoad(entity, world); });
-    public static final Event<Unload> UNLOAD = new Event<>(CppModRuntime::registerLegacyEntityUnload, Unload.class, callbacks -> (entity, world) -> { for (Unload callback : callbacks) callback.onUnload(entity, world); });
+    public static final Event<Load> ENTITY_LOAD = EventFactory.createArrayBacked(
+        Load.class, callbacks -> (entity, world) -> {
+            for (Load callback : callbacks) callback.onLoad(entity, world);
+        });
+    public static final Event<Unload> ENTITY_UNLOAD = EventFactory.createArrayBacked(
+        Unload.class, callbacks -> (entity, world) -> {
+            for (Unload callback : callbacks) callback.onUnload(entity, world);
+        });
     /** Official Fabric name; LOAD remains as a source-compatible alias. */
-    public static final Event<Load> ENTITY_LOAD = LOAD;
+    public static final Event<Load> LOAD = ENTITY_LOAD;
     /** Official Fabric name; UNLOAD remains as a source-compatible alias. */
-    public static final Event<Unload> ENTITY_UNLOAD = UNLOAD;
+    public static final Event<Unload> UNLOAD = ENTITY_UNLOAD;
     public static final Event<EquipmentChange> EQUIPMENT_CHANGE = EventFactory.createArrayBacked(
         EquipmentChange.class, callbacks -> (entity, slot, previous, current) -> {
             for (EquipmentChange callback : callbacks)

@@ -30,7 +30,7 @@ int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
     std::lock_guard playerLock(p.stateMtx);
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
-        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+        if (p.inv[i].empty()) continue;
         total += EnchantmentHelper::getProtectionEPF(ds, p.inv[i]);
     }
     if (total > 20) total = 20;
@@ -52,7 +52,6 @@ int CombatManager::computeEPF(const DamageSource& ds, const MobEntity& m) {
 void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
     std::shared_ptr<Connection> connection;
     WriteBuffer attributes;
-    std::int8_t dimension = 0;
     bool sendUpdate = false;
     {
         std::lock_guard playerLock(p.stateMtx);
@@ -60,7 +59,7 @@ void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
         int toughness = 0;
         float kbResist = 0.f;
         for (int i = 5; i <= 8; ++i) {
-            if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+            if (p.inv[i].empty()) continue;
             const std::string n = p.inv[i].name();
             if (n.find("diamond_") != std::string::npos) toughness += 2;
             else if (n.find("netherite_") != std::string::npos) {
@@ -73,21 +72,18 @@ void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
         p.attributes.syncArmor(armor, toughness, kbResist);
         if (dirty && p.inPlay && p.conn) {
             connection = p.conn;
-            dimension = p.dimension;
             p.attributes.writeUpdate(attributes, p.entityId);
             sendUpdate = true;
         }
     }
 
     // Attribute serialization is a model snapshot; transport and recipient
-    // enumeration must happen after the Player lock is released.  The
-    // shared_ptr keeps the selected connection alive across the send, while
-    // the dimension is the value that was authoritative for this update.
+    // enumeration must happen after the Player lock is released. Other
+    // clients receive player-ID packets only when they track this player.
     if (!sendUpdate || !connection) return;
     connection->trySendPacket(proto::pl::sc::UpdateAttributes, attributes);
-    srv.broadcastPacketExceptInDimension(dimension, &p,
-                                         proto::pl::sc::UpdateAttributes,
-                                         attributes);
+    srv.broadcastTrackedPlayerPacket(
+        p, proto::pl::sc::UpdateAttributes, attributes);
 }
 
 static ItemStack* shieldStackFor(Player& p) {
@@ -100,7 +96,9 @@ static ItemStack* shieldStackFor(Player& p) {
     return nullptr;
 }
 bool CombatManager::tryShieldBlock(GameServer& srv, Player& victim, const DamageSource& src,
-                                   double attackerX, double attackerZ, bool attackerWeaponIsAxe) {
+                                   double attackerX, double attackerZ,
+                                   bool attackerWeaponIsAxe,
+                                   const float baseDamage) {
     if (src.bypassShield || src.isMagic()) return false; // sonic/magic pierce (guardian beam direct only)
     std::int8_t dimension = 0;
     std::int32_t entityId = 0;
@@ -133,6 +131,7 @@ bool CombatManager::tryShieldBlock(GameServer& srv, Player& victim, const Damage
         attackerWeaponIsAxe ? "minecraft:item.shield.break"
                             : "minecraft:item.shield.block",
         1.f, 1.f, GameServer::SoundSource::Player);
+    if (blocked) srv.notifyShieldBlockedDamage(victim, baseDamage, src);
     return blocked;
 }
 void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
@@ -186,8 +185,7 @@ void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
             auto& piece = victim.inv[i];
             if (!piece.empty() && piece.itemId == expected.itemId &&
                 piece.count == expected.count &&
-                piece.components == expected.components &&
-                piece.removedComponents == expected.removedComponents) {
+                piece.sameItemData(expected)) {
                 if (DamageComponent::applyDamage(piece, 2))
                     piece = ItemStack::air();
             }

@@ -332,6 +332,10 @@ bool TestClient::join(const std::string& name) {
         catch (const std::exception& e) { lastError_ = e.what(); return false; }
         ReadBuffer in(p.body);
         p.id = in.u8();
+        if (p.id == proto::pl::sc::Disconnect) {
+            lastError_ = "kicked at play-enter";
+            return false;
+        }
         if (p.id == proto::pl::sc::KeepAlive) respondKeepAlive(in.i64());
         handleIncoming(p.id, std::vector<std::uint8_t>(in.p + in.off, in.p + in.len));
         gotLogin = count(proto::pl::sc::Login) > 0;
@@ -396,6 +400,10 @@ void TestClient::handleIncoming(std::uint8_t pid, std::vector<std::uint8_t> body
             }
             confirmTeleport(tid);
             sendPlayerLoadedOnce();
+        } else if (p.id == proto::pl::sc::ChunkBatchFinished) {
+            WriteBuffer response;
+            response.f32(8.0f);
+            sendPacketNoexcept(proto::pl::cs::ChunkBatchReceived, response);
         } else if (p.id == proto::pl::sc::KeepAlive) {
             // already responded by caller for sync path; safe to re-respond here
         }
@@ -415,8 +423,17 @@ void TestClient::filePacket(Packet p) {
             ReadBuffer in(p.body);
             const std::int32_t cx = in.i32(), cz = in.i32();
             chunkCoords_.emplace_back(cx, cz);
+            activeChunkCoords_.emplace(cx, cz);
             if (cx == 0 && cz == 0) counters_.chunk00Received = true;
             rawChunks_.push_back(p.body);          // complete body (helpers parse header)
+            break;
+        }
+        case proto::pl::sc::ForgetLevelChunk: {
+            ReadBuffer in(p.body);
+            const std::int32_t cz = in.i32();
+            const std::int32_t cx = in.i32();
+            activeChunkCoords_.erase({cx, cz});
+            ++forgottenChunkCount_;
             break;
         }
         case proto::pl::sc::BlockUpdate: {
@@ -982,6 +999,22 @@ std::vector<TestClient::BlockUpd> TestClient::blockUpdatesSnapshot() const {
 std::vector<std::pair<std::int32_t, std::int32_t>> TestClient::chunkCoordsSnapshot() const {
     std::lock_guard lk(mtx_);
     return chunkCoords_;
+}
+
+std::vector<std::pair<std::int32_t, std::int32_t>>
+TestClient::activeChunkCoordsSnapshot() const {
+    std::lock_guard lk(mtx_);
+    return {activeChunkCoords_.begin(), activeChunkCoords_.end()};
+}
+
+std::size_t TestClient::activeChunkCount() const {
+    std::lock_guard lk(mtx_);
+    return activeChunkCoords_.size();
+}
+
+std::size_t TestClient::forgottenChunkCount() const {
+    std::lock_guard lk(mtx_);
+    return forgottenChunkCount_;
 }
 
 std::vector<std::vector<std::uint8_t>> TestClient::rawChunksSnapshot() const {

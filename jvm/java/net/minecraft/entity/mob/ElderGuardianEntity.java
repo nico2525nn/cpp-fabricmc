@@ -6,6 +6,14 @@ import net.minecraft.world.World;
 
 /** Elder guardian ABI referenced by Carpet's mob mixin set. */
 public class ElderGuardianEntity extends HostileEntity {
+    public static ElderGuardianEntity createNativeWrapper(long handle) {
+        String typeId = net.minecraft.util.NativeAccess.entityType(handle);
+        return new ElderGuardianEntity(handle,
+            net.minecraft.world.World.of(
+                net.minecraft.util.NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
+
     public ElderGuardianEntity(EntityType<?> type, World world) { super(type, world); }
     protected ElderGuardianEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
     protected ElderGuardianEntity() { super(); }

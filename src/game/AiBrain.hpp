@@ -6,9 +6,11 @@
 #pragma once
 #include <algorithm>
 #include <atomic>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <vector>
 #include "Ai.hpp"
 #include "Entities.hpp"
@@ -17,6 +19,7 @@ namespace cppfm {
 
 class GameServer;
 struct Player;
+namespace jvm { class JvmRuntime; }
 
 // GameServer side-effect APIs use this boundary while a mob brain is being
 // evaluated.  The tick loop installs both the lock and its owning Mob in a
@@ -34,6 +37,10 @@ struct MobStateLockContext {
 bool runWithoutMobStateLock(
     const MobEntity& expectedMob,
     const std::function<void()>& operation);
+// Spawn-handle rollback can block on the JNI handle table. Release the active
+// AI source-mob lock before invalidating that handle.
+void cancelMobSpawnOutsideMobStateLock(
+    jvm::JvmRuntime& runtime, MobEntity& spawnedMob) noexcept;
 
 // Compatibility boundary for server APIs whose existing signature does not
 // carry a source Mob.  New AI code must use the source-aware overload above.
@@ -79,11 +86,15 @@ struct AiContext {
     // removal from invalidating the raw compatibility pointers above.
     std::vector<std::shared_ptr<Player>> playerOwners;
     std::vector<AiPlayerSnapshot> playerViews;
+    std::optional<std::size_t> nearestPlayerViewIndex;
+    std::optional<std::size_t> temptingPlayerViewIndex;
     // Damage can arrive from a session/network callback while the game tick
     // is evaluating goals.  Keep the small cross-thread memory fields atomic;
     // the rest of the context remains tick-owned state.
-    std::atomic<std::int32_t> lastHurtByEntityId{-1};
+    std::atomic<std::int32_t> lastPlayerHurtByEntityId{-1};
     std::atomic<std::int64_t> lastHurtTick{-1000};
+    std::atomic<std::int64_t> lastPlayerHurtTick{-1000};
+    std::atomic<std::int32_t> lastPlayerHurtLootingLevel{0};
     bool dangerDetectedRecently = false;
     // active path
     std::vector<ai::PathNode> path;
@@ -95,6 +106,8 @@ struct AiContext {
         temptingPlayer = nullptr;
         playerOwners.clear();
         playerViews.clear();
+        nearestPlayerViewIndex.reset();
+        temptingPlayerViewIndex.reset();
         dangerDetectedRecently = false;
     }
 };

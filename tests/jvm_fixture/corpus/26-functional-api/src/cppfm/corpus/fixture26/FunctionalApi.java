@@ -56,6 +56,10 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
     private static final AtomicBoolean COMMAND_EXECUTED = new AtomicBoolean();
     private static final AtomicBoolean TICK_OK = new AtomicBoolean();
     private static final AtomicBoolean WORLD_UNLOAD_OK = new AtomicBoolean();
+    private static final AtomicInteger WORLD_LOAD_COUNT = new AtomicInteger();
+    private static final AtomicInteger WORLD_LOAD_MASK = new AtomicInteger();
+    private static final AtomicInteger WORLD_UNLOAD_COUNT = new AtomicInteger();
+    private static final AtomicInteger WORLD_UNLOAD_MASK = new AtomicInteger();
     private static final AtomicBoolean SAVE_CALLBACK_SEEN = new AtomicBoolean();
     private static final AtomicBoolean FIRST_TICK_HANDLED = new AtomicBoolean();
     private static final AtomicInteger TICK_COUNT = new AtomicInteger();
@@ -83,9 +87,8 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
             "FUNCTIONAL_FIXTURE status=DIAGNOSTIC phase=" + phase + " detail=" + detail);
     }
 
-    // CppModRuntime tears down the JNI native bridge before invoking the final
-    // lifecycle callbacks. Keep shutdown evidence on the Java-owned stream so
-    // the process harness can still collect it.
+    // Keep shutdown evidence on the Java-owned stream so the process harness
+    // can collect it even after C++ has fenced ordinary bridge calls.
     private static void shutdownResult(String phase, boolean ok) {
         System.out.println("FUNCTIONAL_FIXTURE status=" + (ok ? "PASS" : "FAIL")
             + " phase=" + phase);
@@ -112,10 +115,17 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
 
     private static void registerLifecycleCallbacks() {
         ServerWorldEvents.LOAD.register((server, world) -> {
-            boolean ok = server != null && world != null && world.getServer() == server
-                && OVERWORLD_ID.equals(world.getRegistryKey().getValue());
-            WORLD_LOAD_OK.set(ok);
-            result("world-load", ok);
+            int bit = worldDimensionBit(world);
+            boolean valid = server != null && world != null && world.getServer() == server
+                && bit != 0;
+            if (valid) WORLD_LOAD_MASK.getAndUpdate(mask -> mask | bit);
+            int count = WORLD_LOAD_COUNT.incrementAndGet();
+            if (count == 3) {
+                boolean complete = valid && WORLD_LOAD_MASK.get() == 7;
+                WORLD_LOAD_OK.set(complete);
+                result("world-load", complete,
+                    "count=" + count + ";mask=" + WORLD_LOAD_MASK.get());
+            }
         });
 
         ServerLifecycleEvents.SERVER_STARTED.register(FunctionalApi::onServerStarted);
@@ -124,7 +134,10 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
             int observed = TICK_COUNT.incrementAndGet();
             if (!FIRST_TICK_HANDLED.compareAndSet(false, true)) return;
 
-            boolean tickOk = server != null && observed == 1 && server.getTicks() == 1;
+            // Registration can happen after the native tick loop has already
+            // advanced; only assert that the event carries a live server with
+            // a real tick value, not that this callback is the server's tick 1.
+            boolean tickOk = server != null && observed == 1 && server.getTicks() > 0;
             TICK_OK.set(tickOk);
             result("tick-counter", tickOk, "count=" + observed + ";serverTick="
                 + (server == null ? -1 : server.getTicks()));
@@ -151,10 +164,16 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
         });
 
         ServerWorldEvents.UNLOAD.register((server, world) -> {
-            boolean ok = server != null && world != null && WORLD_LOAD_OK.get()
-                && OVERWORLD_ID.equals(world.getRegistryKey().getValue());
-            WORLD_UNLOAD_OK.set(ok);
-            shutdownResult("world-unload", ok);
+            int bit = worldDimensionBit(world);
+            boolean valid = server != null && world != null && WORLD_LOAD_OK.get()
+                && bit != 0;
+            if (valid) WORLD_UNLOAD_MASK.getAndUpdate(mask -> mask | bit);
+            int count = WORLD_UNLOAD_COUNT.incrementAndGet();
+            if (count == 3) {
+                boolean complete = valid && WORLD_UNLOAD_MASK.get() == 7;
+                WORLD_UNLOAD_OK.set(complete);
+                shutdownResult("world-unload", complete);
+            }
         });
 
         ServerLifecycleEvents.BEFORE_SAVE.register((server, flush, skipErrors) -> {
@@ -180,6 +199,16 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
         if (world != null) probeWorldState(world);
         else result("world-state-read-write", false, "overworld-unavailable");
         probeNbtRoundTrip();
+    }
+
+    private static int worldDimensionBit(ServerWorld world) {
+        if (world == null || world.getRegistryKey() == null) return 0;
+        return switch (world.getRegistryKey().getValue().toString()) {
+            case "minecraft:overworld" -> 1;
+            case "minecraft:the_nether" -> 2;
+            case "minecraft:the_end" -> 4;
+            default -> 0;
+        };
     }
 
     private static void registerCommand() {
@@ -259,7 +288,10 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
                 && Registries.ITEM.get(ITEM_ID) == item
                 && BLOCK_ID.equals(Registries.BLOCK.getId(block))
                 && ITEM_ID.equals(Registries.ITEM.getId(item))
-                && Registries.BLOCK.getRawId(block) >= 0
+                && Registries.BLOCK.getRawId(block) >= 1095
+                && Registries.BLOCK.getEntry(Registries.BLOCK.getRawId(block))
+                    .map(entry -> entry.value() == block && entry.matchesId(BLOCK_ID))
+                    .orElse(false)
                 && vanillaBlockLookupIsConsistent()
                 && blockEntry
                 && itemEntry;
@@ -272,8 +304,28 @@ public final class FunctionalApi implements DedicatedServerModInitializer {
 
     private static boolean vanillaBlockLookupIsConsistent() {
         Block vanillaAir = Registries.BLOCK.get(Identifier.ofVanilla("air"));
+        Block vanillaWhiteBed = Registries.BLOCK.get(
+            Identifier.ofVanilla("white_bed"));
+        var firstId = Registries.BLOCK.getIds().iterator();
+        var firstValue = Registries.BLOCK.iterator();
+        int nativeBlockCount = 1095;
+        long blockStreamCount = Registries.BLOCK.stream().count();
+        boolean whiteBedEntry = Registries.BLOCK.getEntry(110)
+            .map(entry -> entry.value() == vanillaWhiteBed &&
+                          entry.matchesId(Identifier.ofVanilla("white_bed")))
+            .orElse(false);
         return vanillaAir != null
-            && Identifier.ofVanilla("air").equals(Registries.BLOCK.getId(vanillaAir));
+            && vanillaWhiteBed != null
+            && firstId.hasNext()
+            && Identifier.ofVanilla("air").equals(firstId.next())
+            && firstValue.hasNext()
+            && firstValue.next() == vanillaAir
+            && Registries.BLOCK.getRawId(vanillaAir) == 0
+            && Registries.BLOCK.getRawId(vanillaWhiteBed) == 110
+            && whiteBedEntry
+            && Registries.BLOCK.size() >= nativeBlockCount
+            && Registries.BLOCK.entrySet().size() == Registries.BLOCK.size()
+            && blockStreamCount == Registries.BLOCK.size();
     }
 
     private static void probeWorldState(ServerWorld world) {

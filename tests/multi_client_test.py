@@ -48,6 +48,7 @@ class Bot:
         self.updates = []
         self.chunks = set()
         self.confirmed = False
+        self.teleports = []
         self.infos = []
         self.spawns = []
         self.moves = []
@@ -57,6 +58,7 @@ class Bot:
         self.disconnects = 0
         self.last_move = 0.0
         self.position = (0.5, -60.0, 0.5)
+        self.server_position = self.position
 
     def move_to(self, x, y, z, on_ground=True):
         """Send a legal sequence of position packets to an integration target."""
@@ -72,6 +74,7 @@ class Bot:
                 0x1c, struct.pack(">ddd", *position) +
                 bytes([1 if step == steps and on_ground else 0]))
         self.position = (x, y, z)
+        self.server_position = (x, y, z)
 
     def pump(self, seconds=1.0, move=True):
         t_end = time.monotonic() + seconds
@@ -88,6 +91,10 @@ class Bot:
                 return
             elif pid == 0x42:
                 bio = io.BytesIO(data); tid, _ = read_varint(bio)
+                if len(data) >= bio.tell() + 24:
+                    position = struct.unpack(">ddd", bio.read(24))
+                    self.teleports.append((tid, position))
+                    self.server_position = position
                 self.confirmed = True
                 self.c.send_packet_raw(0x00, mcproto.write_varint(tid))
             elif pid == 0x0c:
@@ -143,6 +150,11 @@ def main():
         port = args.port if args.port != 25577 else free_port()
         host = "127.0.0.1"
         world_dir = tempfile.mkdtemp(prefix=f"cppfm-multi-client-{os.getpid()}-")
+        with open(os.path.join(world_dir, "ops.json"), "w",
+                  encoding="utf-8") as ops_file:
+            ops_file.write(
+                '[{"name":"AliceBot","level":4,'
+                '"bypassesPlayerLimit":false}]')
         print(f"[multi_client] spawning {binary} --port {port}")
         cwd = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
         environment = os.environ.copy()
@@ -150,6 +162,7 @@ def main():
         try:
             proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
                                      "--world-dir", world_dir, "--level-type", "flat",
+                                     "--spawn-protection=0",
                                      "--online-mode=false", "--enforce-secure-profile=false"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
                                     env=environment,
@@ -199,7 +212,8 @@ def main():
         # entity tracker yaw/pitch
         a.c.send_packet_raw(0x1d, struct.pack(">ddd", 9.5, -60.0, 8.5) + struct.pack(">ff", 45.0, 10.0) + b"\x01")
         a.position = (9.5, -60.0, 8.5)
-        time.sleep(0.7)
+        a.server_position = a.position
+        a.pump(0.5, move=False)
         b.pump(0.5); c.pump(0.5)
         check(len(b.moves) >= 1, f"B sees A's movement tracker yaw/pitch ({len(b.moves)} pkts)")
         check(len(c.moves) >= 1, f"C sees A's movement tracker yaw/pitch ({len(c.moves)} pkts)")
@@ -223,18 +237,21 @@ def main():
               f"A drag mode5 ContainerClick 0x10 no-kick (disconnects {a.disconnects}, "
               f"keepAlives {a.keepalives}, containerUpd {len(a.container_updates)})")
 
-        # A digs a distinctive block outside the default spawn-protection radius;
-        # all clients should get the resulting update.
-        dig_x, dig_y, dig_z = 32, -61, 32
-        a.move_to(32.5, -60.0, 32.5)
-        time.sleep(0.2)
-        a.pump(0.2, move=False)
+        # Exercise authoritative block-change broadcast at the client's last
+        # confirmed area. A deterministic server command avoids coupling this
+        # network assertion to the duration of a survival START-dig packet.
+        dig_x = math.floor(a.server_position[0])
+        dig_y = -61
+        dig_z = math.floor(a.server_position[2])
+        if a.teleports:
+            print(f"  movement corrected to {a.teleports[-1][1]} before dig")
         def pack_pos(x, y, z):
             return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
-        a.c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(dig_x, dig_y, dig_z) +
-                            bytes([1]) + mcproto.write_varint(99))
-        time.sleep(0.6)
-        a.pump(0.5); b.pump(0.5); c.pump(0.5)
+        command = f"/setblock {dig_x} {dig_y} {dig_z} minecraft:stone"
+        command_payload = (mcproto.pack_string(command) +
+                           struct.pack(">qq", int(time.time() * 1000), 0) +
+                           b"\x00" + mcproto.write_varint(0) + b"\x00\x00\x00")
+        a.c.send_packet_raw(0x07, command_payload)
 
         def upd_pos(d):
             bio = io.BytesIO(d)
@@ -248,10 +265,26 @@ def main():
         got_a = [upd_pos(d) for d in a.updates]
         got_b = [upd_pos(d) for d in b.updates]
         got_c = [upd_pos(d) for d in c.updates]
-        expected_dig = (dig_x, dig_y, dig_z, 0)
-        check(expected_dig in got_a, f"A received own dig update {got_a[:2]}")
-        check(expected_dig in got_b, f"B received A's dig update {got_b[:2]}")
-        check(expected_dig in got_c, f"C received A's dig update {got_c[:2]}")
+        def wait_for_block_update(bot, timeout=3.0):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                for update in (upd_pos(data) for data in bot.updates):
+                    if update[:3] == (dig_x, dig_y, dig_z):
+                        return update
+                bot.pump(min(0.1, deadline - time.monotonic()), move=False)
+            return next((update for update in (upd_pos(data)
+                                                for data in bot.updates)
+                         if update[:3] == (dig_x, dig_y, dig_z)), None)
+
+        expected_update = wait_for_block_update(a)
+        check(expected_update is not None,
+              f"A received server block update {got_a[:2]}")
+        if expected_update is None:
+            expected_update = (dig_x, dig_y, dig_z, -1)
+        check(wait_for_block_update(b) == expected_update,
+              f"B received A's block update {got_b[:2]}")
+        check(wait_for_block_update(c) == expected_update,
+              f"C received A's block update {got_c[:2]}")
 
         # A sends chat; B and C must receive it
         a.c.send_packet_raw(0x07, mcproto.pack_string("hi bob charlie") +

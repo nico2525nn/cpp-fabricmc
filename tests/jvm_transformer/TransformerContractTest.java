@@ -49,6 +49,8 @@ public final class TransformerContractTest {
         assert ((Integer) type.getMethod("constant").invoke(instance)) == 7;
 
         phase7Cases();
+        selectorSyntaxCase();
+        selectorParserEdgeCases();
         accessorInflectionCase();
 
         URL[] empty = new URL[0];
@@ -79,6 +81,230 @@ public final class TransformerContractTest {
         assert ((Integer) type.getMethod("getROOT").invoke(instance)) == 17;
         assert "https://example.invalid".equals(type.getMethod("getURL").invoke(instance));
         assert ((Integer) type.getMethod("getXValue").invoke(instance)) == 23;
+    }
+
+    private static void selectorSyntaxCase() throws Exception {
+        byte[] target = resource("cppfm/transformer_fixture/SelectorTarget.class");
+        byte[] mixin = resource("cppfm/transformer_fixture/SelectorMixin.class");
+        MixinDispatch.clear();
+        MixinClassTransformer transformer = new MixinClassTransformer(true);
+        transformer.registerMixin("cppfm.transformer_fixture.SelectorMixin", mixin);
+        TransformContext context = new TransformContext(
+            "cppfm.transformer_fixture.SelectorTarget", target, true);
+        byte[] transformed = transformer.transform(
+            "cppfm.transformer_fixture.SelectorTarget", target, context);
+        assert !java.util.Arrays.equals(target, transformed) : context.getDiagnostics();
+        assert context.getChangedMethods().contains("run()I");
+        assert context.getChangedMethods().contains("run(I)I");
+
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.SelectorTarget", transformed);
+        Object instance = type.getConstructor().newInstance();
+        PrintStream savedOut = System.out;
+        ByteArrayOutputStream noArgumentCapture = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(noArgumentCapture));
+        try {
+            assert ((Integer) type.getMethod("run").invoke(instance)) == 4;
+        } finally {
+            System.setOut(savedOut);
+        }
+        ByteArrayOutputStream integerArgumentCapture = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(integerArgumentCapture));
+        try {
+            assert ((Integer) type.getMethod("run", int.class).invoke(instance, 4)) == 5;
+        } finally {
+            System.setOut(savedOut);
+        }
+        String noArgumentLog = noArgumentCapture.toString(
+            java.nio.charset.StandardCharsets.UTF_8);
+        String integerArgumentLog = integerArgumentCapture.toString(
+            java.nio.charset.StandardCharsets.UTF_8);
+        assert occurrences(noArgumentLog, "QUANTIFIER_HOOK") == 1 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "QUANTIFIER_HOOK") == 1 : integerArgumentLog;
+        assert occurrences(integerArgumentLog, "DOTTED_OWNER_HOOK") == 1 : integerArgumentLog;
+        assert occurrences(noArgumentLog, "FIRST_MATCH_HOOK") == 1 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "FIRST_MATCH_HOOK") == 0 : integerArgumentLog;
+        assert occurrences(noArgumentLog, "DEFAULT_MATCH_HOOK") == 1 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "DEFAULT_MATCH_HOOK") == 0 : integerArgumentLog;
+        assert occurrences(noArgumentLog, "DESCRIPTOR_ONLY_HOOK") == 0 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "DESCRIPTOR_ONLY_HOOK") == 1 : integerArgumentLog;
+        assert occurrences(noArgumentLog, "REDIRECT_HOOK") == 1 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "REDIRECT_HOOK") == 0 : integerArgumentLog;
+        assert occurrences(noArgumentLog, "UNBOUNDED_RANGE_HOOK") == 1 : noArgumentLog;
+        assert occurrences(integerArgumentLog, "UNBOUNDED_RANGE_HOOK") == 1 : integerArgumentLog;
+
+        byte[] incompatibleMixin = resource(
+            "cppfm/transformer_fixture/SelectorArgumentMixin.class");
+        MixinClassTransformer incompatible = new MixinClassTransformer(true);
+        incompatible.registerMixin(
+            "cppfm.transformer_fixture.SelectorArgumentMixin", incompatibleMixin);
+        TransformContext incompatibleContext = new TransformContext(
+            "cppfm.transformer_fixture.SelectorTarget", target, true);
+        boolean rejectedLaterOverloadFallback = false;
+        try {
+            incompatible.transform("cppfm.transformer_fixture.SelectorTarget",
+                target, incompatibleContext);
+        } catch (TransformException expected) {
+            assert expected.getMessage().contains(
+                    "handler requests local capture without locals") &&
+                expected.getMessage().contains(
+                    "mustNotSelectLaterCompatibleOverload")
+                : expected.getMessage();
+            rejectedLaterOverloadFallback = true;
+        }
+        assert rejectedLaterOverloadFallback
+            : "default selector must not skip the first overload to fit handler arguments";
+        assert incompatibleContext.getChangedMethods().isEmpty();
+
+        selectorStaticEligibilityCase();
+
+        byte[] invalidMixin = resource(
+            "cppfm/transformer_fixture/SelectorLimitMixin.class");
+        MixinClassTransformer limited = new MixinClassTransformer(true);
+        limited.registerMixin("cppfm.transformer_fixture.SelectorLimitMixin",
+            invalidMixin);
+        TransformContext limitedContext = new TransformContext(
+            "cppfm.transformer_fixture.SelectorTarget", target, true);
+        boolean rejectedInvalidMatchCount = false;
+        try {
+            limited.transform("cppfm.transformer_fixture.SelectorTarget",
+                target, limitedContext);
+        } catch (TransformException expected) {
+            rejectedInvalidMatchCount = true;
+        }
+        assert rejectedInvalidMatchCount;
+        assert limitedContext.getChangedMethods().isEmpty();
+    }
+
+    private static void selectorParserEdgeCases() {
+        var unnamed = cppfm.transform.MixinMemberSelector.parse("*(I)I");
+        assert unnamed.member().isEmpty();
+        assert "(I)I".equals(unnamed.descriptor());
+
+        var defaultPackageOwner = cppfm.transform.MixinMemberSelector.parse(
+            "SelectorTarget.run()I");
+        assert defaultPackageOwner.hasOwner();
+        assert "SelectorTarget".equals(defaultPackageOwner.owner());
+        assert "run".equals(defaultPackageOwner.member());
+
+        var internalOwner = cppfm.transform.MixinMemberSelector.parse(
+            "Lexample/Target;run()I");
+        assert "example/Target".equals(internalOwner.owner());
+        assert "run".equals(internalOwner.member());
+
+        var spaced = cppfm.transform.MixinMemberSelector.parse(
+            "  run { 1 } ( I ) I  ");
+        assert "run".equals(spaced.member());
+        assert spaced.hasQuantifier() && spaced.maximumMatches() == 1;
+        assert "(I)I".equals(spaced.descriptor());
+
+        var unbounded = cppfm.transform.MixinMemberSelector.parse("run{,}");
+        assert unbounded.hasQuantifier();
+        assert unbounded.minimumMatches() == 0;
+        assert unbounded.maximumMatches() == Integer.MAX_VALUE;
+
+        boolean rejectedMalformedLeadingL = false;
+        try {
+            cppfm.transform.MixinMemberSelector.parse(
+                "Lexample.Target.run()I");
+        } catch (TransformException expected) {
+            rejectedMalformedLeadingL = true;
+        }
+        assert rejectedMalformedLeadingL
+            : "a dotted owner beginning with L must use the formal Lowner; form";
+
+        for (String zeroMaximum : List.of("run{0}", "run{,0}", "run{0,0}")) {
+            boolean rejected = false;
+            try {
+                cppfm.transform.MixinMemberSelector.parse(zeroMaximum);
+            } catch (TransformException expected) {
+                rejected = expected.getMessage().contains("must allow at least one match");
+            }
+            assert rejected : "zero maximum must be rejected: " + zeroMaximum;
+        }
+
+        for (String malformed : List.of("run{}", "run{bad}", "run{1")) {
+            boolean rejected = false;
+            try {
+                cppfm.transform.MixinMemberSelector.parse(malformed);
+            } catch (TransformException expected) {
+                rejected = expected.getMessage().contains("quantifier");
+            }
+            assert rejected : "malformed selector quantifier must be rejected: " + malformed;
+        }
+    }
+
+    private static void selectorStaticEligibilityCase() throws Exception {
+        byte[] target = resource(
+            "cppfm/transformer_fixture/SelectorStaticTarget.class");
+        byte[] mixin = resource(
+            "cppfm/transformer_fixture/SelectorStaticMixin.class");
+        MixinClassTransformer transformer = new MixinClassTransformer(true);
+        transformer.registerMixin(
+            "cppfm.transformer_fixture.SelectorStaticMixin", mixin);
+        TransformContext context = new TransformContext(
+            "cppfm.transformer_fixture.SelectorStaticTarget", target, true);
+        byte[] transformed = transformer.transform(
+            "cppfm.transformer_fixture.SelectorStaticTarget", target, context);
+        assert context.getChangedMethods().contains("run(I)V")
+            : context.getChangedMethods();
+        assert !context.getChangedMethods().contains("run()V")
+            : context.getChangedMethods();
+
+        Class<?> type = new ByteArrayLoader().define(
+            "cppfm.transformer_fixture.SelectorStaticTarget", transformed);
+        Object instance = type.getConstructor().newInstance();
+        PrintStream savedOut = System.out;
+        ByteArrayOutputStream captured = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(captured));
+        try {
+            type.getMethod("run").invoke(null);
+            type.getMethod("run", int.class).invoke(instance, 7);
+        } finally {
+            System.setOut(savedOut);
+        }
+        String log = captured.toString(java.nio.charset.StandardCharsets.UTF_8);
+        assert occurrences(log, "INSTANCE_SELECTOR_HOOK") == 1 : log;
+
+        byte[] staticOnlyTarget = resource(
+            "cppfm/transformer_fixture/SelectorStaticOnlyTarget.class");
+        byte[] staticOnlyMixin = resource(
+            "cppfm/transformer_fixture/SelectorStaticOnlyMixin.class");
+        MixinClassTransformer optional = new MixinClassTransformer(true);
+        optional.registerMixin(
+            "cppfm.transformer_fixture.SelectorStaticOnlyMixin", staticOnlyMixin);
+        TransformContext optionalContext = new TransformContext(
+            "cppfm.transformer_fixture.SelectorStaticOnlyTarget",
+            staticOnlyTarget, true);
+        byte[] optionalResult = optional.transform(
+            "cppfm.transformer_fixture.SelectorStaticOnlyTarget",
+            staticOnlyTarget, optionalContext);
+        assert java.util.Arrays.equals(staticOnlyTarget, optionalResult)
+            : optionalContext.getDiagnostics();
+        assert optionalContext.getChangedMethods().isEmpty()
+            : optionalContext.getChangedMethods();
+
+        MixinConfiguration requiredByDefault = MixinConfiguration.parse(""
+            + "{\"package\":\"cppfm.transformer_fixture\","
+            + "\"server\":[\"SelectorStaticOnlyMixin\"],"
+            + "\"injectors\":{\"defaultRequire\":1}}");
+        assert requiredByDefault.defaultRequire() == 1;
+        MixinClassTransformer configured = new MixinClassTransformer(true);
+        configured.registerConfiguration(requiredByDefault,
+            TransformerContractTest.class.getClassLoader());
+        TransformContext configuredContext = new TransformContext(
+            "cppfm.transformer_fixture.SelectorStaticOnlyTarget",
+            staticOnlyTarget, true);
+        boolean rejectedByConfigRequirement = false;
+        try {
+            configured.transform(
+                "cppfm.transformer_fixture.SelectorStaticOnlyTarget",
+                staticOnlyTarget, configuredContext);
+        } catch (TransformException expected) {
+            rejectedByConfigRequirement = expected.getMessage().contains("require=1");
+        }
+        assert rejectedByConfigRequirement
+            : "injectors.defaultRequire applies when an injector omits require";
     }
 
     private static void loaderAccessWidenerCase(KnotClassLoader knot) throws Exception {
@@ -130,6 +356,18 @@ public final class TransformerContractTest {
             "net.caffeinemc.mods.lithium.mixin.ai.pathing.BlockStateBaseMixin",
             "net.caffeinemc.mods.lithium.mixin.AlreadyQualifiedMixin",
             "net.caffeinemc.mods.lithium.mixin.SimpleMixin")) : lithium.serverMixins();
+        assert lithium.defaultRequire() == 0;
+        assert MixinConfiguration.parse("{\"injectors\":{\"defaultRequire\":0}}")
+            .defaultRequire() == 0;
+
+        boolean rejectedNonIntegerDefaultRequire = false;
+        try {
+            MixinConfiguration.parse("{\"injectors\":{\"defaultRequire\":1.5}}")
+                .defaultRequire();
+        } catch (TransformException expected) {
+            rejectedNonIntegerDefaultRequire = true;
+        }
+        assert rejectedNonIntegerDefaultRequire;
 
         MixinClassTransformer strict = new MixinClassTransformer(true);
         strict.registerConfiguration(lithium, new ClassLoader(null) { });
@@ -207,6 +445,23 @@ public final class TransformerContractTest {
         assert mixinType.getField("capturedWide").getLong(null) == 12L;
         assert "xy".equals(mixinType.getField("capturedReference").get(null));
         assert mixinType.getField("jumpHits").getInt(null) > 0;
+
+        MixinClassTransformer explicitAllowSentinel =
+            new MixinClassTransformer(true);
+        explicitAllowSentinel.registerMixin(
+            "cppfm.transformer_fixture.AllowSentinelMixin",
+            resource("cppfm/transformer_fixture/AllowSentinelMixin.class"));
+        boolean explicitNegativeAllowClamped = false;
+        try {
+            explicitAllowSentinel.transform(
+                "cppfm.transformer_fixture.AdvancedTarget", target,
+                new TransformContext(
+                    "cppfm.transformer_fixture.AdvancedTarget", target, true));
+        } catch (TransformException expected) {
+            explicitNegativeAllowClamped = expected.getMessage().contains("allow=1");
+        }
+        assert explicitNegativeAllowClamped
+            : "an explicitly stored allow=-1 follows Mixin 0.8.7's non-null clamp behavior";
     }
 
     private static void crossMixinOrderingCase() throws Exception {

@@ -5,11 +5,11 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.ModifyConstant;
 
-/** The transformed method must pass through the -64 literal. */
-@Mixin(targets = "net.minecraft.world.World")
+/** The transformed method must pass through the 1.21.4 chunk-height literal. */
+@Mixin(targets = "net.minecraft.world.chunk.Chunk")
 public final class ModifyConstantMixin {
-    @ModifyConstant(method = "getBottomY()I", constant = @Constant(intValue = -64))
-    private static int modifyBottom(int value) {
+    @ModifyConstant(method = "getHeight()I", constant = @Constant(intValue = 384))
+    private static int modifyHeight(int value) {
         ModifyConstantFixture.modified();
         NativeBridge.nativeLog("INFO", "CORPUS case=18 status=PASS phase=modify-constant-handler");
         return value;

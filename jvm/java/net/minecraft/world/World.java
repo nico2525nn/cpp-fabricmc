@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.function.Predicate;
+import java.util.function.BooleanSupplier;
 import net.minecraft.util.math.random.Random;
 import net.minecraft.world.entity.EntityIndex;
 import net.minecraft.world.entity.EntityLookup;
@@ -48,10 +49,20 @@ public class World implements BlockView, BlockRenderView, WorldView, WorldAccess
     private final GameRules gameRules = new GameRules();
     private final net.minecraft.world.dimension.DimensionType dimensionType;
 
+    private static net.minecraft.world.dimension.DimensionType dimensionTypeFor(
+            long handle) {
+        String key = NativeAccess.worldName(handle);
+        if ("minecraft:the_nether".equals(key))
+            return net.minecraft.world.dimension.DimensionType.THE_NETHER;
+        if ("minecraft:the_end".equals(key))
+            return net.minecraft.world.dimension.DimensionType.THE_END;
+        return net.minecraft.world.dimension.DimensionType.OVERWORLD;
+    }
+
     protected World(long nativeHandle, boolean client) {
         this.nativeHandle = nativeHandle;
         this.client = client;
-        this.dimensionType = net.minecraft.world.dimension.DimensionType.OVERWORLD;
+        this.dimensionType = dimensionTypeFor(nativeHandle);
     }
     protected World(MutableWorldProperties properties, RegistryKey<World> registryKey,
                     net.minecraft.registry.DynamicRegistryManager registryManager,
@@ -84,29 +95,54 @@ public class World implements BlockView, BlockRenderView, WorldView, WorldAccess
             this, "getBlockState", tail.getReturnValue(), pos);
         return returned.getReturnValue();
     }
-    public boolean setBlockState(BlockPos pos, BlockState state) { return setBlockState(pos, state, 3); }
+    private static final String SET_BLOCK_STATE_3_DESCRIPTOR =
+        "(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;I)Z";
+    private static final String SET_BLOCK_STATE_4_DESCRIPTOR =
+        "(Lnet/minecraft/util/math/BlockPos;Lnet/minecraft/block/BlockState;II)Z";
+
+    public boolean setBlockState(BlockPos pos, BlockState state) {
+        return setBlockState(pos, state, 3);
+    }
     public boolean setBlockState(BlockPos pos, BlockState state, int flags, int maxUpdateDepth) {
-        return setBlockState(pos, state, flags);
+        return setBlockStateWithHooks(pos, state, SET_BLOCK_STATE_4_DESCRIPTOR,
+            new Object[] { pos, state, flags, maxUpdateDepth }, () -> {
+                if (nativeHandle == 0)
+                    return localBlocks.put(pos.asLong(), state) != state;
+                return NativeAccess.setWorldBlock(nativeHandle, pos.getX(),
+                    pos.getY(), pos.getZ(), state.getRawState(), flags,
+                    maxUpdateDepth);
+            });
     }
     public boolean setBlockState(BlockPos pos, BlockState state, int flags) {
+        return setBlockStateWithHooks(pos, state, SET_BLOCK_STATE_3_DESCRIPTOR,
+            new Object[] { pos, state, flags },
+            () -> setBlockState(pos, state, flags, 512));
+    }
+    private boolean setBlockStateWithHooks(BlockPos pos, BlockState state,
+                                           String descriptor,
+                                           Object[] hookArguments,
+                                           BooleanSupplier operation) {
         if (pos == null || state == null) return false;
-        Boolean overwritten = MixinHooks.invokeOverwrite(this, "setBlockState", pos, state, flags);
+        Boolean overwritten = MixinHooks.invokeOverwriteWithDescriptor(
+            this, "setBlockState", descriptor, hookArguments);
         if (overwritten != null) return overwritten;
-        CallbackInfoReturnable<Boolean> head = MixinHooks.invokeHeadReturn(
-            this, "setBlockState", false, pos, state, flags);
+        CallbackInfoReturnable<Boolean> head =
+            MixinHooks.invokeHeadReturnWithDescriptor(this, "setBlockState",
+                descriptor, false, hookArguments);
         if (head.isCancelled()) return Boolean.TRUE.equals(head.getReturnValue());
-        boolean changed = nativeHandle == 0 ? localBlocks.put(pos.asLong(), state) != state
-            : NativeAccess.setWorldBlock(nativeHandle, pos.getX(), pos.getY(), pos.getZ(), state.getRawState());
-        CallbackInfoReturnable<Boolean> tail = MixinHooks.invokeTailReturn(
-            this, "setBlockState", changed, pos, state, flags);
+        boolean changed = operation.getAsBoolean();
+        CallbackInfoReturnable<Boolean> tail =
+            MixinHooks.invokeTailReturnWithDescriptor(this, "setBlockState",
+                descriptor, changed, hookArguments);
         if (tail.isCancelled()) return Boolean.TRUE.equals(tail.getReturnValue());
-        CallbackInfoReturnable<Boolean> returned = MixinHooks.invokeReturn(
-            this, "setBlockState", tail.getReturnValue(), pos, state, flags);
+        CallbackInfoReturnable<Boolean> returned =
+            MixinHooks.invokeReturnWithDescriptor(this, "setBlockState",
+                descriptor, tail.getReturnValue(), hookArguments);
         return Boolean.TRUE.equals(returned.getReturnValue());
     }
     /** Mojang-mapped alias retained for server mixins. */
     public boolean setBlock(BlockPos pos, BlockState state, int flags, int recursionLeft) {
-        return setBlockState(pos, state, flags);
+        return setBlockState(pos, state, flags, recursionLeft);
     }
     public boolean setBlock(BlockPos pos, BlockState state, int flags) {
         return setBlockState(pos, state, flags);
@@ -144,12 +180,25 @@ public class World implements BlockView, BlockRenderView, WorldView, WorldAccess
     public long getTime() { return nativeHandle == 0 ? NativeAccess.currentTick() : NativeAccess.worldTime(nativeHandle); }
     public long getTimeOfDay() { return getTime(); }
     public enum ExplosionSourceType { BLOCK, MOB, TNT, TRIGGER }
-    /** 1.21.4 overworld floor; kept literal so constant mixins can target it. */
-    public int getBottomY() { return -64; }
+    public int getBottomY() { return dimensionType.minY(); }
     @Override public int getHeight() { return dimensionType.height(); }
     public int getTopY() { return dimensionType.minY() + dimensionType.height(); }
     public int getTopY(Heightmap.Type type, int x, int z) { return getTopY(); }
-    public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0 || !localBlocks.isEmpty(); }
+    public boolean isChunkLoaded(int chunkX, int chunkZ) {
+        if (nativeHandle != 0L)
+            return NativeAccess.worldHasChunk(nativeHandle, chunkX, chunkZ);
+        for (net.minecraft.world.chunk.WorldChunk chunk : loadedChunks) {
+            ChunkPos position = chunk == null ? null : chunk.getPos();
+            if (position != null && position.x == chunkX && position.z == chunkZ)
+                return true;
+        }
+        for (long packedPos : localBlocks.keySet()) {
+            if ((BlockPos.unpackLongX(packedPos) >> 4) == chunkX &&
+                    (BlockPos.unpackLongZ(packedPos) >> 4) == chunkZ)
+                return true;
+        }
+        return false;
+    }
     @Override public java.util.Set<net.minecraft.world.chunk.WorldChunk> fabric_getLoadedChunks() {
         return loadedChunks;
     }
@@ -179,25 +228,37 @@ public class World implements BlockView, BlockRenderView, WorldView, WorldAccess
         List<T> result = new ArrayList<>();
         if (type == null || predicate == null) return result;
         MinecraftServer server = getServer();
-        if (server != null) for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) {
-            if (type.isInstance(player) && (box == null || box.contains(player.getPos())) && predicate.test(type.cast(player))) result.add(type.cast(player));
+        net.minecraft.server.PlayerManager playerManager =
+            server == null ? null : server.getPlayerManager();
+        if (playerManager != null) for (ServerPlayerEntity player : playerManager.getPlayerList()) {
+            if (belongsToThisWorld(player) && type.isInstance(player) &&
+                    (box == null || box.contains(player.getPos())) &&
+                    predicate.test(type.cast(player))) result.add(type.cast(player));
         }
-        int count = (int) Math.min(Integer.MAX_VALUE, NativeAccess.entityCount());
-        for (int index = 0; index < count; index++) {
-            long handle = NativeAccess.entityHandle(index);
-            if (handle == 0L) continue;
-            Entity entity = findPlayer(handle, server);
-            if (entity == null) entity = Entity.of(handle);
-            if (type.isInstance(entity) && (box == null || box.contains(entity.getPos())) && predicate.test(type.cast(entity)))
-                if (!result.contains(entity)) result.add(type.cast(entity));
+        if (nativeHandle != 0L) {
+            int count = (int) Math.min(Integer.MAX_VALUE, NativeAccess.entityCount());
+            for (int index = 0; index < count; index++) {
+                long handle = NativeAccess.entityHandle(index);
+                if (handle == 0L) continue;
+                Entity entity = findPlayer(handle, server);
+                if (entity == null) entity = Entity.of(handle);
+                if (belongsToThisWorld(entity) && type.isInstance(entity) &&
+                        (box == null || box.contains(entity.getPos())) &&
+                        predicate.test(type.cast(entity)) && !result.contains(entity))
+                    result.add(type.cast(entity));
+            }
         }
         return result;
     }
     public List<ServerPlayerEntity> getPlayers() { return getPlayers(player -> true); }
     public List<ServerPlayerEntity> getPlayers(Predicate<ServerPlayerEntity> predicate) {
-        List<ServerPlayerEntity> result = new ArrayList<>(); MinecraftServer server = getServer();
-        if (server == null || predicate == null) return result;
-        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList()) if (predicate.test(player)) result.add(player);
+        List<ServerPlayerEntity> result = new ArrayList<>();
+        MinecraftServer server = getServer();
+        net.minecraft.server.PlayerManager playerManager =
+            server == null ? null : server.getPlayerManager();
+        if (playerManager == null || predicate == null) return result;
+        for (ServerPlayerEntity player : playerManager.getPlayerList())
+            if (belongsToThisWorld(player) && predicate.test(player)) result.add(player);
         return result;
     }
     public Random getRandom() { return random; }
@@ -209,9 +270,17 @@ public class World implements BlockView, BlockRenderView, WorldView, WorldAccess
         return nativeHandle == 0 ? null : MinecraftServer.of(NativeAccess.serverHandle());
     }
 
+    private boolean belongsToThisWorld(Entity entity) {
+        if (nativeHandle == 0L || entity == null) return false;
+        World entityWorld = entity.getWorld();
+        return entityWorld != null && entityWorld.nativeHandle() == nativeHandle;
+    }
+
     private static Entity findPlayer(long handle, MinecraftServer server) {
-        if (server == null) return null;
-        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList())
+        net.minecraft.server.PlayerManager playerManager =
+            server == null ? null : server.getPlayerManager();
+        if (playerManager == null) return null;
+        for (ServerPlayerEntity player : playerManager.getPlayerList())
             if (player.nativeHandle() == handle) return player;
         return null;
     }

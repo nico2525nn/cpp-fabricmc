@@ -1,7 +1,7 @@
 package net.fabricmc.fabric.api.event.player;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
+import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.entity.BlockEntity;
 import net.minecraft.entity.player.PlayerEntity;
@@ -14,21 +14,25 @@ public final class PlayerBlockBreakEvents {
         boolean beforeBlockBreak(World world, PlayerEntity player, BlockPos pos,
                                  BlockState state, BlockEntity blockEntity);
     }
-    public static final Event<Before> BEFORE = new Event<>(CppModRuntime::registerBeforeBreak, Before.class, callbacks -> (world, player, pos, state, blockEntity) -> {
-        for (Before callback : callbacks) if (!callback.beforeBlockBreak(world, player, pos, state, blockEntity)) return false;
-        return true;
-    });
+    public static final Event<Before> BEFORE = EventFactory.createArrayBacked(
+        Before.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+            for (Before callback : callbacks)
+                if (!callback.beforeBlockBreak(world, player, pos, state, blockEntity)) return false;
+            return true;
+        });
     @FunctionalInterface public interface After {
         void afterBlockBreak(net.minecraft.world.World world, PlayerEntity player, BlockPos pos, BlockState state, BlockEntity blockEntity);
     }
-    public static final Event<After> AFTER = new Event<>(After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+    public static final Event<After> AFTER = EventFactory.createArrayBacked(
+        After.class, callbacks -> (world, player, pos, state, blockEntity) -> {
         for (After callback : callbacks) callback.afterBlockBreak(world, player, pos, state, blockEntity);
     });
     @FunctionalInterface public interface Canceled {
         void onBlockBreakCanceled(World world, PlayerEntity player, BlockPos pos,
                                    BlockState state, BlockEntity blockEntity);
     }
-    public static final Event<Canceled> CANCELED = new Event<>(Canceled.class, callbacks -> (world, player, pos, state, blockEntity) -> {
+    public static final Event<Canceled> CANCELED = EventFactory.createArrayBacked(
+        Canceled.class, callbacks -> (world, player, pos, state, blockEntity) -> {
         for (Canceled callback : callbacks) callback.onBlockBreakCanceled(world, player, pos, state, blockEntity);
     });
     public static void clear() { BEFORE.clear(); AFTER.clear(); CANCELED.clear(); }

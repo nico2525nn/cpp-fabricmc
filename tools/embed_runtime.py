@@ -15,17 +15,25 @@ import struct
 import zlib
 from pathlib import Path
 
+from atomic_write import write_text_atomic
+
 MAGIC = b"CPPFMRES1"
 MAX_FILE_SIZE = 64 * 1024 * 1024
 MAX_TOTAL_SIZE = 256 * 1024 * 1024
 
 
 def collect(root: Path, prefix: str, entries: list[tuple[str, bytes]]) -> None:
+    if root.is_symlink():
+        raise ValueError(f"resource root must not be a symlink: {root}")
     if not root.is_dir():
         return
-    paths = (path for path in root.rglob("*")
-             if path.is_file() and not path.is_symlink())
-    for path in sorted(paths, key=lambda item: item.relative_to(root).as_posix()):
+    paths = sorted(root.rglob("*"),
+                   key=lambda item: item.relative_to(root).as_posix())
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"resource tree contains a symlink: {path}")
+        if not path.is_file():
+            continue
         data = path.read_bytes()
         if len(data) > MAX_FILE_SIZE:
             raise ValueError(f"resource is too large: {path}")
@@ -53,6 +61,37 @@ def build_pack(entries: list[tuple[str, bytes]]) -> bytes:
     return bytes(output)
 
 
+def required_asset_paths(manifest: Path) -> set[str]:
+    required: set[str] = set()
+    for line_number, raw_line in enumerate(
+        manifest.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        value = raw_line.strip()
+        if not value or value.startswith("#"):
+            continue
+        path = Path(value)
+        if (path.is_absolute() or ":" in value or "\\" in value or
+                any(part in ("", ".", "..") for part in value.split("/"))):
+            raise ValueError(
+                f"unsafe required asset path at {manifest}:{line_number}: {value}"
+            )
+        required.add(value)
+    if not required:
+        raise ValueError(f"required embedded-asset manifest is empty: {manifest}")
+    return required
+
+
+def verify_required_assets(entries: list[tuple[str, bytes]],
+                           required: set[str]) -> None:
+    embedded = {name for name, _ in entries}
+    missing = sorted(f"assets/{relative}" for relative in required
+                     if f"assets/{relative}" not in embedded)
+    if missing:
+        raise ValueError(
+            "required runtime assets were not collected: " + ", ".join(missing)
+        )
+
+
 def render(pack: bytes) -> str:
     values = ",\n".join(
         "    " + ", ".join(f"0x{byte:02x}" for byte in pack[offset:offset + 24])
@@ -78,6 +117,7 @@ def main() -> int:
     parser.add_argument("--assets-dir", type=Path, required=True)
     parser.add_argument("--classes-dir", type=Path, required=True)
     parser.add_argument("--compile-stubs-dir", type=Path)
+    parser.add_argument("--required-assets", type=Path, required=True)
     parser.add_argument("--template", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
@@ -89,13 +129,10 @@ def main() -> int:
         collect(args.compile_stubs_dir, ".cppfm/jvm/compile-stubs", entries)
     if args.template.is_file():
         entries.append(("server.properties.example", args.template.read_bytes()))
+    verify_required_assets(entries, required_asset_paths(args.required_assets))
     pack = build_pack(entries)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    # Path.write_text(newline=...) is not available on every Python version
-    # shipped by older macOS installations.  Path.open has supported the
-    # newline argument for much longer and keeps the generated header stable.
-    with args.output.open("w", encoding="utf-8", newline="\n") as output:
-        output.write(render(pack))
+    write_text_atomic(args.output, render(pack))
     print(f"embedded resources: {len(entries)} files, {len(pack)} packed bytes")
     return 0
 

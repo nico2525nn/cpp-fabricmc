@@ -11,6 +11,10 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.abspath(os.path.join(
+    os.path.dirname(__file__), "..", "tools")))
+import run_with_timeout
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -38,15 +42,27 @@ def main() -> int:
         environment = os.environ.copy()
         environment["CPPFM_SERVER_DIR"] = world
         with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as log_file:
-            proc = subprocess.Popen(
-                command,
-                cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                env=environment,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-                start_new_session=True,
-            )
+            job = None
+            if os.name == "nt":
+                job = run_with_timeout._WindowsJob()
+                proc = job.start(
+                    command,
+                    max(args.startup_timeout, 120.0),
+                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    env=environment,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                )
+            else:
+                proc = subprocess.Popen(
+                    command,
+                    cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    env=environment,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    start_new_session=True,
+                )
             output: list[str] = []
 
             def refresh() -> None:
@@ -62,6 +78,7 @@ def main() -> int:
                 "fixture entrypoint initialized",
                 "fixture SERVER_STARTED",
                 "fixture END_SERVER_TICK",
+                "fixture CALLBACK_WORKER_ENTITY_QUERY status=PASS",
                 "fixture COMMAND_EXECUTED 8",
                 "fixture MIXIN_HEAD",
                 "fixture MIXIN_TAIL",
@@ -70,6 +87,12 @@ def main() -> int:
                 "dynamic route JVM_TRANSFORMED owner=net/minecraft/server/MinecraftServer method=setTick descriptor=(J)V tick=1",
                 "fixture COMMAND_REGISTERED",
                 "fixture COMMAND_EXECUTED 7",
+                "fixture DAMAGE_BRIDGE_SETUP true",
+                "fixture DAMAGE_PROBE_CANCEL result=false health=4.0 callbacks=1",
+                "fixture DAMAGE_BRIDGE_CANCEL true",
+                "fixture DAMAGE_BRIDGE_NESTED_REJECT true",
+                "fixture DAMAGE_BRIDGE_DEATH_VETO true",
+                "fixture DAMAGE_BRIDGE_DEATH_ALLOW true",
                 "fixture WORLD_API",
                 "fixture RELOAD_SUCCESS resource=true",
                 "fixture RELOAD_FAILURE_INVOKED",
@@ -80,6 +103,7 @@ def main() -> int:
                 "server /reload Java listeners success=false",
                 "fixture RELOAD_COMMAND_RESULT true",
                 "fixture POST_RELOAD_TICK",
+                "fixture CALLBACK_WORKER_ENTITY_RETIREMENT status=PASS",
             )
             try:
                 while time.monotonic() < deadline and proc.poll() is None:
@@ -102,27 +126,78 @@ def main() -> int:
                     print("\n".join(output[-80:]), file=sys.stderr)
                     return 1
             finally:
-                if proc.poll() is None:
-                    try:
-                        os.killpg(proc.pid, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
                 try:
-                    proc.wait(timeout=15.0)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    proc.wait(timeout=5.0)
+                    run_with_timeout.terminate(proc, job)
+                finally:
+                    if job is not None:
+                        job.close()
                 refresh()
             if proc.returncode != 0:
                 print("JVM smoke server exited with", proc.returncode, file=sys.stderr)
                 print("\n".join(output[-80:]), file=sys.stderr)
                 return 1
+            stopping = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=server-stopping " in item
+            ]
+            world_unloads = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=world-unload " in item
+            ]
+            stopped = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=server-stopped " in item
+            ]
+            expected_dimensions = {
+                "minecraft:overworld",
+                "minecraft:the_nether",
+                "minecraft:the_end",
+            }
+            actual_dimensions = {
+                item.split("dimension=", 1)[1].split(" ", 1)[0]
+                for item in world_unloads
+                if "dimension=" in item
+            }
+            if (len(stopping) != 1 or "status=PASS" not in stopping[0] or
+                    "count=1" not in stopping[0] or "nativeServer=0" in stopping[0] or
+                    "worldHandle=0" in stopping[0] or "tick=0" in stopping[0] or
+                    "nativeMutation=PASS" not in stopping[0] or
+                    len(world_unloads) != 3 or
+                    any("status=PASS" not in item or "nativeServer=0" in item or
+                        "worldHandle=0" in item or "tick=0" in item
+                        for item in world_unloads) or
+                    actual_dimensions != expected_dimensions or
+                    len(stopped) != 1 or "status=PASS" not in stopped[0] or
+                    "count=1" not in stopped[0] or "nativeServer=0" in stopped[0] or
+                    "worldHandle=0" not in stopped[0] or "tick=0" in stopped[0] or
+                    "worldsClosed=PASS" not in stopped[0]):
+                print(
+                    "JVM shutdown lifecycle evidence invalid: expected "
+                    "SERVER_STOPPING, one valid UNLOAD per world, then "
+                    "SERVER_STOPPED after worlds close",
+                    file=sys.stderr,
+                )
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
+            shutdown_markers = [stopping[0], *world_unloads, stopped[0]]
+            if any(output.index(before) >= output.index(after)
+                   for before, after in zip(shutdown_markers,
+                                            shutdown_markers[1:])):
+                print("JVM shutdown lifecycle events were out of order", file=sys.stderr)
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
+            if any("fixture CALLBACK_THREAD_MISMATCH" in item for item in output):
+                print("JVM shutdown callback left the authoritative server thread",
+                      file=sys.stderr)
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
             print("JVM smoke: PASS")
             for item in output:
-                if any(token in item for token in required):
+                if (any(token in item for token in required) or
+                        "fixture SHUTDOWN_EVENT " in item):
                     print(item)
     return 0
 

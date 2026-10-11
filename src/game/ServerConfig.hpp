@@ -22,6 +22,9 @@ struct ServerConfig {
     std::uint16_t port = 25565;
     std::int32_t maxPlayers = 20;
     std::int32_t viewDistance = 10;
+    // Vanilla scales every entity type's base tracking radius with this
+    // server.properties percentage before applying viewer view-distance.
+    std::int32_t entityBroadcastRangePercentage = 100;
     std::int32_t simulationDistance = 10;
     std::string motd = "A Minecraft Server";
     std::string worldBiome = "minecraft:plains";
@@ -51,6 +54,11 @@ struct ServerConfig {
     bool pvp = true;
     bool allowFlight = false;
     bool hardcore = false;
+    // Match the Java server's default and force-gamemode properties. Values
+    // use the protocol/game-data ordinals: survival=0, creative=1,
+    // adventure=2, spectator=3.
+    std::uint8_t gameMode = 0;
+    bool forceGameMode = false;
     // Fabric-compatible Java integration is enabled by default.  When a JDK
     // or the bundled shadow classes are unavailable, non-strict startup logs
     // the reason and keeps the native server authoritative.

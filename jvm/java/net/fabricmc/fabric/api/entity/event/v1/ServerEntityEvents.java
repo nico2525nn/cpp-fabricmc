@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.entity.event.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.Entity;
@@ -18,11 +17,11 @@ public final class ServerEntityEvents {
         void onChange(LivingEntity entity, EquipmentSlot slot, ItemStack previousStack, ItemStack currentStack);
     }
 
-    public static final Event<Load> LOAD = new Event<>(CppModRuntime::registerEntityLoad,
+    public static final Event<Load> LOAD = EventFactory.createArrayBacked(
         Load.class, callbacks -> (entity, world) -> {
             for (Load callback : callbacks) callback.onLoad(entity, world);
         });
-    public static final Event<Unload> UNLOAD = new Event<>(CppModRuntime::registerEntityUnload,
+    public static final Event<Unload> UNLOAD = EventFactory.createArrayBacked(
         Unload.class, callbacks -> (entity, world) -> {
             for (Unload callback : callbacks) callback.onUnload(entity, world);
         });

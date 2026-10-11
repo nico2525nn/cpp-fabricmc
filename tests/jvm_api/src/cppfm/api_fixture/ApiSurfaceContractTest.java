@@ -4,7 +4,17 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.builder.LiteralArgumentBuilder;
 import com.mojang.brigadier.suggestion.Suggestions;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import net.fabricmc.loader.api.FabricLoader;
@@ -29,7 +39,10 @@ import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.CustomPayloadS2CPacket;
+import net.minecraft.resource.ResourceManager;
+import net.minecraft.resource.ResourceReloader;
 import net.minecraft.registry.Registry;
+import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
@@ -39,35 +52,292 @@ import net.minecraft.util.ActionResult;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.text.Text;
 import net.minecraft.world.GameRules;
+import cppfm.api.ModEvents;
 import cppfm.bridge.CppModRuntime;
+import cppfm.bridge.KnotLauncher;
+import cppfm.bridge.WrapperCache;
+import net.minecraft.block.BlockState;
+import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
+import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /** Executable compatibility fixture for Fabric API/events/commands surface. */
 public final class ApiSurfaceContractTest {
     private static int checks;
+    private static final AtomicInteger FAILED_BOOTSTRAP_TICKS = new AtomicInteger();
+    private static final List<String> ENTRYPOINT_ORDER = new CopyOnWriteArrayList<>();
+    private static final AtomicInteger THREE_ARGUMENT_WORLD_HOOKS =
+        new AtomicInteger();
+    private static final AtomicInteger FOUR_ARGUMENT_WORLD_HOOKS =
+        new AtomicInteger();
+
+    private static final class OverloadWorld extends net.minecraft.world.World {
+        OverloadWorld() { super(0L, false); }
+    }
+
+    @Mixin(targets = "cppfm.api_fixture.ApiSurfaceContractTest$OverloadWorld")
+    private static final class WorldSetBlockOverloadMixin {
+        @Inject(method = "setBlockState(Lnet/minecraft/util/math/BlockPos;" +
+                "Lnet/minecraft/block/BlockState;I)Z", at = @At("HEAD"))
+        private void onThreeArgumentWrite(BlockPos pos,
+                BlockState state, int flags,
+                CallbackInfoReturnable<Boolean> callback) {
+            THREE_ARGUMENT_WORLD_HOOKS.incrementAndGet();
+        }
+
+        @Inject(method = "setBlockState(Lnet/minecraft/util/math/BlockPos;" +
+                "Lnet/minecraft/block/BlockState;II)Z", at = @At("HEAD"))
+        private void onFourArgumentWrite(BlockPos pos,
+                BlockState state, int flags,
+                int maxUpdateDepth,
+                CallbackInfoReturnable<Boolean> callback) {
+            FOUR_ARGUMENT_WORLD_HOOKS.incrementAndGet();
+        }
+    }
+
+    public static final class BlockingKnotRuntime {
+        static final CountDownLatch CALLBACK_ENTERED = new CountDownLatch(1);
+        static final CountDownLatch CALLBACK_RELEASE = new CountDownLatch(1);
+        static final AtomicInteger SHUTDOWN_CALLS = new AtomicInteger();
+        static final AtomicInteger TICK_CALLS = new AtomicInteger();
+        static final AtomicInteger SHUTDOWN_REENTRY_CALLS = new AtomicInteger();
+        static final AtomicInteger RELOAD_CALLS = new AtomicInteger();
+        static final AtomicReference<Thread> RELOAD_THREAD = new AtomicReference<>();
+
+        public static String onChat(long handle, String message) {
+            CALLBACK_ENTERED.countDown();
+            try {
+                if (!CALLBACK_RELEASE.await(5, TimeUnit.SECONDS))
+                    throw new IllegalStateException("fixture callback release timed out");
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("fixture callback interrupted", interrupted);
+            }
+            KnotLauncher.onServerTick(1L);
+            return message + "-finished";
+        }
+
+        public static void onServerTick(long tick) { TICK_CALLS.incrementAndGet(); }
+        public static void onServerStopped() { SHUTDOWN_REENTRY_CALLS.incrementAndGet(); }
+        public static boolean onDataPackReload(java.util.Collection<String> dataPacks) {
+            RELOAD_CALLS.incrementAndGet();
+            RELOAD_THREAD.set(Thread.currentThread());
+            return true;
+        }
+        public static void shutdown() {
+            SHUTDOWN_CALLS.incrementAndGet();
+            KnotLauncher.onServerStopped();
+        }
+    }
+
+    private static final class TrackingClassLoader extends URLClassLoader {
+        private final AtomicInteger closeCalls = new AtomicInteger();
+
+        TrackingClassLoader() {
+            super(new URL[0], ApiSurfaceContractTest.class.getClassLoader());
+        }
+
+        @Override public void close() {
+            closeCalls.incrementAndGet();
+        }
+    }
+
+    public static final class FailingBootstrapMod implements net.fabricmc.api.ModInitializer {
+        @Override public void onInitialize() {
+            net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents.START_SERVER_TICK
+                .register(server -> FAILED_BOOTSTRAP_TICKS.incrementAndGet());
+            throw new IllegalStateException("intentional entrypoint fixture failure");
+        }
+    }
+
+    public static final class MainOrderMod implements net.fabricmc.api.ModInitializer {
+        @Override public void onInitialize() { ENTRYPOINT_ORDER.add("main"); }
+    }
+
+    public static final class ServerOrderMod
+            implements net.fabricmc.api.DedicatedServerModInitializer {
+        @Override public void onInitializeServer() { ENTRYPOINT_ORDER.add("server"); }
+    }
+
+    private static final class NativeLivingEntityProbe extends net.minecraft.entity.LivingEntity {
+        private float authoritativeHealth;
+        private int healthWrites;
+
+        NativeLivingEntityProbe(float health) {
+            super(0xCAFE);
+            authoritativeHealth = health;
+        }
+
+        @Override public float getHealth() { return authoritativeHealth; }
+        @Override public void setHealth(float value) {
+            healthWrites++;
+            authoritativeHealth = value;
+        }
+    }
+
+    private static final class UnboundNativeLivingEntityProbe
+            extends net.minecraft.entity.LivingEntity {
+        UnboundNativeLivingEntityProbe() { super(0xCAFF); }
+    }
+
+    private static final class LocalLivingEntityProbe extends net.minecraft.entity.LivingEntity {
+        LocalLivingEntityProbe() {
+            super(net.minecraft.entity.EntityType.UNKNOWN, null);
+        }
+    }
+
+    private static final class NativeEntityProbe extends Entity {
+        NativeEntityProbe(long handle) { super(handle); }
+        NativeEntityProbe(long handle, net.minecraft.world.World world) {
+            super(handle, world, net.minecraft.entity.EntityType.UNKNOWN);
+            localX = 4.0; localY = 5.0; localZ = 6.0;
+            yaw = 7.0f; pitch = 8.0f;
+        }
+        net.minecraft.world.World shadowWorld() { return world; }
+        double shadowX() { return localX; }
+        double shadowY() { return localY; }
+        double shadowZ() { return localZ; }
+    }
+
+    private static final class NativeServerWorldProbe extends ServerWorld {
+        NativeServerWorldProbe(long handle, MinecraftServer server) {
+            super(handle, server);
+        }
+    }
+
+    private static final class NativePlayerProbe extends ServerPlayerEntity {
+        NativePlayerProbe(long handle) { super(handle); }
+        net.minecraft.world.World shadowWorld() { return world; }
+        double shadowX() { return localX; }
+        double shadowY() { return localY; }
+        double shadowZ() { return localZ; }
+        float shadowYaw() { return yaw; }
+        float shadowPitch() { return pitch; }
+    }
+
+    private static void testActionResultAbi() throws Exception {
+        check(ActionResult.class.isInterface(),
+            "ActionResult preserves the 1.21.4 interface ABI");
+        check(ActionResult.Success.class.isRecord() &&
+                ActionResult.Pass.class.isRecord() &&
+                ActionResult.Fail.class.isRecord() &&
+                ActionResult.PassToDefaultBlockAction.class.isRecord() &&
+                ActionResult.ItemContext.class.isRecord(),
+            "ActionResult nested values preserve their 1.21.4 record shapes");
+
+        var successComponents = ActionResult.Success.class.getRecordComponents();
+        check(successComponents.length == 2 &&
+                successComponents[0].getName().equals("swingSource") &&
+                successComponents[1].getName().equals("itemContext") &&
+                ActionResult.Success.class.getDeclaredConstructor(
+                    ActionResult.SwingSource.class, ActionResult.ItemContext.class) != null,
+            "Success preserves component order and constructor descriptor");
+
+        var itemComponents = ActionResult.ItemContext.class.getRecordComponents();
+        check(itemComponents.length == 2 &&
+                itemComponents[0].getName().equals("incrementStat") &&
+                itemComponents[1].getName().equals("newHandStack") &&
+                ActionResult.ItemContext.class.getDeclaredConstructor(
+                    boolean.class, ItemStack.class) != null,
+            "ItemContext preserves component order and constructor descriptor");
+
+        ActionResult.Success success = new ActionResult.Success(
+            ActionResult.SwingSource.SERVER,
+            new ActionResult.ItemContext(true, null));
+        check(((ActionResult) success).isAccepted() &&
+                success.getNewHandStack() == null && success.shouldIncrementStat() &&
+                ActionResult.SUCCESS.isAccepted() &&
+                !ActionResult.PASS.isAccepted() && !ActionResult.FAIL.isAccepted(),
+            "ActionResult interface invocation and vanilla acceptance semantics");
+    }
 
     public static void main(String[] args) throws Exception {
+        if (args.length == 1 && "--bootstrap-contracts".equals(args[0])) {
+            verifyBootstrapContracts();
+            testActionResultAbi();
+            System.out.println("JVM bootstrap contract fixture: " + checks + " PASS");
+            return;
+        }
+        verifyBootstrapContracts();
+        testActionResultAbi();
         ApiSurfaceFixture fixture = new ApiSurfaceFixture();
         fixture.onInitialize();
 
-        MinecraftServer server = MinecraftServer.of(0L);
-        ServerLifecycleEvents.SERVER_STARTED.invoker().onServerStarted(server);
-        check(ApiSurfaceFixture.STARTED.get() == 1, "lifecycle invoker");
+        check(net.minecraft.entity.mob.WaterCreatureEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class) &&
+                net.minecraft.entity.mob.PathAwareEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class) &&
+                !net.minecraft.entity.passive.AnimalEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class),
+            "FishEntity preserves the Vanilla WaterCreatureEntity hierarchy");
+        check(net.minecraft.entity.passive.WaterAnimalEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.SquidEntity.class) &&
+                net.minecraft.entity.passive.SquidEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.GlowSquidEntity.class) &&
+                !net.minecraft.entity.passive.FishEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.SquidEntity.class),
+            "Squid and GlowSquid preserve Vanilla's distinct aquatic class hierarchy");
+
+        MinecraftServer startingServer = MinecraftServer.of(NativeAccess.serverHandle());
+        ServerWorld startingWorld = ServerWorld.of(0L, startingServer);
+        check(startingServer.getPlayerManager() == null,
+            "player manager is unavailable during SERVER_STARTING");
+        check(startingWorld.getPlayers().isEmpty() && PlayerLookup.all(startingServer).isEmpty(),
+            "player lookup APIs are empty before world services load");
+        check(EntityArgumentType.players().parse(new com.mojang.brigadier.StringReader("@a"))
+                .getEntities(new net.minecraft.server.command.ServerCommandSource(null, startingServer))
+                .isEmpty(), "player selectors are safe before world services load");
 
         check(CppModRuntime.bootstrap("/tmp/cppfm-api-fixture-no-mods", "/tmp/cppfm-api-config"), "runtime bootstrap fallback");
+        // The real lifecycle reaches SERVER_STARTED only after the native
+        // world load has made the server's world and player services live.
+        CppModRuntime.onServerWorldsLoaded();
+        check(ApiSurfaceFixture.STARTED.get() == 1, "lifecycle invoker after world load");
+        MinecraftServer server = MinecraftServer.of(NativeAccess.serverHandle());
+        testLivingEntityHealthBoundary();
         CppModRuntime.onServerTick(7L);
         check(ApiSurfaceFixture.TICK_START.get() == 1, "server tick start dispatch");
         check(ApiSurfaceFixture.TICK_END.get() == 1, "server tick end dispatch");
+        testResourceReloadUsesOwnerThread(server);
 
+        cppfm.bridge.WrapperCache.get(Entity.class, 1L,
+            ServerPlayerEntity::createNativeWrapper);
         CppModRuntime.onPlayerJoin(1L);
         CppModRuntime.onPlayerQuit(1L);
         check(ApiSurfaceFixture.PLAYER_JOIN.get() == 1, "player join dispatch");
         check(ApiSurfaceFixture.PLAYER_LEAVE.get() == 1, "player leave dispatch");
-        check(CppModRuntime.onMobSpawn(1L, 0.0, 0.0, 0.0), "spawn allowed and load dispatched");
-        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 2, "entity load dispatch includes player and spawn");
+        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 1,
+            "player entity load dispatch");
+        check(ApiSurfaceFixture.ENTITY_UNLOAD.get() == 1,
+            "player entity unload dispatch");
+        cppfm.bridge.WrapperCache.get(Entity.class, 2L,
+            NativeEntityProbe::new);
+        Entity unknownWrapper = Entity.of(2L);
+        check(CppModRuntime.onMobSpawn(2L, 0.0, 0.0, 0.0, 0), "spawn allowed");
+        CppModRuntime.onMobLoad(2L, 0);
+        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 2,
+            "entity load dispatch includes player and inserted mob");
+        check(unknownWrapper != null &&
+                !(unknownWrapper instanceof net.minecraft.entity.LivingEntity) &&
+                ApiSurfaceFixture.MOB_WRAPPER_LOAD.get() == 0 &&
+                ApiSurfaceFixture.LOADED_MOB_WRAPPER.get() == null,
+            "unknown handles use a non-living base wrapper without JNI type data");
+        CppModRuntime.onMobUnload(2L, 0);
+        check(ApiSurfaceFixture.ENTITY_UNLOAD.get() == 2,
+            "entity unload dispatch includes the removed mob");
+        check(Entity.of(2L) != unknownWrapper,
+            "entity unload evicts the strong Java wrapper after listener dispatch");
+        testRejectedMobSpawnEvictsWrappers();
+        cppfm.bridge.WrapperCache.get(Entity.class, 1L,
+            ServerPlayerEntity::createNativeWrapper);
         check(!CppModRuntime.onEntityDamage(1L, 0L, 8.0f, "generic"), "damage cancellation");
         check(CppModRuntime.onEntityDamage(1L, 0L, 2.0f, "generic"), "damage allow");
+        checks += DamageEventsContractTest.run();
         check(!CppModRuntime.onBlockPlace(1L, 1, 0, 1, 1), "ActionResult consume cancellation");
         check(CppModRuntime.onChat(1L, "blocked") == null, "chat cancellation");
         check("blocked".equals(ApiSurfaceFixture.CHAT.get()), "chat callback input");
@@ -94,10 +364,64 @@ public final class ApiSurfaceContractTest {
         check(dispatcher.hasCommand("api_fixture 7"), "command tree lookup");
 
         ServerWorld world = ServerWorld.of(0L, server);
+        net.minecraft.world.World originalEntityWorld = net.minecraft.world.World.of(0L);
+        net.minecraft.entity.decoration.ArmorStandEntity unregisteredEntity =
+            new net.minecraft.entity.decoration.ArmorStandEntity(
+                net.minecraft.entity.EntityType.ARMOR_STAND, originalEntityWorld);
+        int entityLoadCountBeforeUnsupportedSpawn = ApiSurfaceFixture.ENTITY_LOAD.get();
+        check(!world.spawnEntity(unregisteredEntity),
+            "Java-only entity spawn fails until native registration exists");
+        check(unregisteredEntity.getWorld() == originalEntityWorld &&
+                ApiSurfaceFixture.ENTITY_LOAD.get() == entityLoadCountBeforeUnsupportedSpawn,
+            "failed Java-only spawn does not mutate world or emit load lifecycle");
         BlockPos pos = new BlockPos(3, -60, 4);
         check(world.setBlockState(pos, Blocks.STONE.getDefaultState()), "world write");
         check(world.getBlockState(pos).isOf(Blocks.STONE), "world read");
-        ServerPlayerEntity player = ServerPlayerEntity.of(1L);
+        testWorldSetBlockStateOverloadDispatch();
+        check(world.isChunkLoaded(0, 0) && !world.isChunkLoaded(2, 2),
+            "world chunk-loaded query is coordinate-specific");
+        ServerPlayerEntity player = ServerPlayerEntity.createNativeWrapper(1L);
+        check(player.getWorld() instanceof ServerWorld,
+            "server player world resolves to the ServerWorld wrapper type");
+        check(player.getWorld() == player.getServerWorld()
+                && player.getEntityWorld() == player.getServerWorld(),
+            "player world accessors preserve the canonical ServerWorld identity");
+
+        NativeServerWorldProbe targetWorld =
+            new NativeServerWorldProbe(0xD1A, server);
+        NativePlayerProbe nativePlayer = new NativePlayerProbe(0xD1B);
+        net.minecraft.world.World sourceWorld = nativePlayer.getWorld();
+        boolean playerTransferFailedClosed = false;
+        try {
+            nativePlayer.teleportTo(new net.minecraft.world.TeleportTarget(
+                targetWorld, new net.minecraft.util.math.Vec3d(90.0, 80.0, -20.0),
+                30.0f, 12.0f));
+        } catch (IllegalStateException expected) {
+            playerTransferFailedClosed = true;
+        }
+        check(playerTransferFailedClosed && nativePlayer.getWorld() == sourceWorld &&
+                nativePlayer.shadowWorld() == sourceWorld &&
+                nativePlayer.shadowX() == 0.0 && nativePlayer.shadowY() == 0.0 &&
+                nativePlayer.shadowZ() == 0.0 && nativePlayer.shadowYaw() == 0.0f &&
+                nativePlayer.shadowPitch() == 0.0f,
+            "failed native player transfer leaves world and pose wrappers unchanged");
+
+        NativeServerWorldProbe entitySourceWorld =
+            new NativeServerWorldProbe(0xD1C, server);
+        NativeEntityProbe nativeMob = new NativeEntityProbe(0xD1D,
+                                                             entitySourceWorld);
+        boolean mobTransferRejected = false;
+        try {
+            nativeMob.teleportTo(new net.minecraft.world.TeleportTarget(
+                targetWorld, new net.minecraft.util.math.Vec3d(90.0, 80.0, -20.0),
+                30.0f, 12.0f));
+        } catch (UnsupportedOperationException expected) {
+            mobTransferRejected = true;
+        }
+        check(mobTransferRejected && nativeMob.shadowWorld() == entitySourceWorld &&
+                nativeMob.shadowX() == 4.0 && nativeMob.shadowY() == 5.0 &&
+                nativeMob.shadowZ() == 6.0,
+            "unsupported native non-player transfer fails before wrapper mutation");
         PlayerInventory inventory = new PlayerInventory(0L);
         inventory.setStack(0, new ItemStack(Items.DIAMOND, 4));
         check(inventory.getStack(0).isOf(Items.DIAMOND) && inventory.getStack(0).getCount() == 4, "zero-handle inventory");
@@ -193,6 +517,7 @@ public final class ApiSurfaceContractTest {
         check(loader.getModContainer("minecraft").orElseThrow().getMetadata().getVersion()
                 .compareTo(Version.parse("1.21.4")) == 0, "semantic version comparison");
         check(FabricLoader.matchesVersion("1.21.4", ">=1.21.0 <1.22")
+                && FabricLoader.matchesVersion("1.21.4", "<1.20 || >=1.21")
                 && !FabricLoader.matchesVersion("1.22.0", "1.21.x"), "version predicate");
         ObjectShare share = loader.getObjectShare();
         AtomicReference<Object> shared = new AtomicReference<>();
@@ -217,6 +542,15 @@ public final class ApiSurfaceContractTest {
                 net.minecraft.resource.ResourceManager.class, java.util.concurrent.Executor.class,
                 java.util.concurrent.Executor.class) != null,
             "resource reload intermediary overload");
+        check(ResourceReloader.class.getMethod("reload",
+                ResourceReloader.Synchronizer.class, ResourceManager.class,
+                java.util.concurrent.Executor.class, java.util.concurrent.Executor.class) != null,
+            "official 1.21.4 ResourceReloader ABI uses four arguments");
+        check(ResourceReloader.class.getMethod("method_25931",
+                ResourceReloader.Synchronizer.class, ResourceManager.class,
+                java.util.concurrent.Executor.class, java.util.concurrent.Executor.class)
+                .getDeclaringClass() == ResourceReloader.class,
+            "intermediary reload alias is present on its mapped owner interface");
         AtomicInteger packCloses = new AtomicInteger();
         net.minecraft.resource.ResourcePack pack = new net.minecraft.resource.ResourcePack() {
             private boolean closed;
@@ -257,12 +591,504 @@ public final class ApiSurfaceContractTest {
 
         PlayerBlockBreakEvents.CANCELED.register((w, p, blockPos, state, entity) -> { });
         CppModRuntime.onBlockBreakResult(1L, 1, 2, 3, 1, false);
+        testQueuedReloadCompletesWhenShutdownRejectsTasks(server);
         CppModRuntime.shutdown();
+        testKnotBootstrapShutdownRace();
+        testKnotShutdownWaitsForCallbacks();
         System.out.println("JVM API fixture: " + checks + " PASS");
     }
 
     private static void check(boolean condition, String name) {
         checks++;
         if (!condition) throw new AssertionError(name);
+    }
+
+    private static void testWorldSetBlockStateOverloadDispatch() {
+        cppfm.bridge.MixinHooks.registerMixinClass(
+            WorldSetBlockOverloadMixin.class);
+        OverloadWorld world = new OverloadWorld();
+        BlockPos pos = new BlockPos(6, 70, 8);
+        BlockState stone = Blocks.STONE.getDefaultState();
+
+        boolean threeArgumentChanged = world.setBlockState(pos, stone, 3);
+        check(threeArgumentChanged && THREE_ARGUMENT_WORLD_HOOKS.get() == 1 &&
+                FOUR_ARGUMENT_WORLD_HOOKS.get() == 1,
+            "three-argument world write dispatches its exact hook and virtual four-argument operation");
+
+        boolean fourArgumentChanged = world.setBlockState(pos, stone, 3, 512);
+        check(!fourArgumentChanged && THREE_ARGUMENT_WORLD_HOOKS.get() == 1 &&
+                FOUR_ARGUMENT_WORLD_HOOKS.get() == 2,
+            "four-argument world write invokes only its exact overload hook and reports a no-op");
+    }
+
+    private static void verifyNativeAccessFailureMode() {
+        try {
+            var installedField = cppfm.bridge.NativeBridge.class
+                .getDeclaredField("nativeBridgeInstalled");
+            installedField.setAccessible(true);
+            boolean original = installedField.getBoolean(null);
+            try {
+                installedField.setBoolean(null, false);
+                check(NativeAccess.currentTick() == 0L,
+                    "javac-only NativeAccess uses the neutral value before JNI registration");
+                installedField.setBoolean(null, true);
+                boolean missingBindingSurfaced = false;
+                try {
+                    NativeAccess.currentTick();
+                } catch (UnsatisfiedLinkError expected) {
+                    missingBindingSurfaced = true;
+                }
+                check(missingBindingSurfaced,
+                    "NativeAccess exposes a missing binding after runtime registration");
+            } finally {
+                installedField.setBoolean(null, original);
+            }
+        } catch (ReflectiveOperationException failure) {
+            throw new AssertionError("cannot exercise NativeAccess failure mode", failure);
+        }
+    }
+
+    private static void testResourceReloadUsesOwnerThread(MinecraftServer server)
+            throws Exception {
+        check(!KnotLauncher.isKnotProviderSelected(),
+            "resource reload fixture is using the native fallback provider");
+        AtomicReference<CompletableFuture<Void>> result = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread submitter = new Thread(() -> {
+            try { result.set(server.reloadResources(List.of())); }
+            catch (Throwable caught) { failure.set(caught); }
+        }, "cppfm-reload-submit-fixture");
+        submitter.start();
+        submitter.join(2000);
+        check(!submitter.isAlive() && failure.get() == null && result.get() != null,
+            "off-thread reload submission returns without blocking");
+        CompletableFuture<Void> reload = result.get();
+        check(!reload.isDone(), "off-thread reload waits in the server task queue");
+        server.runTasksTillTickEnd();
+        check(reload.isDone() && !reload.isCompletedExceptionally(),
+            "owner-thread reload future completes successfully through fallback provider");
+        check(ApiSurfaceFixture.DATA_PACK_RELOAD_START.get() == 1 &&
+                ApiSurfaceFixture.DATA_PACK_RELOAD_END.get() == 1 &&
+                ApiSurfaceFixture.DATA_PACK_RELOAD_SUCCESS.get() == 1,
+            "fallback reload dispatches Fabric start and successful end events");
+        check(ApiSurfaceFixture.DATA_PACK_RELOAD_THREAD.get() == Thread.currentThread(),
+            "Fabric reload callbacks run on the MinecraftServer owner thread");
+        CompletableFuture<Void> unsupported = server.reloadResources(List.of("vanilla"));
+        check(unsupported.isCompletedExceptionally(),
+            "reload does not report success when a named pack selection is unsupported");
+        check(ApiSurfaceFixture.DATA_PACK_RELOAD_START.get() == 1 &&
+                ApiSurfaceFixture.DATA_PACK_RELOAD_END.get() == 1,
+            "unsupported pack selection does not emit a false successful reload event");
+        checks += ResourceReloadContractTest.run(server);
+    }
+
+    /** Compile-time fixture for a mod compiled against the official named ABI. */
+    private static final class OfficialFourArgumentReloader implements ResourceReloader {
+        @Override public CompletableFuture<Void> reload(ResourceReloader.Synchronizer synchronizer,
+                ResourceManager manager, java.util.concurrent.Executor prepareExecutor,
+                java.util.concurrent.Executor applyExecutor) {
+            return CompletableFuture.completedFuture(null);
+        }
+    }
+
+    private static void testQueuedReloadCompletesWhenShutdownRejectsTasks(
+            MinecraftServer server) throws Exception {
+        AtomicReference<CompletableFuture<Void>> result = new AtomicReference<>();
+        Thread submitter = new Thread(() -> result.set(server.reloadResources(List.of())),
+            "cppfm-reload-stop-fixture");
+        submitter.start();
+        submitter.join(2000);
+        check(!submitter.isAlive() && result.get() != null && !result.get().isDone(),
+            "queued resource reload is pending before shutdown");
+        server.beginShutdown();
+        check(result.get().isCompletedExceptionally(),
+            "server shutdown completes discarded reload future exceptionally");
+    }
+
+    private static void testKnotBootstrapShutdownRace() throws Exception {
+        BlockingKnotRuntime.SHUTDOWN_CALLS.set(0);
+        TrackingClassLoader trackingLoader = new TrackingClassLoader();
+        setKnotField("loader", trackingLoader);
+        setKnotField("started", false);
+        setKnotField("bootstrapping", false);
+        setKnotField("knotProviderSelected", false);
+        setKnotField("shutdownInProgress", false);
+        setKnotField("shutdownCleanupPending", false);
+        setKnotField("shutdownCallbackComplete", false);
+        setKnotField("runtimeCalls", 0);
+        setKnotField("runtimeShutdown", BlockingKnotRuntime.class.getMethod("shutdown"));
+
+        var beginBootstrap = KnotLauncher.class.getDeclaredMethod("beginBootstrap");
+        beginBootstrap.setAccessible(true);
+        var finishBootstrap = KnotLauncher.class.getDeclaredMethod(
+            "finishBootstrap", Throwable.class);
+        finishBootstrap.setAccessible(true);
+        CountDownLatch bootstrapEntered = new CountDownLatch(1);
+        CountDownLatch allowBootstrapFinish = new CountDownLatch(1);
+        AtomicReference<Object> result = new AtomicReference<>();
+        AtomicReference<Throwable> bootstrapFailure = new AtomicReference<>();
+        Thread bootstrapThread = new Thread(() -> {
+            try {
+                Object admission = beginBootstrap.invoke(null);
+                if (!"STARTED".equals(String.valueOf(admission)))
+                    throw new AssertionError("bootstrap was not admitted: " + admission);
+                bootstrapEntered.countDown();
+                if (!allowBootstrapFinish.await(3, TimeUnit.SECONDS))
+                    throw new AssertionError("bootstrap finish gate timed out");
+                result.set(finishBootstrap.invoke(null, new Object[] { null }));
+            } catch (Throwable failure) {
+                bootstrapFailure.set(failure);
+                bootstrapEntered.countDown();
+            }
+        }, "cppfm-knot-bootstrap-fixture");
+        bootstrapThread.start();
+        boolean enteredWhileBootstrapping = false;
+        try {
+            enteredWhileBootstrapping = bootstrapEntered.await(2, TimeUnit.SECONDS);
+            check(enteredWhileBootstrapping && bootstrapFailure.get() == null,
+                "bootstrap thread enters the real admission gate before shutdown");
+            if (enteredWhileBootstrapping) {
+                KnotLauncher.shutdown();
+                check(Boolean.TRUE.equals(getKnotField("shutdownInProgress")) &&
+                        Boolean.TRUE.equals(getKnotField("shutdownCleanupPending")),
+                    "concurrent shutdown closes callback admission during bootstrap");
+                check(trackingLoader.closeCalls.get() == 0,
+                    "shutdown defers classloader close while bootstrap work is active");
+            }
+        } finally {
+            allowBootstrapFinish.countDown();
+            bootstrapThread.join(3000);
+        }
+        check(!bootstrapThread.isAlive() && bootstrapFailure.get() == null,
+            "bootstrap and shutdown threads finish without failure or deadlock");
+        check(enteredWhileBootstrapping && Boolean.FALSE.equals(result.get()) &&
+                BlockingKnotRuntime.SHUTDOWN_CALLS.get() == 1 &&
+                trackingLoader.closeCalls.get() == 1,
+            "bootstrap completion observes concurrent shutdown and finalizes once");
+        check(!Boolean.TRUE.equals(getKnotField("started")) &&
+                !Boolean.TRUE.equals(getKnotField("shutdownInProgress")),
+            "completed bootstrap/shutdown race leaves the Knot provider closed");
+    }
+
+    private static void testKnotShutdownWaitsForCallbacks() throws Exception {
+        BlockingKnotRuntime.SHUTDOWN_CALLS.set(0);
+        BlockingKnotRuntime.TICK_CALLS.set(0);
+        BlockingKnotRuntime.SHUTDOWN_REENTRY_CALLS.set(0);
+        TrackingClassLoader trackingLoader = new TrackingClassLoader();
+        setKnotField("loader", trackingLoader);
+        setKnotField("started", true);
+        setKnotField("shutdownInProgress", false);
+        setKnotField("shutdownCleanupPending", false);
+        setKnotField("runtimeCalls", 0);
+        setKnotField("runtimeChat", BlockingKnotRuntime.class
+            .getMethod("onChat", long.class, String.class));
+        setKnotField("runtimeTick", BlockingKnotRuntime.class
+            .getMethod("onServerTick", long.class));
+        setKnotField("runtimeServerStopped", BlockingKnotRuntime.class
+            .getMethod("onServerStopped"));
+        setKnotField("runtimeDataPackReload", BlockingKnotRuntime.class
+            .getMethod("onDataPackReload", java.util.Collection.class));
+        setKnotField("knotProviderSelected", true);
+        var shutdownMethod = BlockingKnotRuntime.class.getMethod("shutdown");
+        setKnotField("runtimeShutdown", shutdownMethod);
+        // These references are easy to overlook during teardown and would
+        // otherwise keep a mod runtime (and its loader) reachable.
+        setKnotField("runtimeAllowDeath", shutdownMethod);
+        setKnotField("runtimeDamageApplied", shutdownMethod);
+        testChildLoaderUsesSharedKnotLauncher();
+        CompletableFuture<Void> reload = KnotLauncher.onDataPackReload();
+        check(reload.isDone() && !reload.isCompletedExceptionally(),
+            "direct resource-reload hook is dispatched through a runtime lease");
+
+        AtomicReference<String> callbackResult = new AtomicReference<>();
+        AtomicReference<Throwable> callbackFailure = new AtomicReference<>();
+        Thread callbackThread = new Thread(() -> {
+            try { callbackResult.set(KnotLauncher.onChat(7L, "lease")); }
+            catch (Throwable failure) { callbackFailure.set(failure); }
+        }, "cppfm-knot-callback-fixture");
+        callbackThread.start();
+        check(BlockingKnotRuntime.CALLBACK_ENTERED.await(2, TimeUnit.SECONDS),
+            "Knot fixture callback enters before shutdown race");
+
+        CountDownLatch shutdownReturned = new CountDownLatch(1);
+        AtomicReference<Throwable> shutdownFailure = new AtomicReference<>();
+        Thread shutdownThread = new Thread(() -> {
+            try { KnotLauncher.shutdown(); }
+            catch (Throwable failure) { shutdownFailure.set(failure); }
+            finally { shutdownReturned.countDown(); }
+        }, "cppfm-knot-shutdown-fixture");
+        shutdownThread.start();
+        check(shutdownReturned.await(2, TimeUnit.SECONDS),
+            "shutdown marks pending cleanup without blocking the active callback");
+        check(BlockingKnotRuntime.SHUTDOWN_CALLS.get() == 0 &&
+                trackingLoader.closeCalls.get() == 0,
+            "runtime shutdown and loader close wait for admitted callback completion");
+
+        BlockingKnotRuntime.CALLBACK_RELEASE.countDown();
+        callbackThread.join(3000);
+        shutdownThread.join(3000);
+        check(!callbackThread.isAlive() && !shutdownThread.isAlive() &&
+                callbackFailure.get() == null && shutdownFailure.get() == null,
+            "callback and deferred shutdown both finish without failure or deadlock");
+        check("lease-finished".equals(callbackResult.get()),
+            "admitted callback returns its result across concurrent shutdown");
+        check(BlockingKnotRuntime.TICK_CALLS.get() == 1 &&
+                BlockingKnotRuntime.SHUTDOWN_REENTRY_CALLS.get() == 1,
+            "active callback and shutdown finalizer may safely re-enter leased routes");
+        check(BlockingKnotRuntime.SHUTDOWN_CALLS.get() == 1 &&
+                trackingLoader.closeCalls.get() == 1,
+            "deferred runtime shutdown and loader close each happen exactly once");
+        check(getKnotField("runtimeAllowDeath") == null &&
+                getKnotField("runtimeDamageApplied") == null,
+            "shutdown releases every cached runtime callback method");
+    }
+
+    private static void setKnotField(String name, Object value) throws Exception {
+        var field = KnotLauncher.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(null, value);
+    }
+
+    private static void testChildLoaderUsesSharedKnotLauncher() throws Exception {
+        URL runtimeClasses = KnotLauncher.class.getProtectionDomain()
+            .getCodeSource().getLocation();
+        BlockingKnotRuntime.RELOAD_CALLS.set(0);
+        BlockingKnotRuntime.RELOAD_THREAD.set(null);
+        try (var child = new cppfm.loader.KnotClassLoader(
+                new URL[] { runtimeClasses }, KnotLauncher.class.getClassLoader())) {
+            check(child.loadClass(KnotLauncher.class.getName()) == KnotLauncher.class,
+                "child-first runtime delegates KnotLauncher to the shared parent owner");
+            Class<?> childServer = child.loadClass("net.minecraft.server.MinecraftServer");
+            Object server = childServer.getMethod("of", long.class).invoke(null, 0L);
+            Object futureValue = childServer.getMethod(
+                "reloadResources", java.util.Collection.class).invoke(server, List.of());
+            check(futureValue instanceof CompletableFuture<?> future && future.isDone() &&
+                    !future.isCompletedExceptionally(),
+                "child-loader MinecraftServer reload uses the selected Knot provider");
+            check(BlockingKnotRuntime.RELOAD_CALLS.get() == 1 &&
+                    BlockingKnotRuntime.RELOAD_THREAD.get() == Thread.currentThread(),
+                "child-loader reload callback retains the shared runtime lease on owner thread");
+        }
+    }
+
+    private static Object getKnotField(String name) throws Exception {
+        var field = KnotLauncher.class.getDeclaredField(name);
+        field.setAccessible(true);
+        return field.get(null);
+    }
+
+    private static void verifyBootstrapContracts() throws IOException {
+        verifyNativeAccessFailureMode();
+        Path temporaryRoot = Files.createTempDirectory("cppfm-jvm-bootstrap-contract-");
+        FAILED_BOOTSTRAP_TICKS.set(0);
+        ENTRYPOINT_ORDER.clear();
+        try {
+            Path dependencyMods = temporaryRoot.resolve("dependency-failure");
+            writeMod(dependencyMods, "dependency_failure",
+                "{\"id\":\"dependency_failure\",\"version\":\"1.0.0\"," +
+                "\"depends\":{\"minecraft\":\">=99.0.0\"}}");
+            check(!CppModRuntime.bootstrap(dependencyMods.toString(),
+                    temporaryRoot.resolve("config").toString()),
+                "dependency validation failure aborts bootstrap");
+            check(!FabricLoader.getInstance().isModLoaded("dependency_failure"),
+                "dependency failure leaves no published mod metadata");
+
+            Path entrypointFailureMods = temporaryRoot.resolve("entrypoint-failure");
+            writeMod(entrypointFailureMods, "entrypoint_failure",
+                "{\"id\":\"entrypoint_failure\",\"version\":\"1.0.0\"," +
+                "\"entrypoints\":{\"main\":\"" +
+                    FailingBootstrapMod.class.getName() + "\"}}");
+            check(!CppModRuntime.bootstrap(entrypointFailureMods.toString(),
+                    temporaryRoot.resolve("config").toString()),
+                "entrypoint initialization failure aborts bootstrap without strict mode");
+            check(!FabricLoader.getInstance().isModLoaded("entrypoint_failure")
+                    && FabricLoader.getInstance().getEntrypoints("main", Object.class).isEmpty(),
+                "entrypoint failure rolls back loader metadata and entrypoints");
+            CppModRuntime.onServerTick(1L);
+            check(FAILED_BOOTSTRAP_TICKS.get() == 0,
+                "failed entrypoint callback is not dispatched after rollback");
+
+            Path validMods = temporaryRoot.resolve("valid-mods");
+            writeMod(validMods, "a_server_fixture",
+                "{\"id\":\"a_server_fixture\",\"version\":\"1.0.0\"," +
+                "\"entrypoints\":{\"server\":\"" + ServerOrderMod.class.getName() + "\"}}");
+            writeMod(validMods, "z_main_fixture",
+                "{\"id\":\"z_main_fixture\",\"version\":\"1.0.0\"," +
+                "\"depends\":{\"minecraft\":[\"<1.21.0\",\">=1.21.0\"]}," +
+                "\"entrypoints\":{\"main\":\"" + MainOrderMod.class.getName() + "\"}}");
+            check(CppModRuntime.bootstrap(validMods.toString(),
+                    temporaryRoot.resolve("config").toString()),
+                "version-candidate array accepts any matching alternative");
+            check(ENTRYPOINT_ORDER.equals(List.of("main", "server")),
+                "all main entrypoints run before server entrypoints across mods");
+            CppModRuntime.onServerTick(2L);
+            check(FAILED_BOOTSTRAP_TICKS.get() == 0,
+                "rollback removes callbacks registered by a failed initializer");
+        } finally {
+            try {
+                CppModRuntime.shutdown();
+            } finally {
+                deleteTree(temporaryRoot);
+            }
+        }
+    }
+
+    private static void writeMod(Path modsDirectory, String directoryName, String metadata)
+            throws IOException {
+        Path modDirectory = modsDirectory.resolve(directoryName);
+        Files.createDirectories(modDirectory);
+        Files.writeString(modDirectory.resolve("fabric.mod.json"), metadata,
+            StandardCharsets.UTF_8);
+    }
+
+    private static void deleteTree(Path root) throws IOException {
+        try (var paths = Files.walk(root)) {
+            for (Path path : paths.sorted(java.util.Comparator.reverseOrder()).toList())
+                Files.deleteIfExists(path);
+        }
+    }
+
+    private static void testLivingEntityHealthBoundary() throws Exception {
+        NativeLivingEntityProbe nativeEntity = new NativeLivingEntityProbe(5.0f);
+        AtomicInteger nativeDamageCallbacks = new AtomicInteger();
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE
+            .register((entity, source, amount) -> {
+                if (entity == nativeEntity) nativeDamageCallbacks.incrementAndGet();
+                return true;
+            });
+
+        check(!nativeEntity.damage(
+                new net.minecraft.entity.damage.DamageSource("generic"), 2.0f),
+            "native-backed Java damage fails closed without a C++ damage entrypoint");
+        check(nativeEntity.authoritativeHealth == 5.0f && nativeEntity.healthWrites == 0,
+            "native-backed Java damage does not write shadow/authoritative health");
+        check(nativeDamageCallbacks.get() == 0,
+            "native-backed Java damage does not dispatch callbacks for unapplied damage");
+
+        nativeEntity.heal(2.0f);
+        check(nativeEntity.authoritativeHealth == 7.0f && nativeEntity.healthWrites == 1,
+            "native-backed heal bases its write on the authoritative health getter");
+
+        net.minecraft.entity.LivingEntity unboundNativeEntity =
+            new UnboundNativeLivingEntityProbe();
+        java.lang.reflect.Field shadowHealth =
+            net.minecraft.entity.LivingEntity.class.getDeclaredField("health");
+        shadowHealth.setAccessible(true);
+        float shadowBefore = shadowHealth.getFloat(unboundNativeEntity);
+        unboundNativeEntity.setHealth(9.0f);
+        check(shadowHealth.getFloat(unboundNativeEntity) == shadowBefore,
+            "native-backed setHealth never mutates the Java shadow field");
+
+        LocalLivingEntityProbe localEntity = new LocalLivingEntityProbe();
+        localEntity.setHealth(5.0f);
+        localEntity.heal(2.0f);
+        check(localEntity.getHealth() == 7.0f,
+            "Java-only heal continues to use local health");
+        check(localEntity.damage(
+                new net.minecraft.entity.damage.DamageSource("generic"), 1.0f) &&
+                localEntity.getHealth() == 6.0f,
+            "Java-only damage continues to mutate local health");
+
+        LocalLivingEntityProbe restoredByListener = new LocalLivingEntityProbe();
+        restoredByListener.setHealth(3.0f);
+        List<String> restoredCallbackOrder = new CopyOnWriteArrayList<>();
+        AtomicReference<Float> afterDamageHealth = new AtomicReference<>();
+        AtomicReference<Boolean> afterDamageDead = new AtomicReference<>();
+        AtomicInteger restoredAfterDeathCalls = new AtomicInteger();
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DEATH
+            .register((entity, source, amount) -> {
+                if (entity != restoredByListener) return true;
+                restoredCallbackOrder.add("allow_death");
+                check(entity.getHealth() == 0.0f && entity.isDead() &&
+                        !entity.isAlive() && !entity.isRemoved(),
+                    "fatal damage exposes zero-health, alive-state, and removal state to ALLOW_DEATH");
+                entity.setHealth(2.0f);
+                return false;
+            });
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DAMAGE
+            .register((entity, source, base, taken, blocked) -> {
+                if (entity != restoredByListener) return;
+                restoredCallbackOrder.add("after_damage");
+                afterDamageHealth.set(entity.getHealth());
+                afterDamageDead.set(entity.isDead());
+            });
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH
+            .register((entity, source) -> {
+                if (entity == restoredByListener) restoredAfterDeathCalls.incrementAndGet();
+            });
+
+        check(restoredByListener.damage(
+                new net.minecraft.entity.damage.DamageSource("death-veto-restored"), 4.0f),
+            "lethal damage remains accepted when ALLOW_DEATH vetoes the death transition");
+        check(restoredByListener.getHealth() == 2.0f && restoredByListener.isAlive() &&
+                !restoredByListener.isDead() && !restoredByListener.isRemoved(),
+            "ALLOW_DEATH listener's positive health restoration leaves the entity alive");
+        check(restoredCallbackOrder.equals(List.of("allow_death", "after_damage")),
+            "restored veto dispatches AFTER_DAMAGE only after ALLOW_DEATH completes");
+        check(Float.valueOf(2.0f).equals(afterDamageHealth.get()) &&
+                Boolean.FALSE.equals(afterDamageDead.get()) &&
+                restoredAfterDeathCalls.get() == 0,
+            "AFTER_DAMAGE observes restored live state and veto suppresses AFTER_DEATH");
+
+        LocalLivingEntityProbe vetoWithoutRestore = new LocalLivingEntityProbe();
+        vetoWithoutRestore.setHealth(3.0f);
+        List<String> unrestoredCallbackOrder = new CopyOnWriteArrayList<>();
+        AtomicInteger unrestoredAfterDamageCalls = new AtomicInteger();
+        AtomicInteger unrestoredAfterDeathCalls = new AtomicInteger();
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DEATH
+            .register((entity, source, amount) -> {
+                if (entity != vetoWithoutRestore) return true;
+                unrestoredCallbackOrder.add("allow_death");
+                return false;
+            });
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DAMAGE
+            .register((entity, source, base, taken, blocked) -> {
+                if (entity != vetoWithoutRestore) return;
+                unrestoredCallbackOrder.add("after_damage");
+                unrestoredAfterDamageCalls.incrementAndGet();
+            });
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.AFTER_DEATH
+            .register((entity, source) -> {
+                if (entity == vetoWithoutRestore) unrestoredAfterDeathCalls.incrementAndGet();
+            });
+
+        check(vetoWithoutRestore.damage(
+                new net.minecraft.entity.damage.DamageSource("death-veto-unrestored"), 4.0f),
+            "ALLOW_DEATH veto does not roll back fatal damage automatically");
+        check(vetoWithoutRestore.getHealth() == 0.0f && vetoWithoutRestore.isDead() &&
+                !vetoWithoutRestore.isAlive() && !vetoWithoutRestore.isRemoved(),
+            "veto without listener healing preserves zero health and a dead but unremoved state");
+        check(unrestoredCallbackOrder.equals(List.of("allow_death")) &&
+                unrestoredAfterDamageCalls.get() == 0 && unrestoredAfterDeathCalls.get() == 0,
+            "unrestored zero-health veto dispatches neither AFTER_DAMAGE nor AFTER_DEATH");
+    }
+
+    private static void testRejectedMobSpawnEvictsWrappers() {
+        final long firstHandle = 0xB000L;
+        final int rejectedSpawns = 32;
+        AtomicReference<Entity> rejectedWrapper = new AtomicReference<>();
+        ModEvents.MOB_SPAWN.register((entity, world, x, y, z) -> {
+            long handle = entity.nativeHandle();
+            if (handle >= firstHandle && handle < firstHandle + rejectedSpawns) {
+                rejectedWrapper.set(entity);
+                return false;
+            }
+            return true;
+        });
+        for (int i = 0; i < rejectedSpawns; i++) {
+            long handle = firstHandle + i;
+            WrapperCache.get(Entity.class, handle, NativeEntityProbe::new);
+            check(!CppModRuntime.onMobSpawn(handle, 0.0, 0.0, 0.0, 0),
+                "mob spawn callback rejects native handle");
+            Entity rejected = rejectedWrapper.getAndSet(null);
+            check(rejected != null && rejected.nativeHandle() == handle,
+                "rejected spawn callback receives its native wrapper");
+            try {
+                check(Entity.of(handle) != rejected,
+                    "rejected spawn wrapper is evicted from the strong cache");
+            } finally {
+                WrapperCache.remove(handle);
+            }
+        }
     }
 }

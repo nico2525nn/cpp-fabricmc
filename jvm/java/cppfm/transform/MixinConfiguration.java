@@ -49,6 +49,23 @@ public final class MixinConfiguration {
         return value instanceof Boolean booleanValue && booleanValue;
     }
 
+    /** Default minimum number of successful injector callbacks for this config. */
+    public int defaultRequire() {
+        Object configured = values.get("injectors");
+        if (configured == null) return 0;
+        if (!(configured instanceof Map<?, ?> injectors))
+            throw new TransformException("Mixin config injectors is not an object");
+        Object value = injectors.get("defaultRequire");
+        if (value == null) return 0;
+        if (!(value instanceof Number number))
+            throw new TransformException("Mixin config defaultRequire is not an integer");
+        double numeric = number.doubleValue();
+        if (!Double.isFinite(numeric) || numeric < 0 ||
+            numeric > Integer.MAX_VALUE || numeric != Math.rint(numeric))
+            throw new TransformException("Mixin config defaultRequire is out of range");
+        return (int) numeric;
+    }
+
     /** Name of the reference map used to translate annotation targets. */
     public String refmap() {
         Object value = values.get("refmap");

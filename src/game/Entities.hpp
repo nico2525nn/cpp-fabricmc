@@ -1,6 +1,7 @@
 // Entities: item drops + mobs with data-driven stats (plan.md Phase 3/4 +
 #pragma once
 #include <cstdint>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -10,10 +11,17 @@
 #include <unordered_map>
 #include <algorithm>
 #include <limits>
+#include <utility>
 #include <cstdio>
+#include <cmath>
+#include <functional>
 #include "../generated/EntityIds.hpp"
+#include "../generated/EntityDimensions.hpp"
 #include "../generated/ItemIds.hpp"
+#include "../core/ByteBuffer.hpp"
 #include "Items.hpp"
+#include "Constants.hpp"
+#include "../proto/Ids.hpp"
 #include "../core/Random.hpp"
 
 namespace cppfm {
@@ -274,7 +282,7 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:bee",            10.f, 0.10f, 2.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:bogged",         16.f, 0.10f, 2.f, 16.0f, true, false,"minecraft:arrow",0,2,nullptr,                           5},
         {"minecraft:breeze",         30.f, 0.09f, 6.f, 24.0f, true, false,"minecraft:breeze_rod",0,1,nullptr,                      5},
-        {"minecraft:camel",          32.f, 0.09f, 0.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:camel",          32.f, 0.09f, 0.f, 16.0f, false,false,nullptr,0,0,"minecraft:cactus",                         0},
         {"minecraft:cat",            10.f, 0.10f, 3.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:cave_spider",    12.f, 0.12f, 2.f, 16.0f, true, false,"minecraft:string",0,2,nullptr,                          5},
         {"minecraft:creaking",        1.f, 0.08f, 7.f, 32.0f, true, false,"minecraft:resin_clump",0,2,nullptr,                     5},
@@ -401,13 +409,36 @@ inline float slimeWidthForSize(int sz) {
     return 0.52f * static_cast<float>(s);
 }
 
+struct MobPositionPacket {
+    std::uint8_t packetId = 0;
+    WriteBuffer body;
+};
+
+inline std::array<std::int8_t, 3> mobSpawnRotationBytes(
+    const float yaw, const float pitch) noexcept {
+    return {constants::protocolSignedAngleByte(pitch),
+            constants::protocolSignedAngleByte(yaw),
+            constants::protocolSignedAngleByte(yaw)};
+}
+
 struct MobEntity {
+    enum class RemovalRequest : std::uint8_t {
+        None,
+        Killed,
+        Discarded,
+    };
+
     // Mob snapshots are shared between the tick loop, network sessions, and
     // JVM callbacks.  A shared mutex object keeps copies (for example boss
     // callback snapshots) compatible while giving live entities one state
     // boundary.
     mutable std::shared_ptr<std::recursive_mutex> stateMtx =
         std::make_shared<std::recursive_mutex>();
+    // Entity handles contain raw addresses. Once retirement invalidates the
+    // current handle, concurrent read-only enumeration must not publish a new
+    // one before roster removal completes.
+    std::shared_ptr<std::atomic<bool>> jvmHandlePublicationClosed =
+        std::make_shared<std::atomic<bool>>(false);
     std::int32_t entityId = 0;
     std::int8_t dimension = 0;
     MobKind kind = MobKind::Pig;
@@ -415,6 +446,37 @@ struct MobEntity {
     float yaw=0, pitch=0;
     double health = 10;
     bool dead = false;
+    // Server registration and client replication are separate lifecycle
+    // transitions: Fabric ENTITY_LOAD callbacks finish before the first
+    // client is allowed to observe this entity.
+    bool clientSpawnReady = false;
+    std::int64_t pendingDeathTick = -1;
+    std::string pendingDeathCause;
+    RemovalRequest removalRequest = RemovalRequest::None;
+    // Set under stateMtx when a subsystem takes ownership of kill side effects.
+    // Prevents concurrent tick/session/projectile/explosion paths from
+    // duplicating drops, XP, and removal packets for the same entity.
+    bool deathHandlingClaimed = false;
+    bool tryClaimDeathHandling() {
+        std::lock_guard entityLock(*stateMtx);
+        if (!dead || deathHandlingClaimed) return false;
+        deathHandlingClaimed = true;
+        return true;
+    }
+    bool requestRemoval(RemovalRequest reason) {
+        if (reason == RemovalRequest::None) return false;
+        std::lock_guard entityLock(*stateMtx);
+        if (deathHandlingClaimed) return dead;
+        if (removalRequest != RemovalRequest::None)
+            return removalRequest == reason;
+        if (reason == RemovalRequest::Discarded && dead) return false;
+        removalRequest = reason;
+        if (reason == RemovalRequest::Killed) {
+            health = 0.0;
+            dead = true;
+        }
+        return true;
+    }
     double tx=0, tz=0; bool hasTarget=false;
     std::int64_t nextWanderAt = 0;
     std::int32_t age = 0;
@@ -423,7 +485,147 @@ struct MobEntity {
     std::int64_t breedCooldownUntil = 0;
     std::int32_t angerTargetEntityId = -1;
     std::int64_t angryUntilTick = 0;
-    double sentX=0, sentY=0, sentZ=0; float sentYaw=0; bool hasSent=false;
+    double sentX=0, sentY=0, sentZ=0;
+    float sentYaw=0, sentPitch=0;
+    bool hasSent=false;
+    // Relative movement deltas are based on the last absolute spawn/teleport
+    // or movement packet, not on the entity origin or pre-teleport position.
+    // The caller must hold stateMtx while recording or building these packets.
+    void recordPositionSent() noexcept {
+        sentX = x;
+        sentY = y;
+        sentZ = z;
+        sentYaw = yaw;
+        sentPitch = pitch;
+        hasSent = true;
+    }
+
+    // Build the exact clientbound packets for the current authoritative state
+    // and advance only the baselines represented by those packets. Called by
+    // mobsTick while stateMtx is held; the returned packets are dispatched
+    // after that lock is released.
+    template <typename GetOnGround>
+    std::vector<MobPositionPacket> takePositionPacketsWithGroundState(
+        GetOnGround&& getOnGround) {
+        std::vector<MobPositionPacket> packets;
+        if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z) ||
+            !std::isfinite(yaw) || !std::isfinite(pitch))
+            return packets;
+
+        const double dx = x - sentX;
+        const double dy = y - sentY;
+        const double dz = z - sentZ;
+        const bool baselineValid = hasSent && std::isfinite(sentX) &&
+            std::isfinite(sentY) && std::isfinite(sentZ) &&
+            std::isfinite(sentYaw) && std::isfinite(sentPitch);
+        const bool positionChanged = !baselineValid ||
+            std::abs(dx) + std::abs(dy) + std::abs(dz) > 0.03;
+        const bool yawChanged = !baselineValid ||
+            constants::protocolAngleByte(yaw) !=
+                constants::protocolAngleByte(sentYaw);
+        const bool pitchChanged = !baselineValid ||
+            constants::protocolAngleByte(pitch) !=
+                constants::protocolAngleByte(sentPitch);
+        const bool rotationChanged = yawChanged || pitchChanged;
+        if (!positionChanged && !rotationChanged) return packets;
+        const bool onGround = static_cast<bool>(std::invoke(
+            std::forward<GetOnGround>(getOnGround)));
+
+        bool teleport = !baselineValid;
+        std::int16_t relativeX = 0;
+        std::int16_t relativeY = 0;
+        std::int16_t relativeZ = 0;
+        const auto encodeRelative = [](const double delta,
+                                       std::int16_t& encoded) {
+            const double scaled = delta * 4096.0;
+            if (!std::isfinite(scaled) ||
+                scaled < static_cast<double>(
+                    std::numeric_limits<std::int16_t>::min()) ||
+                scaled > static_cast<double>(
+                    std::numeric_limits<std::int16_t>::max()))
+                return false;
+            encoded = static_cast<std::int16_t>(scaled);
+            return true;
+        };
+        if (positionChanged && baselineValid &&
+            (!encodeRelative(dx, relativeX) ||
+             !encodeRelative(dy, relativeY) ||
+             !encodeRelative(dz, relativeZ)))
+            teleport = true;
+
+        MobPositionPacket movement;
+        if (teleport) {
+            movement.packetId = proto::pl::sc::EntityTeleport;
+            movement.body.varint(entityId);
+            movement.body.f64(x);
+            movement.body.f64(y);
+            movement.body.f64(z);
+            movement.body.f64(std::isfinite(velX) ? velX : 0.0);
+            movement.body.f64(std::isfinite(velY) ? velY : 0.0);
+            movement.body.f64(std::isfinite(velZ) ? velZ : 0.0);
+            movement.body.f32(yaw);
+            movement.body.f32(pitch);
+            movement.body.i32(0);
+            movement.body.boolean(onGround);
+        } else if (positionChanged) {
+            movement.body.varint(entityId);
+            movement.body.i16(relativeX);
+            movement.body.i16(relativeY);
+            movement.body.i16(relativeZ);
+            if (rotationChanged) {
+                movement.packetId = proto::pl::sc::MoveEntityPosRot;
+                movement.body.i8(constants::protocolSignedAngleByte(yaw));
+                movement.body.i8(constants::protocolSignedAngleByte(pitch));
+            } else {
+                movement.packetId = proto::pl::sc::MoveEntityPos;
+            }
+            movement.body.boolean(onGround);
+        } else {
+            movement.packetId = proto::pl::sc::EntityLook;
+            movement.body.varint(entityId);
+            movement.body.i8(constants::protocolSignedAngleByte(yaw));
+            movement.body.i8(constants::protocolSignedAngleByte(pitch));
+            movement.body.boolean(onGround);
+        }
+        packets.push_back(std::move(movement));
+
+        // Entity position/look update body yaw, while living entities track
+        // head yaw separately. Keep that packet behind its related update.
+        if (yawChanged) {
+            MobPositionPacket head;
+            head.packetId = proto::pl::sc::RotateHead;
+            head.body.varint(entityId);
+            head.body.i8(constants::protocolSignedAngleByte(yaw));
+            packets.push_back(std::move(head));
+        }
+
+        if (positionChanged || teleport) {
+            sentX = x;
+            sentY = y;
+            sentZ = z;
+        }
+        if (rotationChanged || teleport) {
+            sentYaw = yaw;
+            sentPitch = pitch;
+        }
+        hasSent = true;
+        return packets;
+    }
+    std::vector<MobPositionPacket> takePositionPackets(
+        const bool onGround = true) {
+        return takePositionPacketsWithGroundState(
+            [onGround] { return onGround; });
+    }
+    template <typename GetOnGround>
+    std::vector<MobPositionPacket> takeTeleportPacketsWithGroundState(
+        GetOnGround&& getOnGround) {
+        // A teleport establishes a new absolute client baseline even when its
+        // destination is close to the previous position. Clearing this first
+        // also forces the independent living-head yaw packet to accompany it.
+        hasSent = false;
+        return takePositionPacketsWithGroundState(
+            std::forward<GetOnGround>(getOnGround));
+    }
     std::int64_t lastSeenMs = 0;
     // equipment slots: 0 mainhand 1 offhand 2 boots 3 leggings 4 chest 5 head
     std::array<ItemStack,6> equipment{};
@@ -525,6 +727,53 @@ struct MobEntity {
     std::int32_t wolfAngerTarget = -1;
     std::int64_t wolfAngerUntil = 0;
     bool isTamed = false;
+    // AbstractHorseEntity keeps Temper and Tame as entity state.  Mob entities
+    // are not currently serialized by this server, so this value has the same
+    // runtime-only lifetime as isTamed.
+    std::int32_t horseTemper = 0;
+    static constexpr std::int32_t kMaxHorseTemper = 100;
+    static constexpr std::int32_t kHorseGoldenCarrotTemper = 5;
+    enum class HorseTamingAttempt : std::uint8_t {
+        NotApplicable,
+        Failed,
+        Tamed,
+    };
+    static constexpr bool usesHorseTemper(const MobKind mobKind) noexcept {
+        switch (mobKind) {
+        case MobKind::Horse:
+        case MobKind::Donkey:
+        case MobKind::Mule:
+        case MobKind::Llama:
+        case MobKind::TraderLlama:
+            return true;
+        default:
+            return false;
+        }
+    }
+    bool canGainHorseTemper() const noexcept {
+        return usesHorseTemper(kind) && !isTamed &&
+               std::clamp(horseTemper, 0, kMaxHorseTemper) <
+                   kMaxHorseTemper;
+    }
+    std::int32_t addHorseTemper(const std::int32_t difference) noexcept {
+        const auto oldTemper = std::clamp(horseTemper, 0, kMaxHorseTemper);
+        const auto newTemper = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(oldTemper) + difference,
+            0, kMaxHorseTemper));
+        horseTemper = newTemper;
+        return newTemper - oldTemper;
+    }
+    HorseTamingAttempt attemptHorseTaming(
+        const std::int32_t chanceRoll) noexcept {
+        if (!usesHorseTemper(kind) || isTamed) return HorseTamingAttempt::NotApplicable;
+        (void)addHorseTemper(0); // normalize any externally staged test/state value
+        if (chanceRoll >= 0 && chanceRoll < horseTemper) {
+            isTamed = true;
+            return HorseTamingAttempt::Tamed;
+        }
+        (void)addHorseTemper(kHorseGoldenCarrotTemper);
+        return HorseTamingAttempt::Failed;
+    }
     std::int64_t drownedTridentCooldown = 0;
     std::int64_t villagerScheduleTick = 0;
     std::int64_t piglinBarterCooldown = 0;
@@ -577,6 +826,9 @@ struct MobEntity {
     std::int64_t huskHungerCooldown = 0;
     std::int64_t polarBearDefendUntil = 0;
     std::int64_t pufferfishPuffUntil = 0;
+    // Matches 1.21.4 PufferfishEntity.PUFF_STATE: small=0, mid=1, full=2.
+    // pufferfishPuffUntil remains the existing 40-tick deflation deadline.
+    std::uint8_t pufferfishPuffState = 0;
     std::int64_t evokerFangsSnapCooldown = 0;
     std::int64_t endCrystalHoverPhase = 0;
     std::int64_t tntFuseStartedAt = -1;
@@ -606,8 +858,10 @@ struct MobEntity {
     }
     static bool isFishKind(MobKind k) {
         return k==MobKind::Cod || k==MobKind::Salmon || k==MobKind::TropicalFish
-            || k==MobKind::Pufferfish || k==MobKind::Tadpole
-            || k==MobKind::Squid || k==MobKind::GlowSquid;
+            || k==MobKind::Pufferfish || k==MobKind::Tadpole;
+    }
+    static bool isAquaticKind(MobKind k) {
+        return isFishKind(k) || k==MobKind::Squid || k==MobKind::GlowSquid;
     }
     static bool isGrazerKind(MobKind k) {
         return k==MobKind::Horse || k==MobKind::Donkey || k==MobKind::Mule
@@ -637,7 +891,7 @@ struct MobEntity {
     }
     // 7 minecarts + 19 projectiles + 6 ambient objects + 13 singles = 84 kinds).
     static bool hasSpeciesGoal(MobKind k) {
-        if (isFishKind(k) || isGrazerKind(k) || isBoat(k) || isMinecartKind(k)
+        if (isAquaticKind(k) || isGrazerKind(k) || isBoat(k) || isMinecartKind(k)
             || isProjectileKind(k) || isAmbientObjectKind(k)) return true;
         switch (k) {
         case MobKind::Vex: case MobKind::Chicken: case MobKind::Husk:
@@ -667,6 +921,27 @@ struct MobEntity {
         return it != gen::itemIdByName().end() ? it->second : 0;
     }
 };
+
+// Entity dimensions are kept in the same canonical order as MobKind and the
+// MobStats table. Slime size is dynamic in vanilla, while ageable mobs use
+// their half-size baby dimensions.
+inline double mobGroundingHalfWidth(const MobEntity& mob) noexcept {
+    const auto index = static_cast<std::size_t>(mob.kind);
+    double width = gen::mobCollisionDimensions(index).width;
+    if (mob.kind == MobKind::Slime || mob.kind == MobKind::MagmaCube)
+        width = slimeWidthForSize(mob.slimeSize);
+    else if (mob.kind == MobKind::Pufferfish) {
+        // Mojang 1.21.4 server bytecode (Pufferfish.getScaleForPuffState):
+        // state 0 -> 0.5, state 1 -> 0.7, state 2 -> 1.0. The pinned base
+        // Pufferfish width is 0.7 blocks (generated EntityDimensions table).
+        constexpr std::array<double, 3> kPufferfishScales{0.5, 0.7, 1.0};
+        width *= kPufferfishScales[
+            std::min<std::size_t>(mob.pufferfishPuffState,
+                                  kPufferfishScales.size() - 1)];
+    } else if (MobEntity::isBaby(mob))
+        width *= 0.5;
+    return width * 0.5;
+}
 
 inline int armorPointsForItem(std::uint32_t itemId) {
     // map ItemId name suffix to armor points (approximate vanilla) we resolve name lazily
@@ -709,11 +984,14 @@ inline int totalArmorPoints(const MobEntity& m) {
     for (int i=2;i<6;i++) if (!m.equipment[i].empty()) tot+=armorPointsForItem(m.equipment[i].itemId);
     return tot;
 }
-inline int totalArmorPoints(const std::array<ItemStack,46>& inv) {
+inline int totalArmorPoints(
+    const std::array<ItemStack, kPlayerInventorySlotCount>& inv) {
     int tot=0;
     // armor slots: 5 boots,6 leggings,7 chest,8 head? In Player inv 5..8 are armor (5 boots? Actually 5..8)
     // vanilla player inv layout: 0-8 hotbar mirrored? Our inv is 0..44? Let's assume armor slots 5,6,7,8
-    for (int i=5;i<=8;i++) if (i>=0 && i<46 && !inv[i].empty()) tot+=armorPointsForItem(inv[i].itemId);
+    for (int i = 5; i <= 8; ++i) {
+        if (!inv[i].empty()) tot += armorPointsForItem(inv[i].itemId);
+    }
     return tot;
 }
 

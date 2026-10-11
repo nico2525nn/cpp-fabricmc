@@ -64,7 +64,7 @@ public final class AdvancedMixin {
     }
 
     @Inject(method = "sliced(I)I", at = @At(value = "INVOKE",
-        target = "cppfm/transformer_fixture/AdvancedTarget;helper(I)I"), require = 3, allow = 3)
+        target = "cppfm/transformer_fixture/AdvancedTarget;helper(I)I"), require = 3, allow = 1)
     private static void allInvokes(CallbackInfo ignored) {
         allInvokeHits++;
     }

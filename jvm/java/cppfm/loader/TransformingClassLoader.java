@@ -185,7 +185,8 @@ public class TransformingClassLoader extends URLClassLoader {
                 }
                 byte[] original = readAll(stream);
                 byte[] remapped = namespaceRemapper.remapMixin(mixin, original);
-                mixinTransformer.registerMixin(mixin, remapped, resourceName, referenceMap);
+                mixinTransformer.registerMixin(mixin, remapped, resourceName,
+                    referenceMap, configuration.defaultRequire());
             } catch (IOException failure) {
                 if (configuration.isRequired())
                     throw new TransformException("cannot read mixin class " + mixin, failure);
@@ -374,6 +375,11 @@ public class TransformingClassLoader extends URLClassLoader {
             || name.startsWith("jdk.") || name.startsWith("sun.")
             || name.startsWith("com.sun.") || name.startsWith("org.w3c.")
             || name.startsWith("org.xml.") || name.startsWith("org.slf4j.")
+            // The launcher owns the process-wide provider/lifecycle lease.
+            // Defining a child copy lets shadow MinecraftServer bypass that
+            // lease when it dispatches reload and shutdown operations.
+            || name.equals("cppfm.bridge.KnotLauncher")
+            || name.startsWith("cppfm.bridge.KnotLauncher$")
             // MixinClassTransformer is owned by the application loader when
             // KnotClassLoader itself is discovered there.  Share this marker
             // class with that transformer so manual shadow hooks and the

@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.message.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.network.message.MessageType;
@@ -62,12 +61,12 @@ public final class ServerMessageEvents {
         }
     }
 
-    public static final Event<AllowChatMessage> ALLOW_CHAT_MESSAGE = new Event<>(CppModRuntime::registerAllowChatMessage,
+    public static final Event<AllowChatMessage> ALLOW_CHAT_MESSAGE = EventFactory.createArrayBacked(
         AllowChatMessage.class, callbacks -> (message, sender, params) -> {
             for (AllowChatMessage callback : callbacks) if (!callback.allowChatMessage(message, sender, params)) return false;
             return true;
         });
-    public static final Event<ChatMessage> CHAT_MESSAGE = new Event<>(CppModRuntime::registerChatMessage,
+    public static final Event<ChatMessage> CHAT_MESSAGE = EventFactory.createArrayBacked(
         ChatMessage.class, callbacks -> (message, sender, params) -> {
             for (ChatMessage callback : callbacks) callback.onChatMessage(message, sender, params);
         });

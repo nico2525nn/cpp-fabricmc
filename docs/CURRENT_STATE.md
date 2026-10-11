@@ -19,22 +19,22 @@ handoff notes are not part of the public documentation set.
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-26` |
-| `implementation_baseline` | integrated `main` HEAD `81b6f4f` (2026-09-24); unmerged refactor work is recorded in §1E |
-| `implementation_baseline_short` | `81b6f4f` (`335fca5` history plus PR #2–#4 integration) |
-| `documentation_commit` | historical final documentation sequence after source integration `335fca5`; this snapshot refresh is on the §1E branch |
-| `main_integration_merge` | `81b6f4f` (PR #4; no architecture refactor is merged) |
-| `plan` | compatibility baseline plan53/54; separate active architecture-quality refactor in §1E |
-| `phase` | `behavior-preserving-architecture-refactor` |
-| `phase_status` | `IN_PROGRESS_DIMENSION_RUNTIME_SLICE; QUALITY_GOAL_NOT_MET` |
+| `updated` | `2026-10-04` |
+| `implementation_baseline` | integrated `main` HEAD `4756a5b0` (2026-09-26; PR #5 DimensionRuntime ownership) |
+| `implementation_baseline_short` | `4756a5b0` (`81b6f4f` plus PR #5) |
+| `documentation_commit` | current architecture-quality refactor and verification updates are uncommitted on `codex/deep-refactor-quality` |
+| `main_integration_merge` | `4756a5b0` (PR #5 DimensionRuntime ownership slice) |
+| `plan` | compatibility baseline plan53/54; active architecture/storage compatibility work in §1F |
+| `phase` | `behavior-preserving-architecture-refactor-and-recovery-compatibility` |
+| `phase_status` | `IN_PROGRESS_DEEP_REFACTOR; STORAGE_COMPATIBILITY_PARTIAL; FRESH_STRICT_REVIEW_PENDING; QUALITY_GOAL_NOT_MET` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | integrated main `81b6f4f`; unmerged architecture work is listed separately in §1E |
+| `runtime_reference_snapshot` | integrated main `4756a5b0`; current unmerged world-mutation work is listed separately in §1E |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | submit the dimension-runtime ownership slice through PR and exact-head Actions, then continue the block-mutation and session-state ownership refactors; do not begin Mineflayer until independent code-quality review supports the quality gate |
+| `next_plan` | finish independent adversarial review of the latest AI snapshot and login-publication changes; cover the remaining unreviewed JVM/build/docs/test diff, resolve material findings, rerun the full non-nightly CTest matrix, continue cleanup until an independent strict whole-diff code-quality review is at least 6/10, then submit a PR and require exact-head Actions before any merge |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -164,39 +164,346 @@ the two contiguous inventory ranges directly (hotbar 36–44, main inventory
 failure); local `native` and `wire_b6` CTest targets passed **2/2**. This local
 evidence does not replace Actions for the updated PR head.
 
-## 1E. Behavior-preserving architecture refactor (working branch, 2026-09-26)
+## 1E. Behavior-preserving architecture refactor (2026-09-26)
 
-This is unmerged work on `codex/goal-dimension-runtime`, based on `main`
-`81b6f4f246b8616e53f537a60f2a0900cc00f690`. The source commits are
-`62691578` (group per-dimension ownership in `GameServer::DimensionRuntime`) and
-`c56c4f09` (route state selection through one dimension-to-runtime mapping).
-The changes do not add gameplay behavior or promote any compatibility-matrix
-status.
+### Merged DimensionRuntime ownership slice
 
-Each runtime now groups its `World`, dispenser/detector-rail bookkeeping,
-`BlockEntityStore`, light/fluid/redstone/block-tick services, and persistence.
-Persistence is declared after its callback targets so reverse member destruction
-stops it first. Two independent reviews found no valid-dimension behavior or
-lifetime regression. Both identified duplicated runtime selection in the first
-commit; that finding was removed in `c56c4f09`, and both follow-up reviews had no
-remaining finding. The reviews also noted that service construction and callback
-wiring still live in `GameServer::init()` and that engine pointers are nullable
-before initialization. This is an ownership step, not a finished lifecycle
-component or evidence that the repository has reached code-quality 6/10. Reviewer
-scores for this slice were 6.5/10 and 5/10; neither is an overall repository
-score or a pass of the goal's two-review quality gate.
+PR #5 is merged into `main` at `4756a5b0cc660de714f1971e8a6c080d1ea02640`.
+Its source commits are `62691578` (group per-dimension ownership in
+`GameServer::DimensionRuntime`) and `c56c4f09` (route state selection through one
+dimension-to-runtime mapping). Each runtime groups its `World`, local dispenser
+and detector-rail bookkeeping, `BlockEntityStore`, per-dimension simulation
+services, and persistence. Persistence is declared after callback targets so
+reverse member destruction stops it first. The service-construction and
+callback-wiring path remains in `GameServer::init()`; this slice did not finish
+lifecycle composition or establish repository code-quality 6/10.
+
+The merged source passed the configured RelWithDebInfo build and the recorded
+non-nightly/non-package CTest run (`55/55`, `530.73s`, including smoke80 and live
+goal scenarios) before merge. Reviews of that slice scored `6.5/10` and `5/10`;
+these are slice scores, not an overall repository score.
+
+### Current world-mutation boundary (unmerged)
+
+The current branch is `codex/deep-refactor-quality`, based on merged `main`
+`4756a5b0`. It narrows detached chunk construction and NBT decode to a
+value-only `ChunkBuildWriter`, hides live block and skylight storage, separates
+bulk loaded-chunk publication from gameplay writes, serializes block mutation
+callbacks in revision order, and records pre-refactor chunk, wire-body, and NBT
+hashes for all three dimensions. The soak bot now has a protocol-level position
+acknowledgement path and a focused dispatcher test. Recent targeted corrections
+make invalid `/place feature` edits fail closed and repair its coordinate-free
+origin, but do not promote any compatibility-matrix status. The command still
+uses fixed patterns rather than executing vanilla's configured-feature data.
+The latest Mineflayer restart scenario exposed and fixed a real spawn-area
+world-load bug: `GameServer::init()` generated the 5×5 spawn-ticket area before
+registering Persistence's chunk loader, so saved spawn chunks were treated as
+new terrain. Persistence now starts before that area is ensured, and the live
+client verifies sign text and block state after a full restart.
 
 | gate | result | scope |
 |---|---|---|
-| configured RelWithDebInfo build | `PASS` | `cmake --build build-dimension-runtime -j4`; the selector cleanup rebuilt affected targets, and a subsequent build reported no work remaining |
-| non-nightly, non-package CTest | `55/55 PASS` | exact `c56c4f09` source commit (before docs-only edits); `ctest --test-dir build-dimension-runtime -LE 'nightly|package' --output-on-failure --timeout 600`; `530.73s`, including smoke80 and live goal scenarios |
-| child-process cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining server process |
-| GitHub Actions | `PENDING` | this working branch has not yet been submitted as a PR; local test results do not replace exact-head Actions |
+| RelWithDebInfo configure | `PASS` | `cmake -S . -B /tmp/cppfm-deep-refactor-build-qBzLbe -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo` |
+| full build | `PASS` | Timeout-wrapped `cmake --build build/deep-refactor -j4` completed after extracting Anvil admission from `GameServer.hpp`; latest broad rebuild completed 112 Ninja steps. |
+| latest-source focused CTest | `7/7 PASS` | `native`, `plan43`, `world_mutation_contract`, `persistence_recovery`, `block_entity_contract`, `redstone_engine_full`, and `quality_audit`; `42.76s`. The clone capacity regression now calls the production block-state and opaque Block Entity projection helpers and checks the real 255-sector RegionFile limit; piston save-barrier and rejected-candidate immutability also pass. |
+| post-startup-order-fix CTest | `6/6 PASS` | `native`, `jvm_native_bridge`, `world_mutation_contract`, `persistence_recovery`, `world_data_contract`, and `block_entity_contract`; `15.53s` after the spawn-chunk loader ordering fix. |
+| latest normal CTest | `61/61 PASS` | `759.75s`; `ctest -LE 'nightly|package' --output-on-failure --timeout 600`. Includes Smoke80 (`370.79s`), JVM compatibility/corpus, three live goal scenarios, world/persistence contracts, multi-client, bot smoke, and quality/tautology audits. Nightly soaks and package-labeled gates were excluded; this is not full package or long-soak evidence. |
+| earlier full current-source CTest | `62/62 PASS` | `736.08s`; predates the latest `/time set` branch fix, bot timing correction, and CTest working-directory cleanup. It excluded `soak2h`, `soak_bot`, and `soak_bot_protocol`; the protocol-only bot test was run separately then. Superseded as the latest-source result by the 61/61 run above. |
+| full CTest before final projection extraction | `63/63 PASS` | `735.97s`, excluding both `soak2h` and the five-minute `soak_bot`; included `smoke80` (`356.70s`), JVM corpus, all three live goal scenarios, `package_archive`, and `package_jvm_smoke`. The final small projection extraction was followed by the focused 7/7 rerun, but not another full-suite rerun. This is not 2h/24h soak evidence. |
+| Mineflayer live probe | `PASS` | Two consecutive clean post-fix runs with Mineflayer `4.25.0` / minecraft-data `3.117.0` covered two-client 1.21.4 login/spawn, chat, movement (measured `0.35` blocks), digging, filtered clone, chest transfer, feature overwrite/support guards, coordinate-free command origin, chest/shulker destruction drops, edited sign text across a full restart, and unloaded-chunk inventory persistence. One earlier run failed to observe chest-drop pickup within its bounded wait; subsequent two runs passed, so pickup is not yet treated as robust soak evidence. This remains bounded gameplay evidence, not GUI or full client/mod parity. |
+| harness checks / cleanup | `PASS` | `node --check tests/mineflayer_live_smoke.cjs`, `git diff --check`, Python `py_compile` checks, and post-run `pgrep -a -x cppfm` passed; no owned server remained. An isolated temporary world retained by the failed run was removed after inspection. |
+| independent hostile reviews | `5.1/10` quality, `5.0/10` compatibility (last pre-fix scores) | Those reviews identified the Anvil-capacity bypass in sign/item mutations, undrained scheduled piston work at save barriers, and a clone test that duplicated production projection. These paths have since been addressed and tested as above; a fresh complete-diff score is still pending, so no current `≥6` claim is justified. |
+| PR / exact-head Actions | `PENDING` | not submitted; local results do not replace required Actions |
 
-The architecture-quality goal remains active. The next source boundary is the
-world block-mutation contract; after the ownership refactors and independent
-review gate, run the pinned Mineflayer 1.21.4 real-use scenarios. No Mineflayer
-result or overall quality score is claimed by this checkpoint.
+The architecture-quality goal remains active. The bounded Mineflayer scenario
+and local full CTest are black-box/regression evidence for the named paths; they
+do not themselves satisfy the independent ≥6/10 quality gate, establish GUI
+compatibility, or prove broad vanilla/mod parity. Do not claim an overall score
+until both independent reviewers have assessed the current complete diff and
+any material findings are resolved.
+
+## 1F. Deep quality-refactor and real-use verification (2026-09-30)
+
+The active worktree remains `codex/deep-refactor-quality` on integrated base
+`4756a5b0`; this section records the current unmerged source state. The refactor
+is intentionally broad: it separates session interaction/menu handling,
+transactional clone operations, block-entity value/codec/projection/index/wire
+responsibilities, chunk snapshot/cache and mutation coordination, staged region
+recovery, and shared parsing/bit utilities. It also tightens ownership and
+failure paths in persistence, generated block IDs, and test process management.
+The added regression code is not counted as source deletion or as proof of
+universal parity. Untracked root `package.json` and `bun.lock` are unrelated
+user-owned files and are excluded from this work's staging scope.
+
+| gate | current result | exact scope / boundary |
+|---|---|---|
+| full RelWithDebInfo build | `PASS` | `timeout --foreground --kill-after=10 1200 cmake --build build -j8`; latest rebuild after the recovery and StructurePlacer fixes completed all 31 remaining Ninja steps |
+| full non-nightly/non-package CTest (before the self-movement echo fix) | `72/72 PASS` | `timeout --foreground --kill-after=15 3600 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600 -j1`; `788.20s`. Nightly soaks and package-labeled gates were excluded. This is not Actions or package/long-soak evidence; rerun after the latest C++ movement change remains required. |
+| focused live gameplay | `3/3 PASS` | `goal_live_features` `57.54s`, `goal_live_interactions` `30.49s`, and `goal_live_remaining` `54.16s`; includes complete 7×7 (49 chunk) teleport return-view observation, menus, block interaction, portal, and gameplay commands |
+| recovery regression | `120 PASS / 0 FAIL` | Includes fallback after seed rejection without leaking spawn/difficulty/border/forced-chunk/consumer state; a post-commit consumer exception propagates and leaves primary plus `.new` candidates intact rather than trying to combine them |
+| configured-structure ownership regression | `29 PASS / 0 FAIL`; CTest repeated `5/5 PASS` | `StructurePlacer::load()` now preserves the feature name before moving the configuration into its map; regression exercises one-time loot/mob publication at negative coordinates and requires the fixture to load exactly once |
+| Mineflayer live smoke (after self-movement echo fix) | `2 consecutive PASS / EXIT 0` | Mineflayer `4.25.0`, minecraft-data `3.117.0`; two 1.21.4 offline clients covered login/spawn, TP acknowledgement, chest GUI, movement, mining/loot, placement, filtered clone/tags, concurrent container edits, gamemodes, sign/block-entity data, player-data preservation, and restart persistence. The movement probe confirms the observer tracks the moving player and the moving player receives zero self entity-tracking packets. The fixture waits for support/headroom updates; the movement input is held for 500 ms to exceed its 0.2-block observation threshold reliably. This is bounded offline-client evidence, not authenticated real-client GUI or universal mod/client parity. |
+| Mineflayer harness unit/syntax | `1/1 PASS`; Node syntax `PASS` | RCON out-of-order/timeout reply test and `node --check tests/mineflayer_live_smoke.cjs` |
+| worktree/process hygiene | `PASS` | `git diff --check`; post-run `ps -C cppfm ...` found no remaining server/test processes. Root `package.json`/`bun.lock` remain untracked, user-owned, and untouched |
+| post-fix production build | `PASS` | `timeout --foreground --kill-after=5 300 cmake --build build --target cppfm -j12`; 34 Ninja steps including relink after the self-movement broadcast fix. A full all-target build and non-nightly CTest rerun after this change remain required. |
+| independent strict quality score | `PENDING` | Earlier numeric scores and findings were not a current whole-diff sign-off. Two fresh independent complete-diff reviews are in progress; one scoped review's post-commit recovery exception finding has been fixed and tested. A separate scoped clone review identified possible callback/observer atomicity concerns on rollback; current server wiring shows no client block packet before commit, but full reader isolation and dirty-generation behavior remain under review. No `≥6/10` claim is made. |
+| PR and exact-head Actions | `PENDING` | No PR has been submitted for this worktree; local tests do not replace the required branch PR and exact-head GitHub Actions. |
+
+The latest full suite initially exposed a test-environment dependency and a
+real configured-feature registration bug. `goal_gameplay_bugs` is now run from
+the source root because it intentionally reads checked-in structure fixtures;
+`StructurePlacer::load()` copies the feature key before moving the parsed value,
+so its configured and placed registries agree. The same loop also made level
+metadata decoding transactional before candidate acceptance. Failures after
+state application begins now abort startup instead of being misclassified as a
+corrupt candidate and falling through to another save. Those changes were
+followed by the full build and `72/72` CTest pass above. The subsequent
+self-movement echo correction has a fresh `cppfm` target build and two clean
+Mineflayer full runs; the full CTest aggregate is explicitly pending again for
+that latest C++ change.
+
+The latest review-driven compatibility corrections make empty player `Tags`
+NBT serialize as `TAG_End` and load both Vanilla-empty and prior empty-string
+forms; `/tag` now retains `PlayerRef`, enforces the Vanilla 1,024-tag limit,
+and reports no-op add/remove as failures. Those details are covered by the
+player-data transaction test and the live feature scenario. The [Yarn 1.21.4
+`NbtList` reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/nbt/NbtList.html)
+confirms empty lists report `END_TYPE`; the [Yarn 1.21.4 `Entity`
+reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/entity/Entity.html)
+documents the 1,024 command-tag limit.
+
+### Storage, item-codec, and current-binary follow-up (2026-10-01)
+
+Two earlier whole-diff hostile reviews scored code quality `5/10` and `4/10`,
+and compatibility `4.5/10` and `3.5/10`. Their scores predate the fixes below
+and remain the latest completed whole-diff scores until the current independent
+reviews finish. They identified the LZ4 checksum mismatch, gzip Anvil rejection,
+missing valid item component IDs 13/40, Vanilla in-flight piston resume, and
+external Anvil sidecar transaction gaps. No repository-wide `6/10` claim is
+made while fresh reviews and full validation are pending.
+
+Pinned 1.21.4 research established LZ4 codec ID 4 as lz4-java 1.8.0's
+LZ4Block stream (not LZ4 Frame), with default XXHash32 seed `0x9747b28c` and a
+low-28-bit checksum value. A golden stream generated by lz4-java 1.8.0 now tests
+the exact bytes. Anvil compression type 1 now uses a bounded RFC 1952 decoder
+that validates trailers, accepts concatenated members, rejects trailing junk,
+and shares RAII/error/budget handling with the zlib decoder. Region external
+chunks read inline or sidecar raw/LZ4/gzip payloads when canonical, but staged
+`.mca.new` generations with external chunks fail closed until MCA and `.mcc`
+promotion can be coordinated. This remains **read support only** for external
+sidecar data: writes, pair journaling, quarantine, and crash-pair recovery remain
+incomplete; do not claim large-chunk Anvil parity.
+
+The protocol/NBT codecs now cover vanilla 1.21.4 item component 13
+`attribute_modifiers` and 40 `bundle_contents`, including nested non-empty
+ItemStacks, protocol round trips, and bounds. Attribute raw IDs use the vanilla
+registry table only; they cannot be assumed for modded Fabric registries. The
+bundle element/payload/depth limits are project safety policy rather than a
+vanilla component limit. Bundle selection accepts the vanilla `-1` deselection
+sentinel. Vanilla in-flight piston block-entity resume is still unimplemented.
+
+`WorldDataManager::tryLoadFile` now uses a bounded regular-file reader which
+opens POSIX paths nonblocking and rejects FIFOs before parsing. Level and region
+recovery results now expose post-rename directory-sync uncertainty rather than
+logging it as an ordinary durable promotion. Exact fault-injection regressions
+cover the level and region paths.
+
+| latest gate | result | scope / boundary |
+|---|---|---|
+| focused RelWithDebInfo target build | `PASS` | Current `cppfm`, item-codec, storage, and recovery targets compiled and linked after gzip, LZ4, and item component edits; a clean complete all-target build is running below. |
+| focused storage/recovery/item-codec CTest | `7/7 PASS` | `persistence_recovery`, `lz4_block`, `storage_file_ops`, `region_external`, `recovery`, `item_codec_components`, `item_block_predicate`; covers independent LZ4/gzip fixtures, recursive ItemStacks, and attribute payloads. |
+| latest Mineflayer full live smoke | `PASS / EXIT 0 (1 final-source run)` | `npm --prefix tests/mineflayer run live-smoke`; two offline 1.21.4 clients exercised gameplay, restart persistence, Fabric callbacks, exact-entity `discard()` removal, PvP damage veto, callback re-entry, and concurrent callback delivery. During this rerun, the old test incorrectly followed a mutable “last loaded pig” handle and matched any pig's unload; the fixture now pins handle/ID at request time and waits for that entity's unload plus committed roster/handle invalidation. The initial 5s RCON timeout was raised to a bounded 15s after one cold callback-server run timed out. One final-source full run passes; repeated final-source stability is still pending. This is headless evidence, not official GUI/authenticated-client or broad Fabric-mod parity. |
+| Mineflayer callback-only and harness checks | `13/13 PASS`; `1/1 PASS` | `node tests/mineflayer/run.cjs --jvm-callback-only`; RCON out-of-order/timeout unit test; `node --check tests/mineflayer_live_smoke.cjs`. |
+| current-source focused gameplay/JVM CTest | `3/3 PASS` | `jvm_native_bridge`, `goal_gameplay_bugs`, and `gameplay_full`; `1.69s`. |
+| focused RelWithDebInfo targets | `PASS` | `cppfm`, `test_native`, and `test_jvm_native_bridge` built or confirmed up to date after the current native changes; Java fixture regenerated after its test-only edits. |
+| full all-target RelWithDebInfo build | `PENDING` | A previous all-target `-j2` attempt timed out; current successful build was target-scoped, so this is not an all-target pass. |
+| full current-source CTest aggregate | `PENDING` | The recorded `72/72` non-nightly/non-package run predates the latest source changes; current verification is the focused `3/3` group above. |
+| current whole-diff hostile reviews | `PENDING` | Two read-only independent reviewers are checking refactor/ownership/recovery and protocol/Anvil/item codecs. Prior scores are not current scores. |
+
+The latest new CTest targets and source edits remain local/unmerged. A full
+all-target build and complete non-nightly CTest are pending, as are
+package/Actions gates, current whole-diff adversarial reviews, PR submission,
+and exact-head Actions. External `.mcc` *write/atomic pair recovery* and
+vanilla in-flight piston resume remain P1 storage/behavior work; Mineflayer
+passing does not close those gaps.
+
+This evidence is limited to the exercised implementation paths. Arbitrary JVM
+mods, full RNG L3 world-generation call-order parity, accepted 2h/24h soak,
+authenticated real-client/GUI coverage, and package-labeled release gates
+remain declared boundaries. The quality goal stays active until two fresh
+reviews score the complete source diff at least 6/10 and any material findings
+are fixed and reverified.
+
+### Fresh non-nightly test audit and login-capacity regression correction (2026-10-02)
+
+The previous complete non-nightly/non-package CTest run was **73/81 PASS**.
+Its eight failures were `smoke80`, `jvm_compatibility`, `jvm_corpus`, `plan43`,
+`flood_net`, `goal_security_guards`, `mob_stats_full`, and `recipes_mirror`.
+Several were stale test/data expectations rather than product regressions:
+the security source guard expected a renamed dispatcher, the Camel breeding
+row omitted its cactus item, and the recipe test counted an intentionally
+rejected `minecraft:air` recipe as loaded. Those expectations/data are now
+corrected; focused checks pass (`goal_security_guards`, `mob_stats_full`
+131/131, `recipes_mirror` 77/77).
+
+The `flood_net` capacity test also expected a server-full packet immediately
+after Login Start, but this server reserves capacity when the client completes
+Configuration and acknowledges the transition to Play. The test now races two
+full protocol clients through that admission point, and the test client
+recognizes a Play Disconnect during startup. Focused `flood_net` now passes.
+The JVM API health-boundary fixture builds and `jvm_api` passes 1/1.
+
+At the time of this audit, horse taming remained a flaky/state-sensitive
+`plan43` failure: one isolated rerun passed, while a repeated run rejected the
+19 golden-carrot interactions and lacked the expected re-mount/tame metadata.
+The later 2026-10-02 CTest run passed `plan43`, `smoke80` passed separately,
+and both JVM corpus and strict compatibility tests passed in the 83-test
+selection recorded below. Two additional isolated `plan43` reruns then passed
+in `23.59s` and `18.41s`; the earlier failure has not reproduced across these
+three latest current-source runs. Keep the earlier flake in the historical
+record, but the old `73/81` aggregate is superseded by the newer evidence.
+
+### Post-lifecycle, player-API, and Mineflayer verification (2026-10-02)
+
+The JVM lifecycle bridge now separates Fabric `SERVER_STARTING` from the
+post-world-load `SERVER_STARTED` phase. `PlayerManager` and world access remain
+unavailable during the early callback; world/player lookup helpers and entity
+selectors return empty results rather than dereferencing that unavailable
+service. Shutdown retains `SERVER_STOPPING` → world unload → persistence close
+→ `SERVER_STOPPED` → JVM stop ordering. The verifier distinguishes the JVM null
+verification type from ordinary references when merging stack frames. An
+independent lifecycle/verifier review found no high-confidence defect in that
+scoped diff; this is not a complete repository review.
+
+An independent Mineflayer-harness review found that stdout and stderr fragments
+were combined when recognizing fixture events, which could fabricate a marker
+across streams. The output observer now tracks chunk fragments and complete
+fixture lines per stream; regression tests reject cross-stream assembly and
+prove same-stream evidence remains latched after the diagnostic tail is
+truncated. The review also found the callback-thread final assertion was using
+`.equal` on the harness's local assertion function; the assertion is now called
+in the correct form. One initial probe then failed during that assertion and
+reported an unclean shutdown; isolated callback-only and complete live reruns
+both exited successfully after the fix. A whole-diff reviewer also noted the
+combined gameplay-plus-callback watchdog was shorter than the separate
+workflow budget; the in-process limit is now 540 seconds within the CI command's
+600-second timeout. CI dependency installation is independently bounded to
+600 seconds plus a 10-second kill grace, with an 11-minute step limit.
+
+A second bounded review confirmed a vanilla ABI mismatch: the local
+`FishEntity` inherited from `AnimalEntity`, while Yarn 1.21.4 defines it under
+`WaterCreatureEntity` → `PathAwareEntity`; the official
+[FishEntity reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/passive/FishEntity.html)
+and [WaterCreatureEntity reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/mob/WaterCreatureEntity.html)
+document that inheritance chain. The JVM shadow hierarchy now matches it, and
+an API contract test checks both assignability and the non-Animal relationship.
+The same review found live checks still reading the
+combined stdout/stderr diagnostic tail. Evidence checks now use per-stream
+buffers and complete fixture lines; callback ordering is only accepted when
+the full sequence appears in one stream. The Java-created entity insertion
+path (`ServerWorld.spawnEntity` returns false until a real native registration
+boundary exists) remains a declared compatibility limitation, not a test
+failure.
+
+Both reviewers returned bounded, not exhaustive, whole-diff assessments. Their
+pre-fix provisional strict scores were code quality `5.5/10` and compatibility
+`~4/10`; neither signed off at 6/10, and the compatibility score predates the
+Fish hierarchy and log-evidence corrections. They reviewed substantial
+high-risk slices but explicitly did not inspect every changed line. Treat
+these as warnings and not a current final score.
+
+| gate | latest result | scope / boundary |
+|---|---|---|
+| full RelWithDebInfo build | `PASS` | All targets built with timeout-wrapped `cmake --build build -j4`; the latest incremental all-target build regenerated the Fish/WaterCreature hierarchy, JVM fixtures, and embedded resources. |
+| JVM runtime/API/corpus/compatibility/package | `5/5 PASS` | Latest focused run passed `jvm_api` (including pre-world-load and fish-hierarchy contracts), `jvm_compatibility`, all 25 `jvm_corpus` fixtures, `package_archive`, and `package_jvm_smoke`. |
+| smoke80 | `1/1 PASS` | Latest rerun `ctest --test-dir build -R '^smoke80$' --output-on-failure --timeout 600`; `385.82s`, after the Fish/WaterCreature hierarchy and Mineflayer evidence-helper changes. |
+| non-soak CTest | `83/83 PASS` | Latest broad run `ctest --test-dir build --output-on-failure --timeout 600 -E '^(smoke80|soak2h)$' -j4`; `301.21s`, includes the 300-second `soak_bot` and both package tests, and was run after the Fish hierarchy and initial per-stream evidence changes. The final diagnostic-tail separator change was followed by fresh Mineflayer unit and full live runs. The two-hour `soak2h` was not run. |
+| Mineflayer full live smoke | `PASS / EXIT 0` | Latest final-source run after the per-stream diagnostic-tail separator change; Mineflayer `4.25.0`, minecraft-data `3.117.0`, two offline 1.21.4 clients, gameplay plus strict embedded-JVM/Fabric callbacks. Covers login/spawn, recipes and menus, food/effects, combat cancellation, mining/placement, commands/datapacks, movement, restart persistence, entity load/unload, native re-entry, and serialized callbacks. No authenticated online-mode client, official graphical client, or arbitrary third-party Fabric mod was tested. |
+| Mineflayer callback-only and harness unit tests | `PASS / EXIT 0`; `3/3 PASS` | Isolated callback probe cleanly stops its server; Node tests cover RCON response ordering, rejection of cross-stream fabricated evidence, and truncation-resistant mismatch detection. The 3/3 unit run, `node --check`, and CI workflow YAML syntax check all pass after the final diagnostic-tail change. |
+| source hygiene | `PASS` | `git diff --check`; post-run process inspection found no remaining cppfm/Mineflayer process. The exact 16 MiB temporary world retained by the initial failed probe was removed after successful reruns. |
+| strict whole-diff review / PR / Actions | `PENDING` | Earlier independent bounded reviews found/fixed issues but did not inspect every changed line, with pre-fix scores below target. Three fresh parallel adversarial domain reviews are in progress; JVM/build/docs/test review and a current whole-diff score still remain. No PR has been submitted and no exact-head Actions run exists; do not claim the repository-wide quality target or an overall ≥6 score yet. |
+
+This rerun supersedes the pending aggregate statement above for the listed
+current gates. `plan43` also passed in two isolated consecutive reruns after
+the full CTest selection, giving three current-source passes since its earlier
+state-sensitive failure. The quality goal remains active. Three domain reviews
+are currently in flight; after they return, cover the remaining JVM/build/docs/test
+diff, fix and retest material findings, then obtain fresh independent strict
+scores. After review converges, repeat the broad CTest gates, create the
+required PR, and pass exact-head Actions. Online auth, official GUI,
+arbitrary-mod behavior, and the two-hour soak remain open.
+
+### Current refactor checkpoint (2026-10-03; supersedes the earlier focused table)
+
+The previous bounded hostile reviews scored the repository at `4.9–5.0/10`
+overall and the then-current dirty diff at `4.5–5.0/10`. They did not inspect
+every changed line. Those scores remain the last complete numeric assessment;
+this focused refactor has not yet earned a new score or the requested `6/10`.
+
+| gate | latest result | scope / boundary |
+|---|---|---|
+| current relevant-target build | `PASS` | `timeout --foreground --kill-after=10 1200 cmake --build build --target cppfm test_goal_network_bugs test_native -j6`; the complete set built after the latest vehicle movement change. |
+| focused CTest | `7/7 PASS` | `native`, `jvm_handles`, `jvm_runtime`, `goal_network_bugs`, `goal_gameplay_bugs`, `gameplay_full`, and `quality_audit`; `19.01s` with `-j4`. The gameplay targets were rebuilt before this rerun. |
+| Mineflayer harness | `7/7 PASS` | `npm --prefix tests/mineflayer test`; both Mineflayer smoke scripts pass `node --check`. This is harness-unit evidence, not a current live-client rerun. |
+| diff/process hygiene | `PASS` | `git diff --check`; post-test `pgrep -a -x cppfm` found no remaining server process. No files were staged, committed, pushed, or submitted as a PR. |
+| latest complete independent score | `4.9–5.0/10` whole repository; `4.5–5.0/10` then-current dirty diff | Previous Laplace and Galileo reviews covered separate high-risk slices; they were not a complete review of the current dirty working tree. Two scoped follow-up audits are now checking entity visibility and JVM/Mineflayer lifecycle. |
+| PR / exact-head Actions | `PENDING` | No PR exists for this dirty worktree; local results do not replace required exact-head Actions. |
+
+The current working-tree refactor now gives each `Player` a
+`ClientEntityTracking` owner for dimension-qualified sent chunks and tracked Mob
+IDs. Chunk forget removes tracked mobs before the forget packet; respawn and
+dimension transitions clear the tracker; spawn publication waits until Fabric
+spawn callbacks accept the mob; movement/teleport reconciles spawn, update, and
+remove against each viewer's loaded chunks; and ordinary Mob removal clears
+only clients tracking that entity. The minecart and boat tick broadcasts now use
+the same visibility path after releasing their Mob locks. Spawn packets use a
+field snapshot rather than copying whole `MobEntity` state. Creaking-heart code
+uses a stable mob snapshot instead of a mutable test escape hatch.
+
+This is still a focused implementation boundary, not vanilla-complete entity
+tracking: loaded chunks currently act as the visibility proxy, and the latest
+tree has not been rerun through the live Mineflayer scenario. Earlier bounded
+Mineflayer runs documented above passed their named scenarios, but do not prove
+this latest entity-visibility change. Broad `GameServer`/`Session` coupling and
+other compatibility gaps also remain. A fresh whole-diff review, live-client
+rerun after the refactor gate, PR, and exact-head Actions are pending; do not
+claim a current `6/10` score or overall compatibility sign-off.
+
+### Optional injector and player-retirement follow-up (2026-10-04)
+
+This note supersedes earlier pending statements for the exact gates listed
+below, but does not supersede the outstanding whole-diff review or publication
+limits. The Mixin selector path now carries the effective `require` threshold
+through target selection and callback-count validation for every supported
+injector operation. A missing unquantified target can remain optional when
+`require=0`; `injectors.defaultRequire` is parsed from the configuration and
+defaults to Mixin's `0`. A configured value of `1` remains enforced when an
+injector omits its own `require`. The pinned upstream 0.8.7 behavior is visible
+in [MixinConfig.java](https://github.com/SpongePowered/Mixin/blob/0.8.7/src/main/java/org/spongepowered/asm/mixin/transformer/MixinConfig.java#L72-L83)
+and [InjectionInfo.java](https://github.com/SpongePowered/Mixin/blob/0.8.7/src/main/java/org/spongepowered/asm/mixin/injection/struct/InjectionInfo.java#L371-L388).
+
+The player-directory regression now joins the duplicate-login acknowledgement
+ticket to `PlayerHandleLifetime`: a competing quit callback is held open while
+takeover and session cleanup request finalization, then callback completion
+invalidates/finalizes the old handle and a newly constructed `Player` reuses the
+same storage address with a fresh handle. This is a deterministic API-level
+integration fixture, not a full production `GameServer`/JNI lifecycle fixture.
+
+| gate | result | scope / boundary |
+|---|---|---|
+| `test_native` focused rebuild | `PASS` | Rebuilt `tests/native_integration.cpp` with the new callback/ack/address-reuse scenario. |
+| player-directory and handle-lifetime CTest | `2/2 PASS` | `player_directory`, `jvm_handles`; both run serially with timeout wrappers. |
+| JVM selector/runtime/mod regression | `4/4 PASS` | `jvm_runtime`, `jvm_transformer`, `jvm_compatibility`, and `jvm_corpus`; latest selector/defaultRequire source, `149.69s`, serial under `/var/tmp` Java temp storage. |
+| Mineflayer live smoke | `PASS / EXIT 0` | Latest-source `npm --prefix tests/mineflayer run live-smoke`; two offline 1.21.4 clients. Rechecked gameplay/menus, mining/loot, survival mechanics, entity visibility/tracking, persistence and restart, Fabric/JVM event callbacks, re-entry, and callback serialization. This remains headless offline-client evidence, not official GUI, authenticated online-mode, or arbitrary-mod coverage. |
+| Mineflayer harness unit tests | `17/17 PASS` | RCON ordering/timeout, owned-process cleanup, evidence-stream, and smoke-run lifecycle checks. |
+| hygiene/process check | `PASS` | `git diff --check`; after live smoke, `pgrep -a -x cppfm` found no remaining server process. |
+| strict whole-diff quality / PR / Actions | `PENDING` | The last complete repository score predates this follow-up and remains below the `6/10` target. Focused selector/lifetime reviews are being rerun; broader changed-file coverage is incomplete. No PR or exact-head Actions result exists. |
+
+This follow-up does not change the compatibility matrix's status totals or
+close world-generation parity, arbitrary Fabric-mod behavior, authenticated
+official-client GUI, or the accepted 2-hour/24-hour soak boundaries. It also
+does not justify a whole-repository quality or compatibility score increase on
+its own.
 
 ## 2. Prior plan48 and cleanup record
 
@@ -305,7 +612,7 @@ release artifact unless separately published:
 | `jvm_manifest` | `PASS` | declarative protocol-769 ABI manifest reproducibly generated; 94 methods (47 native + 47 wrapper), 9 structured methods, 10 injection points, 14 transformer names |
 | `jvm_contract_audit` | `PASS` | every declared ABI method has exactly one native or wrapper backend classification |
 | `shadow_abi` | `PASS` | standalone dependency-complete Shadow ABI compile/reflection gate; 906 source classes, 763 class files, and 8,297 declared/audited members |
-| explicit no-JNI configure/build + regression | `PASS` | CMake fallback disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; native targets omit `CPPFM_HAS_JNI`, build cleanly, and the same-commit non-package CTest set passes `42/42`; relative source assets were linked for the external build directory |
+| historical explicit no-JNI configure/build + regression | `PASS` | At that recorded snapshot, CMake fallback was disabled with `CPPFM_ENABLE_JNI_FALLBACK=OFF`; native targets omitted `CPPFM_HAS_JNI`, built cleanly, and that then-current non-package CTest set passed `42/42`. This is historical evidence, not the current suite size; relative source assets were linked for the external build directory. |
 | ASan/UBSan key regression set | `4/4 PASS` from the repository root; no sanitizer report | `build-sanitize` uses `-fsanitize=address,undefined`; the four targets were rebuilt and run directly with relative assets visible |
 | static quality audit | `PASS` — 33 C++ test files, 156 production files, 48 Python files | rejects unconditional assertions, liveness-only fallbacks, bare Python exceptions, and unowned `Popen` launches |
 | official Loader/Knot probe | `PASS / DECLARED-LIMITATION` | offline pinned Loader 0.16.9/Knot/Mixin probe records all seven expected markers; local ignored process output is `build/fabric-runtime/probe-evidence-after-fabric-docs-20260908-v1.json`; it is not a tracked/public artifact, and no Mojang server/provider is shipped |
@@ -435,6 +742,52 @@ bounded local real-client probe passes. The active broader
 compatibility goal can continue expanding API, constructor/verifier-state,
 behavioral, and real-mod coverage; the structural linkage report should be used to
 prioritize those changes, not presented as a universal runtime verdict.
+
+### 2026-10-04 AI snapshot and login-publication follow-up
+
+The current worktree now removes `PlayerViewRef`'s implicit conversions and the
+hidden AI player-context TLS lookup. Server AI resolves nearest/tempting targets
+through selected same-tick snapshot indices; standalone prebuilt snapshots keep
+their value-based fallback. The fallback and indexed paths share a native
+regression proving that a live Player mutation cannot replace the captured
+coordinates.
+
+Adversarial review found that login handoff discovery compared mutable
+`Player::name/uuid` while `PlayerDirectory` commits against publication-time
+identities. Login now asks the directory for conflicts using the same frozen
+identity index, and regression coverage mutates the published player's live
+identity before checking the handoff lookup. The tracking sequencer now exposes
+a scoped publication lease: duplicate-retirement callbacks suspend the sequencer
+so Fabric callbacks can re-enter tracking, then reacquire it before directory
+commit, tracking reconciliation, activation, and PlayerInfo publication. A
+reacquisition failure terminates rather than continuing with an unsequenced
+roster/wire state. Replacement retirement also marks the incumbent inactive and
+removes tracked entities before dispatching the Fabric quit hook, matching the
+normal session-cleanup order. The existing `PlayerDirectory` restriction still
+applies: a retirer must not synchronously wait for delegated cleanup that calls
+`beginRemoval` on one of its victims.
+
+Mining state is now represented by `MiningProgress`, which provides coherent
+snapshots and revision-checked start, stage, cancel, and finish operations.
+Tick, session packet, dimension-transfer, and native-test paths no longer
+mutate the mining fields independently. Dimension transfer invalidates the
+revision even when no dig is active, so callbacks that run outside the
+transition mutex cannot commit stale work. Break callbacks remain outside that
+mutex; the server revalidates the revision before the world mutation
+transaction. A regression directly re-enters dig-stage broadcasting from both
+tick-completion and creative instant-break callbacks.
+
+| gate | result | scope |
+|---|---|---|
+| `cppfm` + `test_native` RelWithDebInfo build | `PASS` | Full dependent rebuild; subsequent one-TU production relink includes the final retirement-order change |
+| player-directory transaction regression | `PASS` | Frozen identity lookup, cross-identity replacement, sequencer re-entry, exception restoration, and existing capacity/retirement cases |
+| Mob AI regression | `PASS` | Indexed and standalone prebuilt snapshot reads plus current representative goal/behavior-tree cases |
+| latest full native integration | `1/1 PASS` | `ctest --test-dir build -R '^native$' --output-on-failure -j1 --timeout 600`; `100.08s`, with temp output under the worktree to avoid `/tmp` quota failures |
+| mining transition and re-entry regressions | `2/2 PASS` | `block_entity_drop_policy` exercises tick-completed and creative callback re-entry; `mining_full` covers snapshots, revisions, stale-update rejection, cancellation, finish, and idle invalidation |
+| Mineflayer real-use smoke | `EXIT 0` | Fresh complete run with Mineflayer 4.25.0 / minecraft-data 3.117.0: two 1.21.4 clients; stonecutter GUI and datapack recipe, inventory/combat/consumables, survival/creative/spectator mining, placement, clone/fill/loot/datapacks, concurrent container edits, player/block-entity persistence and restart, entity-tracking boundaries, and JNI/Fabric callback re-entry including real block break. Bounded offline-client evidence only; not official GUI or arbitrary-mod parity. |
+| Mineflayer harness unit / static gates / hygiene | `17/17 PASS`; `2/2 PASS`; `PASS` | Node cleanup/RCON/output-evidence suite, CTest `quality_audit` + `tautology_lint`, and `git diff --check`; post-run process check found no `cppfm` server. |
+| initial native-run storage failure | `ENVIRONMENTAL; RETRIED PASS` | Default `/tmp` returned `EDQUOT` while writing embedded classes despite filesystem free space; retrying with `/var/tmp` passed. No temporary/user data was manually deleted. |
+| strict whole-diff score, complete CTest, PR / Actions | `PENDING` | These focused/native/Mineflayer results do not meet or claim quality `≥6/10`; the broad non-nightly CTest remains to be rerun after current changes, then the full diff needs fresh independent review and exact-head Actions through a PR. |
 
 ## 8. Plan49 implementation and evidence handoff
 

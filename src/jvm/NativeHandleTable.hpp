@@ -23,13 +23,14 @@ enum class HandleKind : std::uint8_t {
     ItemStack = 6,
 };
 
-struct HandleRecord {
-    void* address = nullptr; // C++-only; never serialized or exposed to Java.
-    HandleKind kind = HandleKind::Unknown;
-    std::uint16_t generation = 0;
-};
-
 class NativeHandleTable {
+private:
+    struct HandleRecord {
+        void* address = nullptr;
+        HandleKind kind = HandleKind::Unknown;
+        std::uint16_t generation = 0;
+    };
+
 public:
     // Holds the table mutex for the complete native borrow.  Invalidation
     // therefore waits for an in-flight C++ access before the owning game
@@ -40,8 +41,17 @@ public:
         ScopedResolution() = default;
         ScopedResolution(const ScopedResolution&) = delete;
         ScopedResolution& operator=(const ScopedResolution&) = delete;
-        ScopedResolution(ScopedResolution&&) noexcept = default;
-        ScopedResolution& operator=(ScopedResolution&&) noexcept = default;
+        ScopedResolution(ScopedResolution&& other) noexcept
+            : lock_(std::move(other.lock_)),
+              address_(std::exchange(other.address_, nullptr)),
+              kind_(std::exchange(other.kind_, HandleKind::Unknown)) {}
+        ScopedResolution& operator=(ScopedResolution&& other) noexcept {
+            if (this == &other) return *this;
+            lock_ = std::move(other.lock_);
+            address_ = std::exchange(other.address_, nullptr);
+            kind_ = std::exchange(other.kind_, HandleKind::Unknown);
+            return *this;
+        }
 
         void* get() const noexcept { return address_; }
         HandleKind kind() const noexcept { return kind_; }
@@ -67,10 +77,6 @@ public:
                                             HandleKind kind) const;
     ScopedResolution acquire(std::uint64_t handle,
                              HandleKind expected = HandleKind::Unknown) const;
-
-    void* resolve(std::uint64_t handle,
-                  HandleKind expected = HandleKind::Unknown) const;
-    std::optional<HandleRecord> describe(std::uint64_t handle) const;
     bool valid(std::uint64_t handle,
                HandleKind expected = HandleKind::Unknown) const;
     HandleKind kind(std::uint64_t handle) const noexcept;
@@ -102,10 +108,10 @@ private:
     mutable std::mutex mutex_;
     std::unordered_map<Key, std::uint64_t, KeyHash> byAddress_;
     std::unordered_map<std::uint64_t, HandleRecord> byHandle_;
-    // Keep a generation per address/kind even though object ids are monotonic.
-    // This makes the stale-handle invariant explicit and protects a future id
-    // allocator change from silently re-validating an old Java wrapper.
-    std::unordered_map<Key, std::uint16_t, KeyHash> generations_;
+    // nextId_ is monotonic and exhausted IDs are never recycled. The encoded
+    // generation field is therefore a fixed format marker, not per-address
+    // history; retaining generations by every address would grow for the
+    // lifetime of a busy server.
     std::uint64_t nextId_ = 1;
 };
 

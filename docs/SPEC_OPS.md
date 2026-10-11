@@ -44,7 +44,8 @@ all vanilla servers.
 ### Vanilla-facing `server.properties`
 
 The implemented settings remain a **partial** 1.21.4 subset. On first launch,
-the generated defaults use `view-distance=10`, `motd=A Minecraft Server`,
+the generated defaults use `view-distance=10`,
+`entity-broadcast-range-percentage=100`, `motd=A Minecraft Server`,
 `difficulty=easy`, an empty `level-seed` (random for a new world),
 `online-mode=true`, and `enforce-secure-profile=true`; an existing world's
 `level.dat` seed remains authoritative. Property names are case-sensitive and
@@ -236,8 +237,9 @@ packet-ID table is copied here.
 
 These are declared operational acceptance contracts. A number without run ID,
 commit, host, options, warm-up, and sample count is not a fresh measurement.
-The current source clamps configured view/simulation distance to `2..32`; the session
-uses the minimum of server and client view distance for sending.
+The current source clamps configured view/simulation distance to `2..32` and
+entity broadcast range percentage to `10..1000`; the session uses the minimum
+of server and client view distance for chunk sending.
 
 ### Historical final-gates measurements
 

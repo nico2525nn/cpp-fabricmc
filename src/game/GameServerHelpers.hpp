@@ -6,9 +6,11 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <string_view>
 #include <chrono>
 #include <openssl/evp.h>
 #include "../core/ByteBuffer.hpp"
+#include "BlockStateTraits.hpp"
 #include "../generated/BlockStates.hpp"
 
 namespace cppfm {
@@ -47,14 +49,6 @@ inline std::array<std::uint8_t,16> packUuidFromUrl(const std::string& url) {
     return out;
 }
 
-struct HotbarEntry { std::uint32_t itemId; std::uint16_t stateId; };
-inline const struct { const char* name; int cnt; } kKit[] = {
-    {"minecraft:iron_sword",1}, {"minecraft:iron_pickaxe",1}, {"minecraft:iron_axe",1},
-    {"minecraft:bread",8}, {"minecraft:apple",4},
-    {"minecraft:cobblestone",64}, {"minecraft:oak_planks",64}, {"minecraft:torch",32},
-    {"minecraft:dirt",64},
-};
-
 inline std::string blockNameByState(std::uint16_t sid) {
     if (auto* d = gen::blockByState(sid)) return std::string(d->name);
     return "minecraft:air";
@@ -90,6 +84,25 @@ inline WriteBuffer makeEntityTeleportBody(
     out.f32(yaw);
     out.f32(pitch);
     out.i32(relativeFlags);
+    out.boolean(onGround);
+    return out;
+}
+
+inline WriteBuffer makeSyncEntityPositionBody(
+    const std::int32_t entityId, const double x, const double y,
+    const double z, const double deltaX, const double deltaY,
+    const double deltaZ, const float yaw, const float pitch,
+    const bool onGround) {
+    WriteBuffer out;
+    out.varint(entityId);
+    out.f64(x);
+    out.f64(y);
+    out.f64(z);
+    out.f64(deltaX);
+    out.f64(deltaY);
+    out.f64(deltaZ);
+    out.f32(yaw);
+    out.f32(pitch);
     out.boolean(onGround);
     return out;
 }

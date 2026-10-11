@@ -2,7 +2,6 @@ package net.minecraft.server.world;
 
 import cppfm.bridge.WrapperCache;
 import net.minecraft.entity.Entity;
-import cppfm.bridge.CppModRuntime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -44,20 +43,30 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
             : WrapperCache.get(ServerWorld.class, handle, h -> new ServerWorld(h, server));
     }
     @Override public MinecraftServer getServer() { return server; }
+    private boolean ownsEntity(Entity entity) {
+        return entity != null && entity.getWorld() != null &&
+            entity.getWorld().nativeHandle() == nativeHandle;
+    }
     /** Accessor target used by server-side entity instrumentation. */
     public ServerEntityManager getEntityManager() { return entityManager; }
     public boolean spawnEntity(Entity entity) {
         if (entity == null || entity.isRemoved()) return false;
-        entity.setWorld(this);
-        CppModRuntime.dispatchEntityLoad(entity, this);
-        return true;
+        // Native-backed entities enter the world through the C++ simulation
+        // and its lifecycle bridge. Java-created entities are not registered
+        // in that simulation yet, so assigning a world and firing the load
+        // callback here would report a spawn that never ticks, saves, or gets
+        // tracked by clients. Fail closed until there is a real native insert
+        // operation; never synthesize a lifecycle event for an absent entity.
+        return false;
     }
     public boolean addEntity(Entity entity) { return spawnEntity(entity); }
     @Override public long getTime() { return nativeHandle == 0 ? NativeAccess.currentTick() : NativeAccess.worldTime(nativeHandle); }
     public List<ServerPlayerEntity> getPlayers() {
         List<ServerPlayerEntity> result = new ArrayList<>();
         if (server == null) return result;
-        for (ServerPlayerEntity player : server.getPlayerManager().getPlayerList())
+        net.minecraft.server.PlayerManager playerManager = server.getPlayerManager();
+        if (playerManager == null) return result;
+        for (ServerPlayerEntity player : playerManager.getPlayerList())
             if (player.getServerWorld() != null && player.getServerWorld().nativeHandle() == nativeHandle)
                 result.add(player);
         return List.copyOf(result);
@@ -88,6 +97,7 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
             if (!seen.add(handle)) continue;
             Entity entity = playersByHandle.get(handle);
             if (entity == null) entity = Entity.of(handle);
+            if (!ownsEntity(entity)) continue;
             if (type.equals(entity.getType()) && (box == null || box.contains(entity.getPos()))
                     && (predicate == null || predicate.test((T) entity))) result.add((T) entity);
         }
@@ -98,12 +108,17 @@ public class ServerWorld extends World implements net.minecraft.world.ServerWorl
         int count = (int) Math.min(Integer.MAX_VALUE, NativeAccess.entityCount());
         for (int index = 0; index < count; index++) {
             long handle = NativeAccess.entityHandle(index);
-            if (handle != 0L && Entity.of(handle).getId() == id) return Entity.of(handle);
+            if (handle == 0L) continue;
+            Entity entity = Entity.of(handle);
+            if (entity != null && entity.getId() == id && ownsEntity(entity))
+                return entity;
         }
         return null;
     }
     public Iterable<Entity> iterateEntities() { return getEntities(); }
-    @Override public boolean isChunkLoaded(int chunkX, int chunkZ) { return nativeHandle != 0; }
+    @Override public boolean isChunkLoaded(int chunkX, int chunkZ) {
+        return super.isChunkLoaded(chunkX, chunkZ);
+    }
     public void tickChunk(net.minecraft.world.chunk.WorldChunk chunk, int randomTickSpeed) { }
     public void tick(BooleanSupplier shouldKeepTicking) {
         if (shouldKeepTicking != null && !shouldKeepTicking.getAsBoolean()) return;

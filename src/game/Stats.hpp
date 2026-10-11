@@ -27,7 +27,7 @@ public:
         : worldDir_(std::move(worldDir)) {}
 
     void load(const std::string& uuidHex);
-    void save(const std::string& uuidHex);
+    bool save(const std::string& uuidHex);
 
     Counters& counters() { return c_; }
     void add(const std::string& key, std::int64_t v = 1) {
@@ -129,7 +129,7 @@ public:
         : uuid_(uuidHex), worldDir_(std::move(worldDir)) {}
 
     void load();
-    void save();
+    bool save();
 
     bool has(const std::string& id) const {
         return unlocked_.count(id) != 0;

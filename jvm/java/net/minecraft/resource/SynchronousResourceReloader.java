@@ -10,23 +10,10 @@ public interface SynchronousResourceReloader extends ResourceReloader {
 
     @Override
     default CompletableFuture<Void> reload(Synchronizer synchronizer, ResourceManager manager,
-                                           Profiler prepareProfiler, Profiler applyProfiler,
                                            Executor prepareExecutor, Executor applyExecutor) {
-        CompletableFuture<Void> result = new CompletableFuture<>();
-        Runnable work = () -> {
-            try {
-                reload(manager);
-                result.complete(null);
-            } catch (Throwable failure) {
-                result.completeExceptionally(failure);
-            }
-        };
-        try {
-            if (applyExecutor == null) work.run();
-            else applyExecutor.execute(work);
-        } catch (Throwable failure) {
-            result.completeExceptionally(failure);
-        }
-        return result;
+        CompletableFuture<Void> prepared = synchronizer == null
+            ? CompletableFuture.completedFuture(null)
+            : synchronizer.whenPrepared(null);
+        return prepared.thenRunAsync(() -> reload(manager), applyExecutor);
     }
 }

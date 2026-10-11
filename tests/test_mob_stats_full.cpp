@@ -97,11 +97,14 @@ int main() {
     CHECK_EQ_INT((long long)rows.size(), 149, "csv has 149 data rows");
 
     // ---- (1) full-table sweep: impl vs CSV, mismatch 0 ----
-    int mismatch = 0, orderBad = 0;
+    int mismatch = 0, orderBad = 0, dimensionOrderBad = 0;
     int frFilled = 0, frZero = 0;
     for (int i = 0; i < 149 && i < (int)rows.size(); ++i) {
         const MobStats& s = mobStats(static_cast<MobKind>(i));
         const CsvRow& r = rows[i];
+        const auto& dimensions =
+            gen::mobCollisionDimensions(static_cast<std::size_t>(i));
+        if (!s.name || dimensions.name != s.name) ++dimensionOrderBad;
         bool rowOk = true;
         if (!s.name || r.name != s.name) {
             if (mismatch < 5) std::printf("  row %d name: impl=%s csv=%s\n",
@@ -127,6 +130,8 @@ int main() {
     }
     CHECK_EQ_INT(mismatch, 0, "G-05(1): 149 species HP/speed/attack/FR/xp/loot mismatch 0");
     CHECK_EQ_INT(orderBad, 0, "table order matches MobKind index (no misalignment)");
+    CHECK_EQ_INT(dimensionOrderBad, 0,
+                 "generated entity dimensions match each MobKind name and table index");
     std::printf("  .. followRange filled=%d zero(non-living)=%d\n", frFilled, frZero);
     CHECK(frFilled >= 80, "followRange filled for all living kinds (>=80)");
     CHECK(frZero >= 60, "followRange 0 only for non-living (vehicles/projectiles/displays)");
@@ -164,6 +169,40 @@ int main() {
     CHECK_NEAR(perceiveDist(MobKind::Arrow), 16, 1e-6, "perceiveDist fallback 16 for non-living");
     CHECK_NEAR(perceptionRange2(MobKind::Zombie), 35*35, 1e-6, "perceptionRange2 zombie 1225");
     CHECK_NEAR(perceptionRange2(MobKind::Ghast), 100*100, 1e-6, "perceptionRange2 ghast 10000");
+
+    // Entity widths come from the pinned 1.21.4 dimensions table; dynamic
+    // slime size and baby scaling are applied by mobGroundingHalfWidth.
+    MobEntity dimensionProbe;
+    dimensionProbe.kind = MobKind::Chicken;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 0.2, 1e-6,
+               "chicken grounding footprint uses its 0.4-block width");
+    dimensionProbe.kind = MobKind::Pig;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 0.45, 1e-6,
+               "pig grounding footprint uses its 0.9-block width");
+    dimensionProbe.age = -1;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 0.225, 1e-6,
+               "baby pig grounding footprint applies vanilla half-size");
+    dimensionProbe.age = 0;
+    dimensionProbe.kind = MobKind::Slime;
+    dimensionProbe.slimeSize = 0;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 0.26, 1e-6,
+               "small slime grounding footprint uses dynamic slime dimensions");
+    dimensionProbe.slimeSize = 2;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 1.04, 1e-6,
+               "large slime grounding footprint uses dynamic slime dimensions");
+    dimensionProbe.kind = MobKind::EnderDragon;
+    CHECK_NEAR(mobGroundingHalfWidth(dimensionProbe), 8.0, 1e-6,
+               "ender dragon grounding footprint accepts its 16-block width");
+    CHECK(MobEntity::isFishKind(MobKind::Cod) &&
+              MobEntity::isFishKind(MobKind::Tadpole),
+          "fish predicate includes fish and tadpole entity types");
+    CHECK(!MobEntity::isFishKind(MobKind::Squid) &&
+              !MobEntity::isFishKind(MobKind::GlowSquid),
+          "squid types are not exposed as FishEntity instances");
+    CHECK(MobEntity::isAquaticKind(MobKind::Squid) &&
+              MobEntity::isAquaticKind(MobKind::GlowSquid) &&
+              MobEntity::hasSpeciesGoal(MobKind::Squid),
+          "squids remain aquatic AI kinds after the Java hierarchy split");
 
     // irregular vanilla id: enum EnderCrystal <-> "minecraft:end_crystal" (NOT ender_;
     // crystal is the correct entity id per kEntities — do not "fix" the spelling)

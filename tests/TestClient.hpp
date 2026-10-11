@@ -9,6 +9,7 @@
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -93,6 +94,9 @@ public:
     struct BlockUpd { std::int32_t x,y,z; std::uint32_t state; };
     std::vector<BlockUpd> blockUpdatesSnapshot() const;
     std::vector<std::pair<std::int32_t,std::int32_t>> chunkCoordsSnapshot() const;
+    std::vector<std::pair<std::int32_t,std::int32_t>> activeChunkCoordsSnapshot() const;
+    std::size_t activeChunkCount() const;
+    std::size_t forgottenChunkCount() const;
     std::vector<std::vector<std::uint8_t>> rawChunksSnapshot() const;
     std::vector<Packet> recentSnapshot() const;
     std::vector<std::uint8_t> joinGameBodySnapshot() const;
@@ -113,6 +117,10 @@ public:
 
     struct Position { double x = 8.5, y = -60.0, z = 8.5; };
     Position positionSnapshot() const;
+    std::int32_t entityId() const {
+        std::lock_guard lock(mtx_);
+        return entityId_;
+    }
 
     std::uint16_t localPort() const { return localPort_; }
 
@@ -129,6 +137,8 @@ private:
     mutable std::mutex mtx_;
     std::vector<std::uint8_t> joinGameBody_;
     std::vector<std::pair<std::int32_t,std::int32_t>> chunkCoords_;
+    std::set<std::pair<std::int32_t,std::int32_t>> activeChunkCoords_;
+    std::size_t forgottenChunkCount_ = 0;
     std::vector<std::vector<std::uint8_t>> rawChunks_;      // complete packet bodies
     std::vector<std::string> chatLines_;
     std::vector<BlockUpd> blockUpdates_;

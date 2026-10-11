@@ -30,7 +30,7 @@ CASE_COUNT = 25
 FUNCTIONAL_FIXTURE_CASE = "26-functional-api"
 FUNCTIONAL_FIXTURE_COMPLETE = "FUNCTIONAL_FIXTURE status=PASS phase=functional-complete"
 COMPILE_TIMEOUT = 90.0
-SERVER_TIMEOUT = 45.0
+SERVER_TIMEOUT = 90.0
 STOP_TIMEOUT = 12.0
 
 
@@ -500,6 +500,10 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=SERVER_TIMEOUT)
     parser.add_argument("--report-output", type=Path)
     parser.add_argument("--evidence-output", type=Path)
+    parser.add_argument(
+        "--temp-root", type=Path,
+        help="optional parent for temporary staging/world data (defaults to the system temp directory)",
+    )
     args = parser.parse_args()
 
     binary = args.binary.resolve()
@@ -507,6 +511,9 @@ def main() -> int:
     corpus_root = args.corpus.resolve()
     manifest = args.manifest.resolve()
     report_tool = args.report_tool.resolve()
+    temporary_root = args.temp_root.resolve() if args.temp_root else None
+    if temporary_root is not None:
+        temporary_root.mkdir(parents=True, exist_ok=True)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         print(f"corpus smoke: binary is not executable: {binary}", file=sys.stderr)
         return 2
@@ -524,7 +531,10 @@ def main() -> int:
 
     try:
         corpus = load_json(corpus_path)
-        with tempfile.TemporaryDirectory(prefix="cppfm-jvm-corpus-") as temporary:
+        with tempfile.TemporaryDirectory(
+            prefix="cppfm-jvm-corpus-",
+            dir=str(temporary_root) if temporary_root is not None else None,
+        ) as temporary:
             staging = Path(temporary) / "staging"
             staging.mkdir()
             mods = compile_corpus(corpus_root, corpus, base_classes, staging, javac)

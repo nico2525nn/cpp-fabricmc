@@ -1,8 +1,10 @@
 # SPEC_WIRE — Minecraft 1.21.4 / protocol 769
 
-This is the byte-level source of truth for the current C++ implementation. Snapshot:
-`main` HEAD `335fca5` plus the final documentation working tree, rechecked
-2026-09-19. Scope
+This is the byte-level source of truth for the integrated C++ baseline. Snapshot:
+`main` HEAD `4756a5b0` (2026-09-26). The active unmerged
+architecture-refactor worktree is tracked separately in
+[`CURRENT_STATE.md` §1E](CURRENT_STATE.md#1e-behavior-preserving-architecture-refactor)
+and is not implied by this baseline snapshot. Scope
 is Java Edition 1.21.4, protocol `769`, DataVersion `4189`, with an unmodified Fabric
 1.21.4 server as the behavioral reference. `docs/MISSING_FEATURES_1_21_4.md` targets
 are identified in every contract; this file does not change their status or the
@@ -54,7 +56,9 @@ Packet field bytes belong here. Gameplay causes belong in
 | [Yarn 1.21.4+build.8 SplitterHandler](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/handler/SplitterHandler.html) | maps the official `wi` outer-frame decoder and its Netty `ByteToMessageDecoder` role | `OFFICIAL-API-REFERENCE` |
 | [Yarn 1.21.4+build.8 ClientConnection](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/ClientConnection.html) | maps the official network exception handler whose bytecode disconnects on frame-decoder errors | `OFFICIAL-API-REFERENCE` + `PRIMARY-BYTECODE-INSPECTION` |
 | `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/EntityPositionS2CPacket.html` | official 1.21.4 `teleport_entity` packet model | `OFFICIAL-API-REFERENCE` |
-| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/entity/player/PlayerPosition.html` | official position/delta/rotation record | `OFFICIAL-API-REFERENCE` |
+| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/PlayerPositionLookS2CPacket.html` | official player teleport packet: teleport id, position, and relative flags | `OFFICIAL-API-REFERENCE` |
+| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/network/packet/s2c/play/PlayerRotationS2CPacket.html` | official rotation-only player correction packet: yaw and pitch floats | `OFFICIAL-API-REFERENCE` |
+| `https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/entity/player/PlayerPosition.html` | official position/delta/rotation record | `OFFICIAL-API-REFERENCE` |
 | reference-server captures and repository golden vectors | observed bytes | `CAPTURED` |
 
 The raw protocol JSON is the first oracle for packet IDs and ordinary field shapes;
@@ -63,6 +67,10 @@ override a stale community field definition. In particular, the current raw
 Prismarine `teleport_entity` entry uses the older short shape, while the official
 1.21.4 client model uses `PlayerPosition` plus relative-position flags. A Yarn
 `1.21.4+build.9` URL returned 404 during research and is not used as provenance.
+The player `PlayerPosition` packet `0x42` carries a teleport-id VarInt, six
+`f64` values (position and delta movement), two `f32` rotation values, and a
+fixed-width `i32` relative-flag set; it has no trailing on-ground boolean. Its
+body is 61 bytes with a one-byte teleport id and 62 bytes with a two-byte id.
 
 Configuration sends twelve ordered registry payloads and waits for the client's
 `Select Known Packs` response. Join Game's dimension type is a registry index, not
@@ -76,6 +84,8 @@ an arbitrary dimension string. These are protocol facts, not optional convenienc
 | outer frame | `src/net/PacketEncoder.hpp::encodeRaw`, `src/net/Connection.hpp::Connection::sendFramed` | id + payload, threshold, cipher | length-prefixed frame | `IMPLEMENTATION` |
 | frame decoder | `src/net/PacketDecoder.hpp::readVarint21`, `decodeFrame`, `decodeOuter`; `src/net/Connection.hpp::readFrameUntil` | outer frame, threshold, optional cipher | id + payload or explicit rejection | `IMPLEMENTATION` + `test_goal_network_bugs` |
 | session dispatch | `src/game/GameServer_session.cpp::Session::run` | state and packet direction | state-specific handler | `IMPLEMENTATION` |
+| player teleport | `src/game/PositionPackets.hpp::makePlayerPositionLookBody` | teleport id, position, delta, rotation, relative flags | 1.21.4 `PlayerPosition` body; no on-ground field | `OFFICIAL-API-REFERENCE` + `test_wire_full` |
+| rotation-only player correction | `src/game/PositionPackets.hpp::makePlayerRotationBody` | yaw, pitch | two f32 values; does not alter position or teleport confirmation state | `OFFICIAL-API-REFERENCE` + `test_wire_full` + Mineflayer |
 | registry data | `src/game/EmbeddedData.hpp::EmbeddedData::kRegistrySpec` | captured registry blobs | twelve registries in wire order, tags | `CAPTURED` + `IMPLEMENTATION` |
 | chunk body | `src/game/ChunkCodec.hpp::serializeLevelChunkBody` | 24 sections, heightmaps, light | LevelChunkWithLight body | `CAPTURED` + `test_spec_wire` |
 | batched updates | `src/net/PacketBatcher.cpp::PacketBatcher::flush` | queued block changes | Bundle or MultiBlockChange | `IMPLEMENTATION` + `test_wire_full` |
@@ -127,8 +137,10 @@ The table deliberately includes state and direction; an ID-only table is unsafe.
 | Play | S→C | MultiBlockChange `0x4E` | section-position u64, count VarInt, packed-record VarInts | `PacketBatcher::tryFlushAsMultiBlockChange`; wire full | implemented, `WIRE-ORACLE` |
 | Play | S→C | KeepAlive `0x27` | i64 id | `GameServer_core.cpp::tickCore`; `test_wire_full` | implemented, `WIRE-ORACLE` |
 | Play | C→S | KeepAlive `0x1A` | i64 id | `Session::handlePlay`; native | accepted, `WIRE-ORACLE` |
+| Play | S→C | PlayerPosition `0x42` | teleport id VarInt; position and delta `6×f64`; yaw/pitch `2×f32`; relative flags fixed i32; no on-ground | `PositionPackets.hpp::makePlayerPositionLookBody`; `test_wire_full` | implemented, `OFFICIAL-API-REFERENCE` |
+| Play | S→C | PlayerRotation `0x43` | yaw and pitch `2×f32`; no position, movement delta, or teleport confirmation | `PositionPackets.hpp::makePlayerRotationBody`; `test_wire_full`; Mineflayer live smoke | implemented, `OFFICIAL-API-REFERENCE` + `CAPTURED` |
 | Play | S→C | LevelChunkWithLight `0x28` | i32 x, i32 z, heightmap NBT, data length/blob, block entities, masks and arrays | `ChunkCodec::serializeLevelChunkBody`; wire full | implemented, `CAPTURED` |
-| Play | S→C | UpdateLight `0x2B` | chunk x/z VarInts, trust flag, mask arrays, light arrays | `ChunkCodec::serializeUpdateLightBody`; wire full | implemented, `WIRE-ORACLE` |
+| Play | S→C | UpdateLight `0x2B` | chunk x/z VarInts followed by the light-data masks and arrays | `ChunkCodec::serializeUpdateLightBody`; [Yarn 1.21.4 API](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/network/packet/s2c/play/LightUpdateS2CPacket.html); wire full | implemented, `WIRE-ORACLE` |
 | Play | S→C | EntityTeleport `0x77` | entity id VarInt, position `Vec3d`, delta movement `Vec3d`, yaw/pitch f32, relative flags fixed i32, on-ground bool | `GameServerHelpers.hpp::makeEntityTeleportBody`; `test_spec_wire`/real Fabric client | implemented, `OFFICIAL-API-REFERENCE` + `CAPTURED` |
 | Play | S→C | OpenScreen `0x35` | window id VarInt, menu type VarInt, anonymous-NBT title | `GameServer_session.cpp`; `test_wire_full` | implemented, `WIRE-ORACLE` |
 | Play | S→C | ContainerSetContent `0x13` | window id VarInt, state id VarInt, Slot array, carried Slot | `GameServer::sendMenuContent`; wire full | implemented, `WIRE-ORACLE` |
@@ -296,7 +308,8 @@ limit.
 ## 11. Cautions
 
 - `BundleDelimiter 0x00` is a packet; the `bundle_contents` item component is a
-  different concept and is not part of this 1.21.4 wire contract.
+  different concept (SlotComponentType ID 40) with its own nested ItemStack
+  payload. The two must not be confused.
 - A single-valued paletted container writes `value` **and then `longCount=0`**.
 - `UpdateLight` chunk coordinates are VarInts, while LevelChunk coordinates are i32.
 - `ContainerSetContent` and `OpenScreen` IDs in old notes (`0x12` and `0x34`) are
@@ -309,6 +322,11 @@ limit.
   + onGround`: six `f64` values, two `f32` values, a fixed `i32`, and a boolean.
   The short three-coordinate/two-byte-angle definition in the current raw
   Prismarine table is stale for this packet and is not used by the implementation.
+- Player `PlayerPosition 0x42` uses the same `PlayerPosition + PositionFlagSet`
+  fields but has a leading teleport-id VarInt and no trailing `onGround` field.
+- Player `PlayerRotation 0x43` carries only yaw and pitch floats. Use it for a
+  rotation-only server correction; routing that operation through `PlayerPosition`
+  would incorrectly create a positional teleport transition.
 - The current header comment in `src/proto/Ids.hpp` contains an old axis sentence;
   the implementation and byte tests win.
 
@@ -379,7 +397,21 @@ Named vectors include:
 - `UpdateLight` `(cx=0, cz=-1)` prefix `00 FF FF FF FF 0F`;
 - empty BundleDelimiter body (zero bytes);
 - ContainerSetContent header `window=0, state=1, item-count=2`;
-- Slot components `damage=3`, `enchantments=10`, `repair_cost=17`, `trim=45`; and
+- Slot components `damage=3`, `enchantments=10`, `repair_cost=17`, `trim=45`;
+- Slot component `attribute_modifiers=13` is a VarInt count followed by
+  `attribute registry id`, modifier identifier, `f64 amount`, VarInt operation,
+  VarInt slot, and the component tooltip boolean. This implementation maps the
+  vanilla 1.21.4 ATTRIBUTE registry IDs only; custom Fabric attribute registries
+  are not interchangeable with these constants.
+- Slot component `bundle_contents=40` is a VarInt count followed by that many
+  non-empty ItemStacks in list order; unlike `container=62`, it has no slot
+  indices in the component payload or saved NBT list.
+- Slot component `container=62` is a VarInt-length sequence of item Slots; empty
+  entries before the last non-empty slot preserve the sparse inventory index,
+  while persisted NBT uses `{slot, item}` entries;
+- Slot `intangible_projectile=20` uses the `Unit` codec and contributes zero
+  payload bytes; the following component ID remains aligned in the literal
+  `test_spec_wire` fixture; and
 - ResetScore wildcard and MultiBlockChange 13-byte body checks.
 
 The full command matrix and timeout wrappers are in

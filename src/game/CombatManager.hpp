@@ -23,7 +23,8 @@ public:
     static bool isShieldBlocking(const Player& p);
     static bool isFrontal(const Player& victim, double ax, double az);
     static bool tryShieldBlock(GameServer& srv, Player& victim, const DamageSource& src,
-                               double attackerX, double attackerZ, bool attackerWeaponIsAxe);
+                               double attackerX, double attackerZ,
+                               bool attackerWeaponIsAxe, float baseDamage);
     static void applyThornsReflection(GameServer& srv, Player& victim,
                                       MobEntity* attackerMob, Player* attackerPlayer);
 

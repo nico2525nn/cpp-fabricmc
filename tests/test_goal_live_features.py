@@ -51,6 +51,8 @@ PLAY_SET_PASSENGERS = 0x65
 PLAY_SET_ENTITY_METADATA = 0x5D
 PLAY_MOVE_ENTITY_POS = 0x2F
 PLAY_MOVE_ENTITY_POS_ROT = 0x30
+PLAY_CHUNK_BATCH_FINISHED = 0x0C
+PLAY_CHUNK_BATCH_RECEIVED = 0x09
 
 
 class LiveClient:
@@ -87,6 +89,13 @@ class LiveClient:
             self.packet_lengths.append(len(payload))
             self.packet_payloads.append((packet_id, payload))
             packets.append((packet_id, payload))
+            if packet_id == PLAY_CHUNK_BATCH_FINISHED:
+                # Minecraft's client acknowledges each bounded chunk batch
+                # with its preferred next-batch size. Keep the live harness
+                # on the real protocol path instead of relying on one giant
+                # server-side burst.
+                self.conn.send_packet_raw(PLAY_CHUNK_BATCH_RECEIVED,
+                                          struct.pack(">f", 8.0))
             if packet_id == 0x2C and len(payload) >= 4:
                 self.entity_id = struct.unpack(">i", payload[:4])[0]
             if packet_id == PLAY_SPAWN_ENTITY:
@@ -105,16 +114,19 @@ class LiveClient:
                 self.disconnected = True
         return packets
 
-    def command(self, text: str, expected: str | tuple[str, ...], delay: float = 0.8) -> dict[str, object]:
+    def command(self, text: str, expected: str | tuple[str, ...],
+                delay: float = 0.8,
+                response_timeout: float = 3.0) -> dict[str, object]:
         # The server's spam guard is intentionally part of this real-path
         # test.  Keep commands below its threshold instead of disabling it.
         time.sleep(delay)
         self.pump(0.05)
         self.conn.send_packet_raw(0x05, pack_string(text))
+        command_started = time.monotonic()
         expected_values = (expected,) if isinstance(expected, str) else expected
         encoded = tuple(value.encode("utf-8") for value in expected_values)
         packets: list[dict[str, object]] = []
-        deadline = time.monotonic() + 3.0
+        deadline = command_started + response_timeout
         matched = False
         while time.monotonic() < deadline:
             batch = self.pump(min(0.25, deadline - time.monotonic()))
@@ -129,9 +141,15 @@ class LiveClient:
         if not matched:
             raise AssertionError(
                 f"command {text!r} did not produce {expected_values!r}; "
+                f"waited={response_timeout}s "
                 f"packets={[item['id'] for item in packets]}"
             )
-        return {"command": text, "expected": list(expected_values), "packets": packets}
+        return {
+            "command": text,
+            "expected": list(expected_values),
+            "packets": packets,
+            "response_seconds": round(time.monotonic() - command_started, 3),
+        }
 
     def tab_complete(self, text: str) -> dict[str, object]:
         transaction_id = 1
@@ -185,14 +203,15 @@ class LiveClient:
                     }
         raise AssertionError(f"tab completion did not return for {text!r}: {packets}")
 
-    def use_entity(self, entity_id: int, mouse: int = 0) -> list[tuple[int, bytes]]:
+    def use_entity(self, entity_id: int, mouse: int = 0,
+                   response_timeout: float = 1.0) -> list[tuple[int, bytes]]:
         time.sleep(0.05)
         payload = write_varint(entity_id) + write_varint(mouse)
         if mouse == 2:
             payload += struct.pack(">fff", 0.0, 0.0, 0.0)
         payload += write_varint(0) + b"\x00"
         self.conn.send_packet_raw(0x18, payload)
-        return self.pump(1.0)
+        return self.pump(response_timeout)
 
     def set_held_slot(self, slot: int) -> list[tuple[int, bytes]]:
         if not 0 <= slot <= 8:
@@ -213,9 +232,11 @@ class LiveClient:
         return self.pump(1.5)
 
     def use_item_on(self, x: int, y: int, z: int, face: int,
-                    sequence: int) -> list[tuple[int, bytes]]:
+                    sequence: int, hand: int = 0) -> list[tuple[int, bytes]]:
         packed = ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF)
-        payload = (write_varint(0) + struct.pack(">q", packed) + write_varint(face) +
+        if hand not in (0, 1):
+            raise ValueError(f"invalid hand: {hand}")
+        payload = (write_varint(hand) + struct.pack(">q", packed) + write_varint(face) +
                    struct.pack(">fff", 0.5, 0.5, 0.5) + b"\x00\x00" +
                    write_varint(sequence))
         self.conn.send_packet_raw(0x3C, payload)
@@ -339,6 +360,7 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
 
         commands = [
             ("time set day", "Time set to day"),
+            ("time set 6000", "Set the time to 6000"),
             ("gamerule randomTickSpeed 3", "Gamerule randomTickSpeed is now 3"),
             ("weather rain 5", "Set weather to rain"),
             ("difficulty peaceful", "Difficulty set to peaceful"),
@@ -350,7 +372,9 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             ("forceload add 2 2", "Added chunk"),
             ("forceload query", "Forced chunks"),
             ("forceload remove 2 2", "Removed chunk"),
-            ("summon minecraft:pig 41 -60 40", "Summoned minecraft:pig"),
+            # Keep the summoned mob inside the configured 3-chunk view radius
+            # so this interaction test observes a real entity spawn packet.
+            ("summon minecraft:pig 24 -60 24", "Summoned minecraft:pig"),
             ("tp @s 2 -60 2", "Teleported 1 entity"),
             ("give @s minecraft:diamond 1", "Given 1 x minecraft:diamond"),
             ("give @s minecraft:bow 1", "Given 1 x minecraft:bow"),
@@ -358,6 +382,11 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             ("item replace entity @s weapon.mainhand with minecraft:bow", "Replaced entity slot"),
             ("item replace entity @s hotbar.1 with minecraft:arrow 8", "Replaced entity slot"),
             ("tag @s add goal_probe", "Added tag"),
+            ("tag @s add goal_probe", "Unable to add tag"),
+            ("tag @s list", "goal_probe"),
+            ("tag @s remove goal_probe", "Removed tag"),
+            ("tag @s remove goal_probe", "Unable to remove tag"),
+            ("tag @s list", "no tags"),
             ("team add goal_team", "Created team goal_team"),
             ("scoreboard objectives add goal_obj dummy", "Created objective"),
             ("scoreboard players set GoalFeatureOp goal_obj 7", "goal_obj"),
@@ -382,7 +411,9 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         for text, expected in commands:
             spawn_count_before = len(client.spawn_entity_ids)
             packet_count_before = len(client.packet_payloads)
-            transcript.append(client.command(text, expected))
+            response_timeout = 30.0 if text == "reload" else 3.0
+            transcript.append(client.command(
+                text, expected, response_timeout=response_timeout))
             new_payloads = client.packet_payloads[packet_count_before:]
             if text == "effect give @s speed 5":
                 effects = [parse_entity_effect(payload) for packet_id, payload in new_payloads
@@ -411,7 +442,7 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
                     "observed": experiences,
                     "matching": matching,
                 }
-            if text == "summon minecraft:pig 41 -60 40":
+            if text == "summon minecraft:pig 24 -60 24":
                 summoned_entity_ids = client.spawn_entity_ids[spawn_count_before:]
             if text == "tp @s 2 -60 2":
                 if not summoned_entity_ids:

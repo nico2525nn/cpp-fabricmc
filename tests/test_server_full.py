@@ -64,7 +64,7 @@ VANILLA_COMMANDS: list[tuple[str,str,str,str]] = [
     ("fill",        "fill 0 -61 0 1 -61 1 minecraft:stone", "fill", "bulk setBlock"),
     ("forceload",   "forceload query", "forceload add foo bar", "ForcedChunks"),
     ("function",    "function minecraft:test_noop", "function", "FunctionEvaluator"),
-    ("gamemode",    "gamemode survival @s", "gamemode", "GameEvent 4 + Abilities"),
+    ("gamemode",    "gamemode survival @s", "gamemode", "GameEvent 3 + Abilities"),
     ("gamerule",    "gamerule doDaylightCycle", "gamerule not_a_rule", "37 rules validated"),
     ("give",        "give @s minecraft:stone 1", "give @s", "ContainerSetSlot 0x15"),
     ("help",        "help", "help foo bar", "help tree"),
@@ -472,6 +472,136 @@ def suite_connection_flow(host, port):
         c.close()
     except Exception as e:
         check(False, f"login/config/play flow throws: {e}", "test_server_full.py:flow_exc")
+
+def _enter_play(c: Conn, name: str) -> None:
+    c.login(name)
+    c.config_finish(max_seconds=20)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        pid, data = c.recv_packet()
+        if pid == 0x2C:  # JoinGame: onEnterPlay completed
+            return
+        if pid == 0x42:  # PlayerPositionLook
+            teleport_id, _ = read_varint(data, 0)
+            c.send_packet_raw(0x00, write_varint(teleport_id))
+        elif pid == 0x27:  # KeepAlive
+            c.send_packet_raw(0x1A, data)
+        elif pid == 0x00:
+            raise RuntimeError(f"disconnected before play: {data[:200]!r}")
+    raise TimeoutError("JoinGame was not received")
+
+def _drain_play_packets(c: Conn, duration: float) -> list[tuple[int, bytes]]:
+    packets = []
+    deadline = time.monotonic() + duration
+    original_timeout = c.sock.gettimeout()
+    try:
+        while time.monotonic() < deadline:
+            c.sock.settimeout(min(0.2, max(0.01, deadline - time.monotonic())))
+            try:
+                pid, data = c.recv_packet()
+            except socket.timeout:
+                continue
+            except EOFError:
+                break
+            packets.append((pid, data))
+            if pid == 0x42:
+                teleport_id, _ = read_varint(data, 0)
+                c.send_packet_raw(0x00, write_varint(teleport_id))
+            elif pid == 0x27:
+                c.send_packet_raw(0x1A, data)
+    finally:
+        c.sock.settimeout(original_timeout)
+    return packets
+
+def _wait_for_player_info_add(c: Conn, target_uuid: bytes,
+                              timeout_seconds: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_seconds
+    original_timeout = c.sock.gettimeout()
+    try:
+        while time.monotonic() < deadline:
+            c.sock.settimeout(min(0.5, max(0.01, deadline - time.monotonic())))
+            try:
+                pid, data = c.recv_packet()
+            except socket.timeout:
+                continue
+            except EOFError:
+                return False
+            # PlayerInfoUpdate uses a shared action bitset for every entry.
+            # A UUID appearing in a game-mode/latency/listed-only update is
+            # not evidence that a replacement's AddPlayer action arrived.
+            if (pid == 0x40 and data and (data[0] & 0x01) != 0 and
+                    target_uuid in data[1:]):
+                return True
+            if pid == 0x42:
+                teleport_id, _ = read_varint(data, 0)
+                c.send_packet_raw(0x00, write_varint(teleport_id))
+            elif pid == 0x27:
+                c.send_packet_raw(0x1A, data)
+        return False
+    finally:
+        c.sock.settimeout(original_timeout)
+
+def _player_info_remove_contains(payload: bytes, target_uuid: bytes) -> bool:
+    try:
+        count, offset = read_varint(payload, 0)
+        if count < 0 or count > 1024:
+            return False
+        uuids = []
+        for _ in range(count):
+            if offset + 16 > len(payload):
+                return False
+            uuids.append(payload[offset:offset + 16])
+            offset += 16
+        return offset == len(payload) and target_uuid in uuids
+    except (ValueError, IndexError):
+        return False
+
+def suite_duplicate_login_player_info(host, port):
+    print("\n[duplicate login: replacement Player List entry survives old-session cleanup]")
+    observer = Conn(host, port, timeout=10)
+    old_session = Conn(host, port, timeout=10)
+    replacement = Conn(host, port, timeout=10)
+    username = "DuplicateLoginSubject"
+    target_uuid = bytes.fromhex(mcproto.offline_uuid(username))
+    try:
+        _enter_play(observer, "DuplicateLoginObserver")
+        _enter_play(old_session, username)
+        check(_wait_for_player_info_add(observer, target_uuid),
+              "observer receives the original player's Player List Add",
+              "test_server_full.py:duplicate_login_original_add")
+        _enter_play(replacement, username)
+        check(_wait_for_player_info_add(observer, target_uuid),
+              "observer receives the replacement player's Player List Add",
+              "test_server_full.py:duplicate_login_replacement_add")
+
+        replacement_packets = _drain_play_packets(observer, 1.5)
+        stale_removes = [
+            data for pid, data in replacement_packets
+            if pid == 0x3F and _player_info_remove_contains(data, target_uuid)
+        ]
+        check(not stale_removes,
+              "duplicate login does not remove the replacement UUID from Player List",
+              "test_server_full.py:duplicate_login_replacement")
+
+        replacement.close()
+        logout_deadline = time.monotonic() + 5
+        logout_remove_seen = False
+        while time.monotonic() < logout_deadline and not logout_remove_seen:
+            packets = _drain_play_packets(
+                observer, min(0.5, logout_deadline - time.monotonic()))
+            logout_remove_seen = any(
+                pid == 0x3F and _player_info_remove_contains(data, target_uuid)
+                for pid, data in packets)
+        check(logout_remove_seen,
+              "ordinary disconnect still removes the last player's Player List entry",
+              "test_server_full.py:duplicate_login_final_remove")
+    except Exception as exc:
+        check(False, f"duplicate login lifecycle throws: {exc}",
+              "test_server_full.py:duplicate_login_exception")
+    finally:
+        observer.close()
+        old_session.close()
+        replacement.close()
 
 def send_command_and_collect(host, port, name, command: str, timeout=2.0):
     """Join as name, send command (without slash), collect SystemChat lines for timeout.
@@ -1628,7 +1758,7 @@ def main():
     ap.add_argument("--binary", default="./build/cppfm", help="cppfm binary")
     ap.add_argument("--port", type=int, default=0, help="port 0=auto")
     ap.add_argument("--keep-running", action="store_true", help="do not kill server after")
-    ap.add_argument("--suites", default="", help="comma list to run subset (e.g. rcon,restart); default=all") # plan46 §2
+    ap.add_argument("--suites", default="", help="comma list to run subset (e.g. duplicate,rcon,restart); default=all") # plan46 §2
     args=ap.parse_args()
 
     binary=str(args.binary)
@@ -1692,6 +1822,7 @@ def main():
         print(f"[info] server pid {proc.pid} ready")
 
         suite_connection_flow(host, port) if _run("conn") else None
+        suite_duplicate_login_player_info(host, port) if _run("duplicate") else None
         suite_plan43_b1b2(host, port) if _run("plan43") else None
         suite_commands(host, port, proc) if _run("commands") else None
         # ensure server still alive, restart if needed for remaining suites

@@ -172,7 +172,7 @@ void GameServer::initExecutePositionedCommands(const brigadier::NodePtr& exec) {
                 // find top non-air at ox,oz (simple scan)
                 int topY=64;
                 World& targetWorld = worldForCommand(c.source);
-                for(int y=kMaxY-1;y>=kMinY;--y){ if(targetWorld.getBlock((int)ox,y,(int)oz)!=0){ topY=y+1; break; } }
+                for(int y=targetWorld.maxY()-1;y>=targetWorld.minY();--y){ if(targetWorld.getBlock((int)ox,y,(int)oz)!=0){ topY=y+1; break; } }
                 brigadier::CommandSource tsrc;
                 if(src){ tsrc.player=src; tsrc.name=src->name; }
                 tsrc.srcX=ox; tsrc.srcY=topY; tsrc.srcZ=oz;

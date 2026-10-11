@@ -10,8 +10,10 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -25,6 +27,8 @@ import java.util.Set;
  * referenced by members with different owners.</p>
  */
 public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
+    private static final String MIXIN_DESCRIPTOR =
+        "Lorg/spongepowered/asm/mixin/Mixin;";
     private final IntermediaryNamedMappings mappings;
     private final Set<String> mixinClasses = new HashSet<>();
 
@@ -70,6 +74,11 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
     /** Remap a class without applying the Mixin declaration-name policy. */
     public byte[] remap(String binaryName, byte[] originalBytes) {
         return remap(binaryName, originalBytes, false);
+    }
+
+    static boolean hasMixinClassAnnotation(byte[] originalBytes) {
+        if (originalBytes == null) throw new NullPointerException("originalBytes");
+        return ClassFile.read(originalBytes).hasClassAnnotation(MIXIN_DESCRIPTOR);
     }
 
     private byte[] remap(String binaryName, byte[] originalBytes, boolean mixin) {
@@ -138,10 +147,50 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
             }
         }
 
+        boolean hasClassAnnotation(String descriptor) {
+            return AnnotationStringRemapper.hasAnnotationDescriptor(
+                attributes, pool, descriptor);
+        }
+
         boolean remap(IntermediaryNamedMappings mappings, boolean mixin) {
             boolean changed = false;
             String selfOwner = pool.utf8((Integer) pool.entries.get(thisClass).a);
+            Map<DeclaredMethodKey, String> mappedOverrideMethods = new HashMap<>();
+            Set<Integer> stringConstants = pool.literalStringConstants();
+            for (int index : stringConstants) {
+                String value = pool.utf8(index);
+                if (!mapGeneralUtf8(value, mappings).equals(value))
+                    pool.detachStringConstants(index);
+            }
+            Set<Integer> annotationStringConstants = new HashSet<>();
+            AnnotationStringRemapper annotationRemapper =
+                new AnnotationStringRemapper(pool, mappings, mixin, annotationStringConstants);
+            changed |= annotationRemapper.rewrite(attributes);
+            for (Member member : fields)
+                changed |= annotationRemapper.rewrite(
+                    member.attributes, true, pool.utf8(member.descriptorIndex));
+            for (Member member : methods)
+                changed |= annotationRemapper.rewrite(
+                    member.attributes, false, pool.utf8(member.descriptorIndex));
+
+            if (!mixin) {
+                for (Member method : methods) {
+                    String name = pool.utf8(method.nameIndex);
+                    String descriptor = pool.utf8(method.descriptorIndex);
+                    String mapped = mapImplementedMethodName(
+                        mappings, name, descriptor);
+                    if (!mapped.equals(name)) {
+                        mappedOverrideMethods.put(
+                            new DeclaredMethodKey(name, descriptor), mapped);
+                        method.nameIndex = pool.addUtf8(mapped);
+                        changed = true;
+                    }
+                }
+            }
+
             String[] originalUtf8 = pool.snapshotUtf8();
+            Set<Integer> literalStringConstants = pool.literalStringConstants();
+            literalStringConstants.addAll(annotationStringConstants);
             String[] originalClassNames = new String[pool.entries.size()];
             String[] originalNameTypeNames = new String[pool.entries.size()];
             String[] originalNameTypeDescriptors = new String[pool.entries.size()];
@@ -164,18 +213,8 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
             // constants untouched.
             for (int index = 1; index < originalUtf8.length; ++index) {
                 String value = originalUtf8[index];
-                if (value == null) continue;
-                String mapped = value;
-                // Method/field descriptors start with `(`, `L`, or `[`.  A
-                // class Signature attribute can instead start with formal
-                // type parameters (`<T:...>`), while generic method/field
-                // signatures can contain intermediary owners inside nested
-                // type arguments.  Both use the same `Lowner;` grammar after
-                // erasure, so send either shape through the generic-aware
-                // descriptor mapper.
-                if (looksLikeDescriptor(value) || (!value.isEmpty() && value.charAt(0) == '<'))
-                    mapped = mappings.mapDescriptor(mapped);
-                if (mixin) mapped = mappings.mapSymbol(mapped);
+                if (value == null || literalStringConstants.contains(index)) continue;
+                String mapped = mapGeneralUtf8(value, mappings);
                 if (!mapped.equals(value)) {
                     pool.setUtf8(index, mapped);
                     changed = true;
@@ -231,10 +270,18 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
                 // only the Minecraft owner/member table here can otherwise
                 // leave PUTSTATIC/INVOKESTATIC pointing at the old
                 // intermediary name after the declaration was renamed.
-                boolean selfReference = mixin && owner.equals(selfOwner);
-                String mappedName = selfReference ? mappings.mapSymbol(name) : field
-                    ? mappings.mapFieldName(owner, name, descriptor)
-                    : mappings.mapMethodName(owner, name, descriptor);
+                boolean selfReference = owner.equals(selfOwner);
+                String mappedName;
+                if (selfReference && mixin) {
+                    mappedName = mappings.mapSymbol(name);
+                } else if (selfReference && !field) {
+                    mappedName = mappedOverrideMethods.getOrDefault(
+                        new DeclaredMethodKey(name, descriptor), name);
+                } else {
+                    mappedName = field
+                        ? mappings.mapFieldName(owner, name, descriptor)
+                        : mappings.mapMethodName(owner, name, descriptor);
+                }
                 String mappedDescriptor = mappings.mapDescriptor(descriptor);
                 int nameIndex = pool.addUtf8(mappedName);
                 int descriptorIndex = pool.addUtf8(mappedDescriptor);
@@ -276,6 +323,541 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
                 }
             }
             return changed;
+        }
+
+        private String mapImplementedMethodName(
+            IntermediaryNamedMappings mappings, String name,
+            String descriptor) {
+            if (name.startsWith("<")) return name;
+            String mapped = name;
+            if (superClass != 0) {
+                String parent = className(superClass);
+                String candidate = mergeImplementedMethodName(
+                    mappings, parent, name, descriptor, mapped);
+                mapped = candidate;
+            }
+            for (int interfaceIndex : interfaces) {
+                String parent = className(interfaceIndex);
+                String candidate = mergeImplementedMethodName(
+                    mappings, parent, name, descriptor, mapped);
+                mapped = candidate;
+            }
+            // Intermediary method IDs are globally assigned. A mod-owned
+            // base class/interface can sit between this declaration and the
+            // Fabric/Minecraft owner, so immediate-parent inspection alone
+            // misses real overrides. Only use the fallback for an actual
+            // intermediary ID and when name+descriptor has one global target.
+            if (mapped.equals(name) && isIntermediaryMethodName(name))
+                mapped = mappings.mapUniqueMethodName(name, descriptor);
+            return mapped;
+        }
+
+        private static boolean isIntermediaryMethodName(String name) {
+            if (!name.startsWith("method_") || name.length() == 7) return false;
+            for (int index = 7; index < name.length(); ++index)
+                if (name.charAt(index) < '0' || name.charAt(index) > '9')
+                    return false;
+            return true;
+        }
+
+        private String mergeImplementedMethodName(
+            IntermediaryNamedMappings mappings, String owner, String name,
+            String descriptor, String current) {
+            String candidate = mappings.mapMethodName(owner, name, descriptor);
+            if (candidate.equals(name)) return current;
+            if (!current.equals(name) && !current.equals(candidate))
+                throw new TransformException(
+                    "ambiguous intermediary override " + owner + "." + name +
+                    descriptor + " maps to both " + current + " and " + candidate);
+            return candidate;
+        }
+
+        private String className(int classIndex) {
+            CpEntry entry = pool.entries.get(classIndex);
+            if (entry == null || entry.tag != 7)
+                throw new TransformException(
+                    "class-file inheritance entry is not a class: " + classIndex);
+            return pool.utf8(entry.a);
+        }
+
+        private record DeclaredMethodKey(String name, String descriptor) { }
+
+        private static String mapGeneralUtf8(String value,
+                                             IntermediaryNamedMappings mappings) {
+            String mapped = value;
+            // Method/field descriptors start with `(`, `L`, or `[`. A class
+            // Signature can instead start with formal type parameters, while
+            // generic member signatures contain the same `Lowner;` grammar.
+            if (looksLikeDescriptor(value) ||
+                (!value.isEmpty() && value.charAt(0) == '<'))
+                mapped = mappings.mapDescriptor(mapped);
+            return mapped;
+        }
+
+        private static final class AnnotationStringRemapper {
+            private final ConstantPool pool;
+            private final IntermediaryNamedMappings mappings;
+            private final boolean mixin;
+            private final Set<Integer> protectedStringIndexes;
+            private final Set<String> mixinTargetOwners = new HashSet<>();
+            private final Map<AnnotationStringKey, Integer> detachedStrings = new HashMap<>();
+            private boolean annotatedMemberIsField;
+            private boolean defaultRemapEnabled = true;
+            private String annotatedMemberDescriptor;
+            private boolean changed;
+
+            static boolean hasAnnotationDescriptor(
+                List<Attribute> attributes, ConstantPool pool, String expected) {
+                boolean found = false;
+                for (Attribute attribute : attributes) {
+                    String name = pool.utf8(attribute.nameIndex);
+                    if (!name.equals("RuntimeVisibleAnnotations") &&
+                        !name.equals("RuntimeInvisibleAnnotations")) continue;
+                    Cursor cursor = new Cursor(
+                        attribute.info, 0, attribute.info.length);
+                    int count = cursor.u2();
+                    for (int index = 0; index < count; ++index) {
+                        String descriptor = pool.utf8(cursor.u2());
+                        if (descriptor.equals(expected)) found = true;
+                        skipAnnotationPairs(cursor, pool);
+                    }
+                    requireConsumed(cursor, true, "class annotation attribute");
+                }
+                return found;
+            }
+
+            private static void skipAnnotationPairs(Cursor cursor,
+                                                   ConstantPool pool) {
+                for (int index = 0, count = cursor.u2(); index < count; ++index) {
+                    pool.utf8(cursor.u2());
+                    skipElementValue(cursor, pool);
+                }
+            }
+
+            private static void skipAnnotation(Cursor cursor, ConstantPool pool) {
+                pool.utf8(cursor.u2());
+                skipAnnotationPairs(cursor, pool);
+            }
+
+            private static void skipElementValue(Cursor cursor,
+                                                 ConstantPool pool) {
+                switch (cursor.u1()) {
+                    case 'B', 'C', 'I', 'S', 'Z' -> {
+                        if (pool.tag(cursor.u2()) != 3)
+                            throw malformed("invalid integer annotation value");
+                    }
+                    case 'D' -> {
+                        if (pool.tag(cursor.u2()) != 6)
+                            throw malformed("invalid double annotation value");
+                    }
+                    case 'F' -> {
+                        if (pool.tag(cursor.u2()) != 4)
+                            throw malformed("invalid float annotation value");
+                    }
+                    case 'J' -> {
+                        if (pool.tag(cursor.u2()) != 5)
+                            throw malformed("invalid long annotation value");
+                    }
+                    case 's' -> pool.utf8(cursor.u2());
+                    case 'c' -> pool.utf8(cursor.u2());
+                    case 'e' -> {
+                        pool.utf8(cursor.u2());
+                        pool.utf8(cursor.u2());
+                    }
+                    case '@' -> skipAnnotation(cursor, pool);
+                    case '[' -> {
+                        for (int index = 0, count = cursor.u2(); index < count;
+                             ++index)
+                            skipElementValue(cursor, pool);
+                    }
+                    default -> throw malformed(
+                        "unknown class annotation element tag");
+                }
+            }
+
+            private AnnotationStringRemapper(ConstantPool pool,
+                                             IntermediaryNamedMappings mappings,
+                                             boolean mixin,
+                                             Set<Integer> protectedStringIndexes) {
+                this.pool = pool;
+                this.mappings = mappings;
+                this.mixin = mixin;
+                this.protectedStringIndexes = protectedStringIndexes;
+            }
+
+            boolean rewrite(List<Attribute> attributes) {
+                if (mixin) defaultRemapEnabled = readMixinRemap(attributes);
+                return rewrite(attributes, false, null);
+            }
+
+            private boolean readMixinRemap(List<Attribute> attributes) {
+                for (Attribute attribute : attributes) {
+                    String name = pool.utf8(attribute.nameIndex);
+                    if (!name.equals("RuntimeVisibleAnnotations") &&
+                        !name.equals("RuntimeInvisibleAnnotations")) continue;
+                    Cursor cursor = new Cursor(attribute.info, 0, attribute.info.length);
+                    for (int index = 0, count = cursor.u2(); index < count; ++index) {
+                        String descriptor = pool.utf8(cursor.u2());
+                        if (descriptor.equals("Lorg/spongepowered/asm/mixin/Mixin;"))
+                            return annotationRemap(cursor, true);
+                        skipAnnotationPairs(cursor, pool);
+                    }
+                    requireConsumed(cursor, true, "class annotation attribute");
+                }
+                return true;
+            }
+
+            /** Read an annotation's explicit remap element without consuming its visitor cursor. */
+            private boolean annotationRemap(Cursor cursor, boolean fallback) {
+                Cursor scan = new Cursor(cursor.bytes, cursor.position, cursor.limit);
+                for (int index = 0, count = scan.u2(); index < count; ++index) {
+                    String name = pool.utf8(scan.u2());
+                    if (name.equals("remap")) {
+                        if (scan.u1() != 'Z')
+                            throw malformed("remap annotation value is not boolean");
+                        int constantIndex = scan.u2();
+                        requireConstantTag(constantIndex, 3, "remap annotation value");
+                        int value = pool.entries.get(constantIndex).a;
+                        if (value != 0 && value != 1)
+                            throw malformed("invalid boolean remap annotation value");
+                        return value != 0;
+                    }
+                    skipElementValue(scan, pool);
+                }
+                return fallback;
+            }
+
+            boolean rewrite(List<Attribute> attributes, boolean memberIsField,
+                            String memberDescriptor) {
+                annotatedMemberIsField = memberIsField;
+                annotatedMemberDescriptor = memberDescriptor;
+                for (Attribute attribute : attributes) {
+                    Cursor cursor = new Cursor(attribute.info, 0, attribute.info.length);
+                    boolean recognized = visitAttribute(attribute.nameIndex, cursor);
+                    requireConsumed(cursor, recognized, "class-file attribute");
+                }
+                return changed;
+            }
+
+            private boolean visitAttribute(int nameIndex, Cursor cursor) {
+                String name = pool.utf8(nameIndex);
+                switch (name) {
+                    case "RuntimeVisibleAnnotations", "RuntimeInvisibleAnnotations" -> {
+                        for (int i = 0, count = cursor.u2(); i < count; ++i)
+                            visitAnnotation(cursor);
+                    }
+                    case "RuntimeVisibleParameterAnnotations", "RuntimeInvisibleParameterAnnotations" -> {
+                        for (int parameter = 0, count = cursor.u1(); parameter < count; ++parameter)
+                            for (int i = 0, annotations = cursor.u2(); i < annotations; ++i)
+                                visitAnnotation(cursor);
+                    }
+                    case "RuntimeVisibleTypeAnnotations", "RuntimeInvisibleTypeAnnotations" -> {
+                        for (int i = 0, count = cursor.u2(); i < count; ++i) {
+                            skipTypeAnnotationTarget(cursor);
+                            int pathLength = cursor.u1();
+                            cursor.skip(2 * pathLength);
+                            visitAnnotation(cursor);
+                        }
+                    }
+                    case "AnnotationDefault" -> visitElementValue(
+                        cursor, "", "", defaultRemapEnabled);
+                    case "Code" -> visitCode(cursor);
+                    case "Record" -> visitRecord(cursor);
+                    default -> { return false; }
+                }
+                return true;
+            }
+
+            private void visitCode(Cursor cursor) {
+                cursor.skip(4); // max_stack, max_locals
+                cursor.skipLength(cursor.u4());
+                int exceptionCount = cursor.u2();
+                cursor.skip(8 * exceptionCount);
+                visitNestedAttributes(cursor, cursor.u2());
+            }
+
+            private void visitRecord(Cursor cursor) {
+                for (int i = 0, components = cursor.u2(); i < components; ++i) {
+                    cursor.skip(4); // name_index, descriptor_index
+                    visitNestedAttributes(cursor, cursor.u2());
+                }
+            }
+
+            private void visitNestedAttributes(Cursor cursor, int count) {
+                for (int i = 0; i < count; ++i) {
+                    int nameIndex = cursor.u2();
+                    long length = cursor.u4();
+                    int end = cursor.checkedEnd(length);
+                    int oldLimit = cursor.limit;
+                    cursor.limit = end;
+                    boolean recognized = visitAttribute(nameIndex, cursor);
+                    requireConsumed(cursor, recognized, "nested class-file attribute");
+                    cursor.position = end;
+                    cursor.limit = oldLimit;
+                }
+            }
+
+            private void visitAnnotation(Cursor cursor) {
+                String descriptor = pool.utf8(cursor.u2());
+                boolean remapEnabled = annotationRemap(cursor, defaultRemapEnabled);
+                for (int i = 0, values = cursor.u2(); i < values; ++i) {
+                    String name = pool.utf8(cursor.u2());
+                    visitElementValue(cursor, descriptor, name, remapEnabled);
+                }
+            }
+
+            private void visitElementValue(Cursor cursor, String annotationDescriptor,
+                                           String elementName,
+                                           boolean remapEnabled) {
+                int tag = cursor.u1();
+                switch (tag) {
+                    case 'B', 'C', 'I', 'S', 'Z' ->
+                        requireConstantTag(cursor.u2(), 3, "integer annotation value");
+                    case 'D' -> requireConstantTag(cursor.u2(), 6, "double annotation value");
+                    case 'F' -> requireConstantTag(cursor.u2(), 4, "float annotation value");
+                    case 'J' -> requireConstantTag(cursor.u2(), 5, "long annotation value");
+                    case 's' -> remapStringValue(
+                        cursor, annotationDescriptor, elementName, remapEnabled);
+                    case 'e' -> visitEnumValue(cursor);
+                    case 'c' -> visitClassValue(
+                        cursor, annotationDescriptor, elementName);
+                    case '@' -> visitAnnotation(cursor);
+                    case '[' -> {
+                        for (int i = 0, count = cursor.u2(); i < count; ++i)
+                            visitElementValue(cursor, annotationDescriptor,
+                                elementName, remapEnabled);
+                    }
+                    default -> throw malformed("unknown annotation element tag " + tag);
+                }
+            }
+
+            private void remapStringValue(Cursor cursor, String annotationDescriptor,
+                                          String elementName,
+                                          boolean remapEnabled) {
+                int indexOffset = cursor.position;
+                int oldIndex = cursor.u2();
+                String original = pool.utf8(oldIndex);
+                String remapped = mapAnnotationString(
+                    annotationDescriptor, elementName, original, remapEnabled);
+                rewriteStringIndex(cursor, indexOffset, oldIndex, original, remapped);
+            }
+
+            private void visitEnumValue(Cursor cursor) {
+                int typeIndex = cursor.u2();
+                String enumDescriptor = pool.utf8(typeIndex);
+                if (enumDescriptor.length() < 3 || enumDescriptor.charAt(0) != 'L' ||
+                    enumDescriptor.charAt(enumDescriptor.length() - 1) != ';')
+                    throw malformed("invalid enum annotation descriptor");
+                String owner = enumDescriptor.substring(1, enumDescriptor.length() - 1);
+                int indexOffset = cursor.position;
+                int oldIndex = cursor.u2();
+                String original = pool.utf8(oldIndex);
+                String remapped = mappings.mapFieldName(
+                    owner, original, enumDescriptor);
+                rewriteStringIndex(cursor, indexOffset, oldIndex, original, remapped);
+            }
+
+            private void visitClassValue(Cursor cursor, String annotationDescriptor,
+                                         String elementName) {
+                int index = cursor.u2();
+                String descriptor = pool.utf8(index);
+                if (!isClassLiteralDescriptor(descriptor))
+                    throw malformed("invalid class-literal annotation descriptor");
+                if (mixin && annotationDescriptor.equals(
+                        "Lorg/spongepowered/asm/mixin/Mixin;") &&
+                    elementName.equals("value"))
+                    rememberMixinTargetDescriptor(descriptor);
+            }
+
+            private void rewriteStringIndex(Cursor cursor, int indexOffset,
+                                            int oldIndex, String original,
+                                            String remapped) {
+                boolean mustDetach = !remapped.equals(original)
+                    || !mapGeneralUtf8(remapped, mappings).equals(remapped);
+                if (!mustDetach) return;
+
+                AnnotationStringKey key = new AnnotationStringKey(oldIndex, remapped);
+                Integer detachedIndex = detachedStrings.get(key);
+                if (detachedIndex == null) {
+                    detachedIndex = pool.appendUtf8(remapped);
+                    detachedStrings.put(key, detachedIndex);
+                }
+                cursor.putU2(indexOffset, detachedIndex);
+                protectedStringIndexes.add(detachedIndex);
+                changed = true;
+            }
+
+            private String mapAnnotationString(String descriptor, String element,
+                                               String value, boolean remapEnabled) {
+                if (!mixin) return value;
+                if (descriptor.equals("Lorg/spongepowered/asm/mixin/Mixin;")
+                        && element.equals("targets")) {
+                    rememberMixinTarget(value);
+                    return mappings.mapMixinTarget(value);
+                }
+                if (!remapEnabled) return value;
+                if (descriptor.equals("Lorg/spongepowered/asm/mixin/injection/At;")
+                        && element.equals("target"))
+                    return mappings.mapMixinSelector(
+                        value, mixinTargetOwners,
+                        IntermediaryNamedMappings.MixinSelectorKind.ANY);
+                if (descriptor.equals("Lorg/spongepowered/asm/mixin/gen/Accessor;")
+                        && element.equals("value"))
+                    return mappings.mapMixinSelector(
+                        value, mixinTargetOwners,
+                        IntermediaryNamedMappings.MixinSelectorKind.FIELD);
+                if (descriptor.equals("Lorg/spongepowered/asm/mixin/gen/Invoker;")
+                        && element.equals("value"))
+                    return mappings.mapMixinSelector(
+                        value, mixinTargetOwners,
+                        IntermediaryNamedMappings.MixinSelectorKind.METHOD);
+                if (descriptor.equals("Lorg/spongepowered/asm/mixin/Shadow;")
+                        && element.equals("aliases"))
+                    return mappings.mapMixinSelector(
+                        value, mixinTargetOwners,
+                        annotatedMemberIsField
+                            ? IntermediaryNamedMappings.MixinSelectorKind.FIELD
+                            : IntermediaryNamedMappings.MixinSelectorKind.METHOD,
+                        annotatedMemberDescriptor);
+                if (isInjectorAnnotation(descriptor) && element.equals("method"))
+                    return mappings.mapMixinSelector(
+                        value, mixinTargetOwners,
+                        IntermediaryNamedMappings.MixinSelectorKind.METHOD);
+                return value;
+            }
+
+            private void rememberMixinTarget(String target) {
+                String internalName = target.indexOf('/') < 0 && target.indexOf('.') >= 0
+                    ? target.replace('.', '/') : target;
+                mixinTargetOwners.add(mappings.unmapClassName(internalName));
+            }
+
+            private void rememberMixinTargetDescriptor(String descriptor) {
+                if (descriptor.length() < 3 || descriptor.charAt(0) != 'L' ||
+                    descriptor.charAt(descriptor.length() - 1) != ';') return;
+                String owner = descriptor.substring(1, descriptor.length() - 1);
+                mixinTargetOwners.add(mappings.unmapClassName(owner));
+            }
+
+            private void requireConstantTag(int index, int expectedTag,
+                                            String description) {
+                if (pool.tag(index) != expectedTag)
+                    throw malformed("invalid constant-pool entry for " + description);
+            }
+
+            private static boolean isClassLiteralDescriptor(String descriptor) {
+                if (descriptor.isEmpty()) return false;
+                if (descriptor.equals("V") || descriptor.length() == 1)
+                    return descriptor.equals("V") || "ZBCSIJFD".indexOf(
+                        descriptor.charAt(0)) >= 0;
+                return (descriptor.charAt(0) == '[' && descriptor.length() > 1) ||
+                    (descriptor.charAt(0) == 'L' &&
+                     descriptor.charAt(descriptor.length() - 1) == ';');
+            }
+
+            private static boolean isInjectorAnnotation(String descriptor) {
+                return switch (descriptor) {
+                    case "Lorg/spongepowered/asm/mixin/injection/Inject;",
+                         "Lorg/spongepowered/asm/mixin/injection/Redirect;",
+                         "Lorg/spongepowered/asm/mixin/injection/ModifyArg;",
+                         "Lorg/spongepowered/asm/mixin/injection/ModifyConstant;",
+                         "Lorg/spongepowered/asm/mixin/injection/ModifyVariable;",
+                         "Lcom/llamalad7/mixinextras/injector/ModifyReturnValue;",
+                         "Lcom/llamalad7/mixinextras/injector/ModifyExpressionValue;",
+                         "Lcom/llamalad7/mixinextras/injector/v2/WrapWithCondition;",
+                         "Lcom/llamalad7/mixinextras/injector/wrapoperation/WrapOperation;",
+                         "Lcom/llamalad7/mixinextras/injector/wrapmethod/WrapMethod;" -> true;
+                    default -> false;
+                };
+            }
+
+            private static void skipTypeAnnotationTarget(Cursor cursor) {
+                int targetType = cursor.u1();
+                switch (targetType) {
+                    case 0x00, 0x01, 0x16 -> cursor.skip(1);
+                    case 0x10, 0x17, 0x42 -> cursor.skip(2);
+                    case 0x11, 0x12 -> cursor.skip(2);
+                    case 0x13, 0x14, 0x15 -> { }
+                    case 0x40, 0x41 -> {
+                        for (int i = 0, count = cursor.u2(); i < count; ++i)
+                            cursor.skip(6);
+                    }
+                    case 0x43, 0x44, 0x45, 0x46 -> cursor.skip(2);
+                    case 0x47, 0x48, 0x49, 0x4a, 0x4b -> cursor.skip(3);
+                    default -> throw malformed("unknown type-annotation target " + targetType);
+                }
+            }
+
+            private static void requireConsumed(Cursor cursor, boolean recognized,
+                                                String description) {
+                if (recognized && cursor.position != cursor.limit)
+                    throw malformed("malformed " + description);
+            }
+
+            private static TransformException malformed(String message) {
+                return new TransformException("cannot remap " + message);
+            }
+
+            private record AnnotationStringKey(int originalIndex, String remappedValue) { }
+        }
+
+        private static final class Cursor {
+            private final byte[] bytes;
+            private int position;
+            private int limit;
+
+            private Cursor(byte[] bytes, int position, int limit) {
+                this.bytes = bytes;
+                this.position = position;
+                this.limit = limit;
+            }
+
+            private int u1() {
+                require(1);
+                return bytes[position++] & 0xff;
+            }
+
+            private int u2() {
+                return (u1() << 8) | u1();
+            }
+
+            private long u4() {
+                return ((long) u1() << 24) | ((long) u1() << 16)
+                    | ((long) u1() << 8) | u1();
+            }
+
+            private void skip(int count) {
+                if (count < 0) throw new TransformException("negative class-file skip length");
+                require(count);
+                position += count;
+            }
+
+            private void skipLength(long count) {
+                if (count > Integer.MAX_VALUE)
+                    throw new TransformException("oversized class-file attribute length");
+                skip((int) count);
+            }
+
+            private int checkedEnd(long length) {
+                if (length > Integer.MAX_VALUE || length < 0)
+                    throw new TransformException("invalid nested class-file attribute length");
+                int end = position + (int) length;
+                if (end < position || end > limit)
+                    throw new TransformException("truncated nested class-file attribute");
+                return end;
+            }
+
+            private void putU2(int offset, int value) {
+                if (offset < 0 || offset + 2 > limit || value < 0 || value > 0xffff)
+                    throw new TransformException("invalid annotation constant-pool index");
+                bytes[offset] = (byte) (value >>> 8);
+                bytes[offset + 1] = (byte) value;
+            }
+
+            private void require(int count) {
+                if (count < 0 || position > limit - count)
+                    throw new TransformException("truncated class-file annotation data");
+            }
         }
 
         byte[] write() {
@@ -425,10 +1007,41 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
             return output;
         }
 
+        Set<Integer> literalStringConstants() {
+            Set<Integer> output = new HashSet<>();
+            for (CpEntry entry : entries) {
+                if (entry != null && entry.tag == 8) output.add(entry.a);
+            }
+            return output;
+        }
+
+        void detachStringConstants(int utf8Index) {
+            Map<Integer, Integer> duplicates = new HashMap<>();
+            final int originalSize = entries.size();
+            for (int index = 1; index < originalSize; ++index) {
+                CpEntry entry = entries.get(index);
+                if (entry == null || entry.tag != 8 || entry.a != utf8Index)
+                    continue;
+                Integer duplicate = duplicates.get(utf8Index);
+                if (duplicate == null) {
+                    duplicate = appendUtf8(utf8(utf8Index));
+                    duplicates.put(utf8Index, duplicate);
+                }
+                entry.a = duplicate;
+            }
+        }
+
         String utf8(int index) {
             CpEntry entry = index > 0 && index < entries.size() ? entries.get(index) : null;
             if (entry == null || entry.tag != 1) throw new TransformException("constant is not UTF-8: " + index);
             return entry.text;
+        }
+
+        int tag(int index) {
+            CpEntry entry = index > 0 && index < entries.size() ? entries.get(index) : null;
+            if (entry == null)
+                throw new TransformException("constant-pool index is invalid: " + index);
+            return entry.tag;
         }
 
         void setUtf8(int index, String value) {
@@ -442,6 +1055,10 @@ public final class ClassFileNamespaceRemapper implements ClassFileTransformer {
                 CpEntry entry = entries.get(index);
                 if (entry != null && entry.tag == 1 && value.equals(entry.text)) return index;
             }
+            return appendUtf8(value);
+        }
+
+        private int appendUtf8(String value) {
             CpEntry entry = new CpEntry(1);
             entry.text = value;
             if (entries.size() >= 65535) throw new TransformException("constant pool overflow while remapping");

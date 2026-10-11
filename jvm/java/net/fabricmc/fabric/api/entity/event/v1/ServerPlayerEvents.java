@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.entity.event.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.damage.DamageSource;
@@ -34,19 +33,19 @@ public final class ServerPlayerEvents {
         void onPlayDisconnect(ServerPlayNetworkHandler handler, ServerPlayerEntity player);
     }
 
-    public static final Event<CopyFrom> COPY_FROM = new Event<>(CppModRuntime::registerPlayerCopyFrom,
+    public static final Event<CopyFrom> COPY_FROM = EventFactory.createArrayBacked(
         CopyFrom.class, callbacks -> (oldPlayer, newPlayer, alive) -> {
             for (CopyFrom callback : callbacks) callback.copyFromPlayer(oldPlayer, newPlayer, alive);
         });
-    public static final Event<AfterRespawn> AFTER_RESPAWN = new Event<>(CppModRuntime::registerPlayerAfterRespawn,
+    public static final Event<AfterRespawn> AFTER_RESPAWN = EventFactory.createArrayBacked(
         AfterRespawn.class, callbacks -> (oldPlayer, newPlayer, alive) -> {
             for (AfterRespawn callback : callbacks) callback.afterRespawn(oldPlayer, newPlayer, alive);
         });
-    public static final Event<Join> JOIN = new Event<>(CppModRuntime::registerPlayerJoinEvent,
+    public static final Event<Join> JOIN = EventFactory.createArrayBacked(
         Join.class, callbacks -> (handler, player) -> {
             for (Join callback : callbacks) callback.onPlayReady(handler, player);
         });
-    public static final Event<Leave> LEAVE = new Event<>(CppModRuntime::registerPlayerLeaveEvent,
+    public static final Event<Leave> LEAVE = EventFactory.createArrayBacked(
         Leave.class, callbacks -> (handler, player) -> {
             for (Leave callback : callbacks) callback.onPlayDisconnect(handler, player);
         });

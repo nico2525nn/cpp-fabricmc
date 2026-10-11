@@ -9,7 +9,9 @@ ItemStack* Menu::slotAt(int slot, ItemStack* playerInv) {
         if (slot == 0) return &craftResult;
         const int gridIndex = craftGridIndex(slot);
         if (gridIndex >= 0) return &craftGrid[gridIndex];
-        if (slot >= 5 && slot < 46 && playerInv) return &playerInv[slot];
+        if (slot >= 5 && playerInv &&
+            slot < static_cast<int>(kPlayerInventorySlotCount))
+            return &playerInv[slot];
         return nullptr;
     }
     // An opened crafting table has ten menu slots, but none are backed by a

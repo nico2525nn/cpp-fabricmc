@@ -120,17 +120,9 @@ void GameServer::initMiscCommandsPart06() {
             std::string t = c.arg("type").asStr();
             if (t == "horse") {
                 double x = p->x, y = p->y, z = p->z;
-                spawnMobByTypeNameFor(commandDimension(c.source),
-                                      "minecraft:horse", x, y, z);
                 std::shared_ptr<MobEntity> horse;
-                {
-                    std::lock_guard<std::mutex> lk(entsMtx_);
-                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it)
-                        if ((*it)->kind == MobKind::Horse &&
-                            canonicalDimension((*it)->dimension) ==
-                                commandDimension(c.source)) { horse = *it; break; }
-                }
-                if (horse) {
+                if (spawnMobFor(commandDimension(c.source), MobKind::Horse,
+                                x, y, z, {}, &horse) && horse) {
                     int windowId = 1;
                     WriteBuffer ow; ow.varint(windowId); ow.varint(15); ow.varint(horse->entityId);
                     p->conn->trySendPacket(proto::pl::sc::OpenHorseWindow, ow);
@@ -145,25 +137,41 @@ void GameServer::initMiscCommandsPart06() {
                 return 0;
             } else if (t == "vehicle") {
                 double x = p->x, y = p->y, z = p->z;
-                spawnMobByTypeNameFor(commandDimension(c.source),
-                                      "minecraft:oak_boat", x, y, z);
                 std::shared_ptr<MobEntity> boat;
-                {
-                    std::lock_guard<std::mutex> lk(entsMtx_);
-                    for (auto it = mobs_.rbegin(); it != mobs_.rend(); ++it)
-                        if (MobEntity::isBoat((*it)->kind) &&
-                            canonicalDimension((*it)->dimension) ==
-                                commandDimension(c.source)) { boat = *it; break; }
-                }
-                if (boat) {
-                    p->vehicleId = boat->entityId;
-                    boat->riderEntityId = p->entityId;
+                if (spawnMobFor(commandDimension(c.source), MobKind::OakBoat,
+                                x, y, z, {}, &boat) && boat) {
+                    double vehicleX = 0.0;
+                    double vehicleY = 0.0;
+                    double vehicleZ = 0.0;
+                    float vehicleYaw = 0.0f;
+                    float vehiclePitch = 0.0f;
+                    {
+                        std::scoped_lock mountLock(p->stateMtx,
+                                                   *boat->stateMtx);
+                        p->vehicleId = boat->entityId;
+                        boat->riderEntityId = p->entityId;
+                        vehicleX = boat->x;
+                        vehicleY = boat->y;
+                        vehicleZ = boat->z;
+                        vehicleYaw = boat->yaw;
+                        vehiclePitch = boat->pitch;
+                    }
                     broadcastSetPassengers(boat->entityId);
-                    WriteBuffer vm; vm.f64(x+2); vm.f64(y); vm.f64(z+2); vm.f32(45.0f); vm.f32(5.0f);
-                    broadcastPacketExceptInDimension(
-                        commandDimension(c.source), p,
-                        proto::pl::sc::VehicleMove, vm);
-                    sendFeedback(p, "plan41 vehicle move sent boat eid=" + std::to_string(boat->entityId));
+                    WriteBuffer vm;
+                    vm.f64(vehicleX);
+                    vm.f64(vehicleY);
+                    vm.f64(vehicleZ);
+                    vm.f32(vehicleYaw);
+                    vm.f32(vehiclePitch);
+                    // VehicleMove corrects the receiving client's own ridden
+                    // vehicle; broadcasting it to observers moves unrelated
+                    // riders on their clients. This test command has just
+                    // mounted its issuer, so keep the correction on the same
+                    // FIFO as that client's boat spawn and passenger packets.
+                    if (p->conn)
+                        p->conn->trySendPacketLowPriority(
+                            proto::pl::sc::VehicleMove, vm);
+                    sendFeedback(p, "plan41 vehicle move sent rider-only boat eid=" + std::to_string(boat->entityId));
                     return 1;
                 }
                 sendFeedback(p, "boat spawn failed");

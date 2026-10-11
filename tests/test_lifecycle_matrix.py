@@ -989,7 +989,8 @@ def _case_live_lock(runner: Runner, case_dir: Path) -> dict[str, object]:
         contender_log = contender.log_text()
         require(
             "session.lock is already held" in contender_log
-            or "world is already in use" in contender_log,
+            or "world is already in use" in contender_log
+            or "server directory is already in use" in contender_log,
             "live-lock collision had no explicit rejection diagnostic",
         )
         contender_port_state = _port_release(contender_port)

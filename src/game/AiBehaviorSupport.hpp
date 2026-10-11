@@ -1,6 +1,7 @@
 #pragma once
 
 #include "GameServer.hpp"
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <optional>
@@ -64,9 +65,19 @@ inline bool sameMobIdentity(const MobEntity& mob,
 inline bool snapshotPlayer(const MobEntity& mob, const AiContext& ctx,
                            Player* candidate, AiPlayerSnapshot& out) {
     if (!candidate) return false;
-    for (const auto& view : ctx.playerViews) {
-        if (view.player != candidate) continue;
-        if (!sameDimension(mob, view)) return false;
+    std::optional<std::size_t> viewIndex;
+    if (candidate == ctx.nearestPlayer && ctx.nearestPlayerViewIndex) {
+        viewIndex = ctx.nearestPlayerViewIndex;
+    }
+    if (!viewIndex && candidate == ctx.temptingPlayer &&
+        ctx.temptingPlayerViewIndex) {
+        viewIndex = ctx.temptingPlayerViewIndex;
+    }
+    if (viewIndex) {
+        if (*viewIndex >= ctx.playerViews.size()) return false;
+        const auto& view = ctx.playerViews[*viewIndex];
+        if (view.player != candidate || !sameDimension(mob, view))
+            return false;
         out = view;
         return true;
     }
@@ -74,6 +85,20 @@ inline bool snapshotPlayer(const MobEntity& mob, const AiContext& ctx,
     // A live server context must use the sensor's coherent same-tick view;
     // taking Player::stateMtx under a Mob lock would invert session lock order.
     if (ctx.srv) return false;
+
+    // Standalone/fixture contexts may provide a snapshot without running the
+    // server sensor that records selected-candidate indices. Preserve that
+    // value-based contract before falling back to a live Player read.
+    const auto snapshot = std::find_if(
+        ctx.playerViews.begin(), ctx.playerViews.end(),
+        [candidate](const AiPlayerSnapshot& view) {
+            return view.player == candidate;
+        });
+    if (snapshot != ctx.playerViews.end()) {
+        if (!sameDimension(mob, *snapshot)) return false;
+        out = *snapshot;
+        return true;
+    }
 
     out = {};
     out.player = candidate;
@@ -126,16 +151,17 @@ inline void groundSnap(AiContext& ctx, MobEntity& mob) {
         world->generateChunkIfMissing(chunkX, chunkZ);
     });
 
-    int columnHeight = 4;
+    const auto geometry = world->verticalGeometry();
+    int surface = geometry.minY + 4;
     withoutMobStateLock(mob, [&] {
         world->withChunk(chunkX, chunkZ, [&](const Chunk& chunk) {
-            for (int relativeY = kSectionsPerChunk * 16 - 1;
-                 relativeY >= 0; --relativeY) {
-                if (chunk.blocks[Chunk::index(
-                        relativeY >> 4, relativeY & 15,
+            for (int y = geometry.maxY() - 1; y >= geometry.minY; --y) {
+                const int storageY = geometry.storageY(y);
+                if (chunk.blockAt(Chunk::index(
+                        storageY >> 4, storageY & 15,
                         static_cast<std::int32_t>(z) & 15,
-                        static_cast<std::int32_t>(x) & 15)] != 0) {
-                    columnHeight = relativeY + 1;
+                        static_cast<std::int32_t>(x) & 15)) != 0) {
+                    surface = y + 1;
                     break;
                 }
             }
@@ -147,7 +173,7 @@ inline void groundSnap(AiContext& ctx, MobEntity& mob) {
     // never overwrite that newer state with a stale height.
     if (canonicalDimension(mob.dimension) == dimension &&
         std::abs(mob.x - x) < 1e-9 && std::abs(mob.z - z) < 1e-9) {
-        mob.y = kMinY + columnHeight + 1.0;
+        mob.y = surface + 1.0;
     }
 }
 

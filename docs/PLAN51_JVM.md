@@ -95,8 +95,8 @@ test_jvm_handles        PASS
 jvm_runtime             PASS
 jvm_transformer         PASS (MixinExtras operations, @Share, @Local selectors)
 jvm_api                 PASS
-jvm_compatibility       PASS (25/25)
-jvm_corpus              PASS (25/25)
+jvm_compatibility       PASS (25/25; retains compatibility report and process evidence)
+jvm_corpus              consolidated into jvm_compatibility (it ran the identical corpus a second time)
 jvm_manifest            PASS
 jvm_contract_audit       PASS
 shadow_abi              PASS (906 source classes, 763 class files, 8,297 audited members)

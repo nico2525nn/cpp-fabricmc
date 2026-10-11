@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,7 @@ from typing import Any, NamedTuple
 TOOLS = Path(__file__).resolve().parent
 sys.path.insert(0, str(TOOLS))
 import fetch_fabric_runtime as runtime  # noqa: E402
+import fetch_yarn_mappings as yarn  # noqa: E402
 
 
 class VerificationError(RuntimeError):
@@ -80,6 +82,10 @@ class ProbeBundle(NamedTuple):
     shadow_classes: Path
     provider_jar: Path
     probe_jar: Path
+    fabric_api_module: Path | None
+    fabric_networking_module: Path | None
+    networking_probe: bool
+    yarn_mappings_jar: Path
 
 
 EXTERNAL_PROBE_MARKERS = (
@@ -91,6 +97,8 @@ EXTERNAL_PROBE_MARKERS = (
     "CPPFM_OFFICIAL_MOD_ENTRYPOINT",
     "CPPFM_OFFICIAL_MIXIN_RETURN value=0",
     "CPPFM_OFFICIAL_SHADOW_TARGET classLoader=net.fabricmc.loader.impl.launch.knot.KnotClassLoader",
+    "CPPFM_FABRIC_API_DEPENDENT_FIXTURE_LOADED",
+    "CPPFM_FABRIC_API_EVENT_FUNCTIONAL",
     "CPPFM_OFFICIAL_ENTRYPOINTS_DONE",
 )
 
@@ -104,11 +112,36 @@ EMBEDDED_PROBE_MARKERS = (
     "CPPFM_OFFICIAL_MOD_ENTRYPOINT",
     "CPPFM_OFFICIAL_MIXIN_RETURN value=0",
     "CPPFM_OFFICIAL_SHADOW_TARGET classLoader=net.fabricmc.loader.impl.launch.knot.KnotClassLoader",
+    "CPPFM_FABRIC_API_DEPENDENT_FIXTURE_LOADED",
+    "CPPFM_FABRIC_API_EVENT_FUNCTIONAL",
     "CPPFM_OFFICIAL_EVENT_BRIDGE_READY classLoader=net.fabricmc.loader.impl.launch.knot.KnotClassLoader",
     "CPPFM_OFFICIAL_ENTRYPOINTS_DONE",
     "embedded HotSpot started",
+    "[cppfm] server loop ready",
+    "[cppfm] first server tick completed",
     "[cppfm] stopped cleanly",
 )
+
+FABRIC_NETWORKING_PROBE_MARKER = "CPPFM_FABRIC_API_NETWORKING_FUNCTIONAL"
+FABRIC_NETWORKING_PROBE_MARKERS = (
+    "CPPFM_FABRIC_API_PLAY_NETWORKING_FUNCTIONAL",
+    "CPPFM_FABRIC_API_CONFIGURATION_NETWORKING_FUNCTIONAL",
+    FABRIC_NETWORKING_PROBE_MARKER,
+)
+
+
+def _runtime_library_paths(libraries_dir: Path | None) -> list[Path]:
+    if libraries_dir is None:
+        return []
+    root = libraries_dir.resolve()
+    if not root.is_dir():
+        raise VerificationError(f"Minecraft runtime libraries directory is missing: {root}")
+    return sorted(
+        path for path in root.iterdir()
+        if (path.is_dir() or (path.is_file() and path.suffix == ".jar"))
+        and not (path.is_file() and
+                 (path.name.lower().startswith("asm-") or "-asm-" in path.name.lower()))
+    )
 
 
 def _jar_bytes(archive: zipfile.ZipFile, member: str, label: str) -> bytes:
@@ -230,8 +263,33 @@ def _canonical(
     return value
 
 
-def _stage_shadow_classes(source: Path, destination: Path) -> None:
+def _fabric_api_class_names(*modules: Path | None) -> set[str]:
+    """Return the API/implementation classes physically supplied by a real module."""
+    result: set[str] = set()
+    for module in modules:
+        if module is None:
+            continue
+        try:
+            with zipfile.ZipFile(module) as archive:
+                result.update(
+                    name
+                    for name in archive.namelist()
+                    if name.endswith(".class")
+                    and name.startswith((
+                        "net/fabricmc/fabric/api/",
+                        "net/fabricmc/fabric/impl/",
+                    ))
+                )
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise VerificationError(f"cannot inspect Fabric API module {module}: {exc}") from exc
+    return result
+
+
+def _stage_shadow_classes(
+    source: Path, destination: Path, official_fabric_classes: set[str] | None = None
+) -> None:
     """Stage local game/Fabric classes without shadowing the official loader."""
+    official_fabric_classes = official_fabric_classes or set()
     for item in source.rglob("*"):
         relative = item.relative_to(source)
         # The probe supplies Loader and Mixin from their pinned official jars.
@@ -241,12 +299,134 @@ def _stage_shadow_classes(source: Path, destination: Path) -> None:
         if relative.parts[:3] in (("net", "fabricmc", "loader"), ("net", "fabricmc", "api")) \
                 or relative.parts[:2] == ("org", "spongepowered"):
             continue
+        if relative.as_posix() in official_fabric_classes:
+            continue
         target = destination / relative
         if item.is_dir():
             target.mkdir(parents=True, exist_ok=True)
         elif item.is_file():
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(item, target)
+
+
+def _extract_fabric_api_module(
+    artifact: Path, work_dir: Path, module_id: str,
+    required_class: str, output_name: str,
+) -> Path:
+    """Stage one genuine Fabric API module from a module or aggregate jar."""
+    if not artifact.is_file():
+        raise VerificationError(f"Fabric API jar does not exist: {artifact}")
+
+    def is_api_base(data: bytes) -> bool:
+        try:
+            with zipfile.ZipFile(io.BytesIO(data)) as module:
+                if required_class not in module.namelist():
+                    return False
+                metadata = json.loads(module.read("fabric.mod.json"))
+        except (KeyError, UnicodeDecodeError, json.JSONDecodeError, zipfile.BadZipFile) as exc:
+            raise VerificationError(f"invalid Fabric API module in {artifact}: {exc}") from exc
+        if metadata.get("id") != module_id:
+            raise VerificationError(
+                f"{artifact} contains {required_class} outside {module_id}"
+            )
+        return True
+
+    try:
+        contents = artifact.read_bytes()
+        selected = contents if is_api_base(contents) else None
+        if selected is None:
+            with zipfile.ZipFile(io.BytesIO(contents)) as aggregate:
+                for member in sorted(aggregate.namelist()):
+                    if not member.startswith("META-INF/jars/") or not member.endswith(".jar"):
+                        continue
+                    nested = aggregate.read(member)
+                    if is_api_base(nested):
+                        selected = nested
+                        break
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise VerificationError(f"cannot read Fabric API jar {artifact}: {exc}") from exc
+
+    if selected is None:
+        raise VerificationError(
+            f"{artifact} is neither fabric-api-base nor an aggregate containing it"
+        )
+    module_path = work_dir / output_name
+    module_path.write_bytes(selected)
+    return module_path
+
+
+def _extract_fabric_api_base(artifact: Path, work_dir: Path) -> Path:
+    return _extract_fabric_api_module(
+        artifact, work_dir, "fabric-api-base",
+        "net/fabricmc/fabric/api/event/Event.class", "fabric-api-base.jar")
+
+
+def _extract_fabric_networking_api(artifact: Path, work_dir: Path) -> Path | None:
+    try:
+        return _extract_fabric_api_module(
+            artifact, work_dir, "fabric-networking-api-v1",
+            "net/fabricmc/fabric/api/networking/v1/ServerPlayNetworking.class",
+            "fabric-networking-api-v1.jar")
+    except VerificationError as exc:
+        if "is neither fabric-networking-api-v1 nor an aggregate containing it" in str(exc):
+            return None
+        raise
+
+
+def _without_module_mixins(module: Path, destination: Path, module_id: str) -> Path:
+    """Disable game-target mixins for API-only probes using the shadow provider."""
+    try:
+        with zipfile.ZipFile(module) as source:
+            metadata = json.loads(source.read("fabric.mod.json"))
+            if not isinstance(metadata, dict) or metadata.get("id") != module_id:
+                raise VerificationError(f"unexpected Fabric API module metadata in {module}")
+            if "mixins" not in metadata:
+                raise VerificationError(f"{module_id} declares no mixin configs to isolate")
+            metadata.pop("mixins")
+            with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                for entry in source.infolist():
+                    content = source.read(entry.filename)
+                    if entry.filename == "fabric.mod.json":
+                        content = (json.dumps(metadata, indent=2) + "\n").encode("utf-8")
+                    output.writestr(entry, content)
+    except (OSError, KeyError, UnicodeDecodeError, json.JSONDecodeError,
+            zipfile.BadZipFile) as exc:
+        raise VerificationError(f"cannot isolate {module_id} mixin configs: {exc}") from exc
+    return destination
+
+
+def _package_nested_api_module(base_module: Path, networking_module: Path | None,
+                               destination: Path) -> Path:
+    """Wrap the genuine module in a minimal Fabric nested-mod container.
+
+    A full Fabric API aggregate also declares a Minecraft dependency. The
+    focused Knot classpath test needs only the genuine API module, so this
+    wrapper exercises Loader's nested-jar path without requiring a vanilla
+    game provider that this C++ shadow provider deliberately does not claim.
+    """
+    metadata = {
+        "schemaVersion": 1,
+        "id": "cppfm_fabric_api_nested_container",
+        "version": "1.0.0",
+        "name": "CppFabricMC Nested Fabric API Probe Container",
+        "environment": "server",
+        "depends": {"fabricloader": ">=0.16.9"},
+        "jars": [{"file": "META-INF/jars/fabric-api-base.jar"}],
+    }
+    if networking_module is not None:
+        metadata["jars"].append(
+            {"file": "META-INF/jars/fabric-networking-api-v1.jar"})
+    with zipfile.ZipFile(destination, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n\n")
+        archive.writestr(
+            "fabric.mod.json",
+            json.dumps(metadata, indent=2) + "\n",
+        )
+        archive.write(base_module, "META-INF/jars/fabric-api-base.jar")
+        if networking_module is not None:
+            archive.write(networking_module,
+                          "META-INF/jars/fabric-networking-api-v1.jar")
+    return destination
 
 
 def _probe_evidence(
@@ -282,6 +462,10 @@ def _probe_evidence(
             "The adapter targets Loader 0.16.9's internal GameProvider API and must be re-probed on Loader changes.",
             "This does not establish arbitrary Fabric mod, client/GUI, RNG, long-running, or in-process C++ compatibility.",
         ]
+    if observed and FABRIC_NETWORKING_PROBE_MARKER in observed:
+        limitations.append(
+            "The networking check uses the genuine fabric-networking-api-v1 classes and registration API, but strips that module's mixin declarations because this shadow-provider probe does not supply vanilla Minecraft method bodies; it does not test Minecraft packet interception or the module's connection mixins."
+        )
     evidence: dict[str, Any] = {
         "schema": 1,
         "status": status,
@@ -318,12 +502,30 @@ def _write_evidence(path: Path, evidence: dict[str, Any]) -> None:
     path.write_text(json.dumps(evidence, sort_keys=True, indent=2) + "\n", encoding="utf-8")
 
 
+def _verified_yarn_mappings(cache_dir: Path) -> Path:
+    """Return the pinned intermediary-to-named mapping required by Knot."""
+    try:
+        lock = yarn.load_lock(yarn.DEFAULT_LOCK.resolve())
+        mapping = lock["mapping"]
+        root = cache_dir.resolve()
+        path = yarn.cache_path(root, str(mapping["cachePath"]))
+        yarn.verify_file(path, int(mapping["size"]), str(mapping["sha256"]),
+                         "Yarn mapping artifact")
+        yarn.verify_alignment(lock, root, path)
+        return path
+    except (yarn.MappingError, OSError, KeyError, TypeError, ValueError) as exc:
+        raise VerificationError(f"pinned Yarn mappings are unavailable or invalid: {exc}") from exc
+
+
 def _build_probe_bundle(
     manifest: dict[str, Any],
     artifact_paths: list[Path],
     shadow_classes: Path,
     work_dir: Path,
     timeout: float,
+    fabric_api_jar: Path | None = None,
+    yarn_mappings_jar: Path | None = None,
+    libraries_dir: Path | None = None,
 ) -> ProbeBundle:
     """Compile the provider and fixture mod into one disposable bundle.
 
@@ -336,6 +538,8 @@ def _build_probe_bundle(
     shadow_classes = shadow_classes.resolve()
     if not shadow_classes.is_dir():
         raise VerificationError(f"shadow class directory does not exist: {shadow_classes}")
+    if yarn_mappings_jar is None or not yarn_mappings_jar.is_file():
+        raise VerificationError("pinned Yarn mappings are required for the official Knot probe")
 
     by_coordinates = {
         artifact["coordinates"]: path
@@ -350,7 +554,13 @@ def _build_probe_bundle(
     provider_root = TOOLS.parent / "jvm/vendor/provider"
     probe_root = TOOLS.parent / "jvm/vendor/probe"
     provider_sources = sorted((provider_root / "src").rglob("*.java"))
-    probe_sources = sorted((probe_root / "src").rglob("*.java"))
+    probe_sources = sorted(
+        path for path in (probe_root / "src").rglob("*.java")
+        if path.name not in (
+            "FabricApiDependentMod.java",
+            "FabricNetworkingDependentMod.java",
+        )
+    )
     if not provider_sources or not probe_sources:
         raise VerificationError("probe source tree is incomplete")
 
@@ -360,17 +570,36 @@ def _build_probe_bundle(
     probe_classes = work_dir / "probe-classes"
     provider_jar = work_dir / "cppfm-provider.jar"
     probe_jar = work_dir / "cppfm-probe.jar"
+    fabric_api_module = (
+        _extract_fabric_api_base(fabric_api_jar, work_dir)
+        if fabric_api_jar is not None else None
+    )
+    runtime_libraries = _runtime_library_paths(libraries_dir)
+    fabric_networking_module = None
+    if fabric_api_jar is not None and libraries_dir is not None:
+        fabric_networking_module = _extract_fabric_networking_api(
+            fabric_api_jar, work_dir)
+        if fabric_networking_module is not None:
+            fabric_networking_module = _without_module_mixins(
+                fabric_networking_module,
+                work_dir / "fabric-networking-api-v1-api-only.jar",
+                "fabric-networking-api-v1",
+            )
+    networking_probe = fabric_networking_module is not None
+    official_fabric_classes = _fabric_api_class_names(
+        fabric_api_module, fabric_networking_module)
     provider_classes.mkdir()
     probe_classes.mkdir()
     game_dir.mkdir()
     probe_shadow_classes.mkdir()
-    _stage_shadow_classes(shadow_classes, probe_shadow_classes)
+    _stage_shadow_classes(shadow_classes, probe_shadow_classes, official_fabric_classes)
 
     _run_command(
         [
             "javac",
             "--release",
             "17",
+            "-proc:none",
             "-encoding",
             "UTF-8",
             "-cp",
@@ -406,6 +635,7 @@ def _build_probe_bundle(
             "javac",
             "--release",
             "17",
+            "-proc:none",
             "-encoding",
             "UTF-8",
             "-cp",
@@ -438,10 +668,117 @@ def _build_probe_bundle(
         work_dir,
         timeout,
     )
+    api_fixture_source = probe_root / "src/cppfm/vendor/probe/FabricApiDependentMod.java"
+    api_fixture_classes = work_dir / "fabric-api-dependent-classes"
+    api_fixture_jar = work_dir / "cppfm-fabric-api-dependent-probe.jar"
+    api_fixture_classes.mkdir()
+    api_compile_classpath = [loader]
+    if fabric_api_module is not None:
+        api_compile_classpath.append(fabric_api_module)
+    api_compile_classpath.extend(runtime_libraries)
+    api_compile_classpath.append(probe_shadow_classes)
+    _run_command(
+        [
+            "javac",
+            "--release",
+            "17",
+            "-proc:none",
+            "-encoding",
+            "UTF-8",
+            "-cp",
+            _classpath(api_compile_classpath),
+            "-d",
+            str(api_fixture_classes),
+            str(api_fixture_source),
+        ],
+        "compile-fabric-api-dependent-probe",
+        work_dir,
+        timeout,
+    )
+    if networking_probe:
+        networking_fixture_source = probe_root / "src/cppfm/vendor/probe/FabricNetworkingDependentMod.java"
+        _run_command(
+            [
+                "javac",
+                "--release",
+                "17",
+                "-proc:none",
+                "-encoding",
+                "UTF-8",
+                "-cp",
+                _classpath([
+                    loader, fabric_networking_module, *runtime_libraries,
+                    probe_shadow_classes,
+                ]),
+                "-d",
+                str(api_fixture_classes),
+                str(networking_fixture_source),
+            ],
+            "compile-fabric-networking-dependent-probe",
+            work_dir,
+            timeout,
+        )
+    api_fixture_resources = work_dir / "fabric-api-dependent-resources"
+    api_fixture_resources.mkdir()
+    api_fixture_metadata: dict[str, Any] = {
+        "schemaVersion": 1,
+        "id": "cppfm_fabric_api_dependent_probe",
+        "version": "1.0.0",
+        "name": "CppFabricMC Fabric API Linkage Probe",
+        "environment": "server",
+        "entrypoints": {
+            "main": ["cppfm.vendor.probe.FabricApiDependentMod"],
+        },
+        "depends": {"fabricloader": ">=0.16.9"},
+    }
+    if fabric_api_module is not None:
+        api_fixture_metadata["depends"]["fabric-api-base"] = "*"
+    if networking_probe:
+        api_fixture_metadata["entrypoints"]["main"].append(
+            "cppfm.vendor.probe.FabricNetworkingDependentMod")
+        api_fixture_metadata["depends"]["fabric-networking-api-v1"] = "*"
+    (api_fixture_resources / "fabric.mod.json").write_text(
+        json.dumps(api_fixture_metadata, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    _run_command(
+        [
+            "jar",
+            "--create",
+            "--file",
+            str(api_fixture_jar),
+            "-C",
+            str(api_fixture_classes),
+            ".",
+            "-C",
+            str(api_fixture_resources),
+            "fabric.mod.json",
+        ],
+        "package-fabric-api-dependent-probe",
+        work_dir,
+        timeout,
+    )
     mods = game_dir / "mods"
     mods.mkdir()
     shutil.copy2(probe_jar, mods / probe_jar.name)
-    return ProbeBundle(work_dir, game_dir, probe_shadow_classes, provider_jar, probe_jar)
+    shutil.copy2(api_fixture_jar, mods / api_fixture_jar.name)
+    if fabric_api_module is not None:
+        api_container = _package_nested_api_module(
+            fabric_api_module, fabric_networking_module,
+            work_dir / "cppfm-fabric-api-container.jar"
+        )
+        shutil.copy2(api_container, mods / api_container.name)
+    return ProbeBundle(
+        work_dir,
+        game_dir,
+        probe_shadow_classes,
+        provider_jar,
+        probe_jar,
+        fabric_api_module,
+        fabric_networking_module,
+        networking_probe,
+        yarn_mappings_jar.resolve(),
+    )
 
 
 def run_probe(
@@ -452,6 +789,8 @@ def run_probe(
     timeout: float,
     keep_workdir: bool,
     cache_dir: Path | None = None,
+    fabric_api_jar: Path | None = None,
+    libraries_dir: Path | None = None,
 ) -> dict[str, Any]:
     shadow_classes = shadow_classes.resolve()
     if not shadow_classes.is_dir():
@@ -468,12 +807,29 @@ def run_probe(
     game_dir = work_dir / "game"
     probe_shadow_classes = work_dir / "shadow-classes"
     try:
+        yarn_mappings_jar = _verified_yarn_mappings(cache_dir or runtime.DEFAULT_CACHE)
         bundle = _build_probe_bundle(
-            manifest, artifact_paths, shadow_classes, work_dir, timeout
+            manifest, artifact_paths, shadow_classes, work_dir, timeout,
+            fabric_api_jar, yarn_mappings_jar, libraries_dir,
         )
         game_dir = bundle.game_dir
         probe_shadow_classes = bundle.shadow_classes
         provider_jar = bundle.provider_jar
+        staged_mods = game_dir / "staged-mods"
+        _run_command(
+            [
+                "java",
+                "-cp",
+                _classpath([probe_shadow_classes]),
+                "cppfm.loader.ModJarStagerMain",
+                str(bundle.yarn_mappings_jar),
+                str(game_dir / "mods"),
+                str(staged_mods),
+            ],
+            "stage-probe-mods",
+            work_dir,
+            timeout,
+        )
         by_coordinates = {
             artifact["coordinates"]: path
             for artifact, path in zip(manifest["artifacts"], artifact_paths)
@@ -485,15 +841,19 @@ def run_probe(
             if artifact["coordinates"].startswith("org.ow2.asm:")
         ]
         intermediary = by_coordinates["net.fabricmc:intermediary:1.21.4"]
+        runtime_libraries = _runtime_library_paths(libraries_dir)
 
-        java_classpath = [provider_jar, loader, mixin, *asm_paths, intermediary]
+        java_classpath = [provider_jar, loader, mixin, *asm_paths,
+                          bundle.yarn_mappings_jar, intermediary, *runtime_libraries]
         command = [
             "java",
             "-cp",
             _classpath(java_classpath),
             "-Dfabric.development=true",
             "-Dfabric.skipMcProvider=true",
+            f"-Dfabric.modsFolder={staged_mods}",
             "-Dcppfm.game-provider=shadow",
+            f"-Dcppfm.official.fabric-api-present={str(bundle.fabric_api_module is not None).lower()}",
             f"-Dcppfm.shadow-classes={probe_shadow_classes}",
             f"-Dcppfm.game-dir={game_dir}",
             "-Dcppfm.provider.entrypoint=cppfm.vendor.fabric.ShadowMain",
@@ -505,7 +865,13 @@ def run_probe(
         ]
         stdout, stderr = _run_command(command, "launch-knot-provider", work_dir, timeout)
         combined = stdout + "\n" + stderr
-        expected_markers = list(EXTERNAL_PROBE_MARKERS)
+        expected_markers = [
+            *EXTERNAL_PROBE_MARKERS,
+            "CPPFM_FABRIC_API_CLASS_SOURCE="
+            + ("official-api" if bundle.fabric_api_module is not None else "shadow-fallback"),
+        ]
+        if bundle.networking_probe:
+            expected_markers.extend(FABRIC_NETWORKING_PROBE_MARKERS)
         missing = [marker for marker in expected_markers if marker not in combined]
         if missing:
             evidence = _probe_evidence(
@@ -648,7 +1014,14 @@ def _run_embedded_server(
             "process stopped but expected markers were absent: " + ", ".join(missing),
         )
     forbidden = [
-        marker for marker in ("Knot callback failed", "strict JVM startup failed")
+        marker
+        for marker in (
+            "Knot callback failed",
+            "strict JVM startup failed",
+            "[cppfm][jvm][ERROR]",
+            "NoClassDefFoundError",
+            "Exception in thread \"main\"",
+        )
         if marker in output
     ]
     if forbidden:
@@ -671,10 +1044,39 @@ def _run_embedded_server(
 
 
 def _embedded_evidence_output(output: str) -> str:
-    markers = (*EMBEDDED_PROBE_MARKERS, "Knot callback failed", "strict JVM startup failed")
-    return "\n".join(
-        line for line in output.splitlines() if any(marker in line for marker in markers)
+    markers = (
+        *EMBEDDED_PROBE_MARKERS,
+        "CPPFM_FABRIC_API_CLASS_SOURCE=official-api",
+        "CPPFM_FABRIC_API_CLASS_SOURCE=shadow-fallback",
+        "CPPFM_FABRIC_API_EVENT_FUNCTIONAL",
+        "Knot callback failed",
+        "strict JVM startup failed",
     )
+    diagnostics = (
+        "[cppfm][jvm]",
+        "[Persistence]",
+        "server loop ready",
+        "first server tick",
+        "CppFabricMC starting",
+        "shutdown incomplete",
+        "initialization failed",
+        "fatal:",
+        "stopping tick loop",
+        "stopping persistence",
+        "stopped cleanly",
+        "stopped with unsaved",
+        "[cppfm] bye",
+    )
+    lines = output.splitlines()
+    selected = {
+        index
+        for index, line in enumerate(lines)
+        if any(marker in line for marker in markers + diagnostics)
+    }
+    # Keep recent unprefixed Java stack frames too. Filtering only prefixed
+    # marker lines erased the root cause from failed embedded-launch evidence.
+    selected.update(range(max(0, len(lines) - 240), len(lines)))
+    return "\n".join(line for index, line in enumerate(lines) if index in selected)
 
 
 def run_embedded(
@@ -686,6 +1088,8 @@ def run_embedded(
     timeout: float,
     keep_workdir: bool,
     cache_dir: Path,
+    fabric_api_jar: Path | None = None,
+    libraries_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Prove the production C++ -> HotSpot -> official Knot handoff."""
     binary = binary.resolve()
@@ -713,7 +1117,18 @@ def run_embedded(
 
     work_dir = Path(tempfile.mkdtemp(prefix="cppfm-official-embedded-"))
     try:
-        bundle = _build_probe_bundle(manifest, artifact_paths, classes, work_dir, timeout)
+        yarn_mappings_jar = _verified_yarn_mappings(cache_dir)
+        bundle = _build_probe_bundle(
+            manifest, artifact_paths, classes, work_dir, timeout,
+            fabric_api_jar, yarn_mappings_jar, libraries_dir,
+        )
+        expected_markers = [
+            *EMBEDDED_PROBE_MARKERS,
+            "CPPFM_FABRIC_API_CLASS_SOURCE="
+            + ("official-api" if bundle.fabric_api_module is not None else "shadow-fallback"),
+        ]
+        if bundle.networking_probe:
+            expected_markers.extend(FABRIC_NETWORKING_PROBE_MARKERS)
         config_dir = bundle.game_dir / "config"
         world_dir = bundle.game_dir / "world"
         command = [
@@ -726,7 +1141,16 @@ def run_embedded(
             f"--world-dir={world_dir}",
             "--port=0",
         ]
+        if libraries_dir is not None:
+            command.append(f"--jvm-libraries={libraries_dir.resolve()}")
         environment = os.environ.copy()
+        jvm_temp_dir = work_dir / "java-tmp"
+        jvm_temp_dir.mkdir()
+        tool_options = environment.get("JAVA_TOOL_OPTIONS", "").strip()
+        temp_option = f"-Djava.io.tmpdir={jvm_temp_dir}"
+        environment["JAVA_TOOL_OPTIONS"] = " ".join(
+            value for value in (tool_options, temp_option) if value
+        )
         environment.update(
             {
                 "CPPFM_FABRIC_RUNTIME": str(cache_dir.resolve()),
@@ -739,7 +1163,7 @@ def run_embedded(
             environment,
             TOOLS.parent,
             timeout,
-            EMBEDDED_PROBE_MARKERS,
+            expected_markers,
         )
         evidence = _probe_evidence(
             manifest,
@@ -748,7 +1172,7 @@ def run_embedded(
             command,
             _embedded_evidence_output(output),
             mode="embedded-cpp",
-            observed=list(EMBEDDED_PROBE_MARKERS),
+            observed=expected_markers,
             work_dir=work_dir,
             shadow_classes=classes,
             game_dir=bundle.game_dir,
@@ -792,11 +1216,21 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--cache-dir", type=Path, default=runtime.DEFAULT_CACHE)
     parser.add_argument("--json", action="store_true", help="print a machine-readable verification summary")
     parser.add_argument("--probe", action="store_true", help="compile and run the offline Knot/GameProvider/Mixin probe")
+    parser.add_argument(
+        "--fabric-api-jar",
+        type=Path,
+        help="also test a genuine fabric-api-base module or Fabric API aggregate jar",
+    )
     parser.add_argument("--shadow-classes", type=Path, default=TOOLS.parent / "build/jvm/classes")
     parser.add_argument(
         "--embedded-binary",
         type=Path,
         help="run the production C++ embedded HotSpot/official Knot gate",
+    )
+    parser.add_argument(
+        "--jvm-libraries",
+        type=Path,
+        help="real Minecraft runtime libraries for either Knot probe (required to exercise many Fabric APIs)",
     )
     parser.add_argument(
         "--embedded-classes",
@@ -812,6 +1246,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         parser.error("--timeout must be positive")
     if args.probe and args.embedded_binary is not None:
         parser.error("--probe and --embedded-binary are separate evidence modes")
+    if args.fabric_api_jar is not None and not (args.probe or args.embedded_binary is not None):
+        parser.error("--fabric-api-jar requires --probe or --embedded-binary")
+    if args.jvm_libraries is not None and args.embedded_binary is None and not args.probe:
+        parser.error("--jvm-libraries requires --probe or --embedded-binary")
+    if args.jvm_libraries is not None and not args.jvm_libraries.is_dir():
+        parser.error(f"--jvm-libraries is not a directory: {args.jvm_libraries}")
     return args
 
 
@@ -828,6 +1268,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.timeout,
                 args.keep_workdir,
                 args.cache_dir.resolve(),
+                args.fabric_api_jar,
+                args.jvm_libraries,
             )
             print(f"probe {evidence['status']}; evidence={args.evidence.resolve()}")
             return 0 if evidence["status"] == "passed" else 2
@@ -841,6 +1283,8 @@ def main(argv: list[str] | None = None) -> int:
                 args.timeout,
                 args.keep_workdir,
                 args.cache_dir.resolve(),
+                args.fabric_api_jar,
+                args.jvm_libraries,
             )
             print(f"embedded {evidence['status']}; evidence={args.evidence.resolve()}")
             return 0 if evidence["status"] == "passed" else 2

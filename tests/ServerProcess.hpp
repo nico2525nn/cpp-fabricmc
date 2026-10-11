@@ -14,6 +14,7 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 #include <signal.h>
@@ -24,12 +25,21 @@
 
 namespace cpptest {
 
+inline std::filesystem::path temporaryTestPath(std::string_view name) {
+    return std::filesystem::temp_directory_path() / std::string(name);
+}
+
+inline std::string temporaryWorldPrefix(std::string_view label) {
+    return temporaryTestPath(std::string(label) + "-").string();
+}
+
 struct ServerProcessOptions {
     using PortProbe = bool (*)(std::uint16_t);
 
     std::uint16_t portBase = 26000;
     std::uint16_t portSpan = 3000;
     int viewDistance = 6;
+    int gracefulStopTimeoutMs = 60000;
     // Most protocol fixtures use the legacy flat-world coordinates (surface
     // at y=-61). Keep that test fixture explicit now that the production
     // default matches vanilla normal terrain.
@@ -38,9 +48,10 @@ struct ServerProcessOptions {
     // authentication settings explicit rather than inheriting server defaults.
     bool onlineMode = false;
     bool enforceSecureProfile = false;
+    bool jvmEnabled = true;
     std::optional<int> maxPlayers;
     std::string motd;
-    std::string worldPrefix = "/tmp/cppfm-test-";
+    std::string worldPrefix = temporaryWorldPrefix("cppfm-test");
     int readyTimeoutMs = 30000;
     std::vector<std::string> operatorNames;
     bool isolateRuntime = false;
@@ -65,6 +76,9 @@ public:
 
     bool start(const char* serverPath,
                const ServerProcessOptions& options = ServerProcessOptions{}) {
+        childExitStatus_.reset();
+        childWaitError_ = 0;
+        gracefulStopTimeoutMs_ = std::max(0, options.gracefulStopTimeoutMs);
         const auto span = options.portSpan == 0 ? 1 : options.portSpan;
         port = static_cast<std::uint16_t>(
             options.portBase + (static_cast<unsigned>(getpid()) % span));
@@ -110,6 +124,8 @@ public:
                 ? "--online-mode=true" : "--online-mode=false";
             const char* secureProfileArg = options.enforceSecureProfile
                 ? "--enforce-secure-profile=true" : "--enforce-secure-profile=false";
+            const char* jvmArg = options.jvmEnabled
+                ? "--jvm-enabled=true" : "--jvm-enabled=false";
             const std::string motdArg = "--motd=" + options.motd;
             const std::string maxPlayersArg = options.maxPlayers
                 ? "--max-players=" + std::to_string(*options.maxPlayers) : std::string{};
@@ -117,22 +133,22 @@ public:
                 if (options.maxPlayers) {
                     execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg,
                           worldArg, levelArg.c_str(), onlineArg, secureProfileArg,
-                          maxPlayersArg.c_str(), static_cast<char*>(nullptr));
+                          jvmArg, maxPlayersArg.c_str(), static_cast<char*>(nullptr));
                 } else {
                     execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg,
-                          worldArg, levelArg.c_str(), onlineArg, secureProfileArg,
+                          worldArg, levelArg.c_str(), onlineArg, secureProfileArg, jvmArg,
                           static_cast<char*>(nullptr));
                 }
             } else {
                 if (options.maxPlayers) {
                     execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg,
                           worldArg, levelArg.c_str(), onlineArg, secureProfileArg,
-                          motdArg.c_str(), maxPlayersArg.c_str(),
+                          jvmArg, motdArg.c_str(), maxPlayersArg.c_str(),
                           static_cast<char*>(nullptr));
                 } else {
                     execl(serverPathAbs.c_str(), serverPathAbs.c_str(), portArg, viewArg,
                           worldArg, levelArg.c_str(), onlineArg, secureProfileArg,
-                          motdArg.c_str(), static_cast<char*>(nullptr));
+                          jvmArg, motdArg.c_str(), static_cast<char*>(nullptr));
                 }
             }
             _exit(127);
@@ -143,7 +159,25 @@ public:
         while (std::chrono::steady_clock::now() < deadline) {
             int childStatus = 0;
             const pid_t result = waitpid(pid, &childStatus, WNOHANG);
-            if (result == pid || (result < 0 && errno == ECHILD)) {
+            if (result == pid) {
+                childExitStatus_ = childStatus;
+                std::fprintf(stderr,
+                    "[ServerProcess] child exited before readiness "
+                    "(pid=%ld exit=%d signal=%d port=%u)\n",
+                    static_cast<long>(pid),
+                    WIFEXITED(childStatus) ? WEXITSTATUS(childStatus) : -1,
+                    WIFSIGNALED(childStatus) ? WTERMSIG(childStatus) : -1,
+                    static_cast<unsigned>(port));
+                pid = -1;
+                (void)cleanupWorld();
+                return false;
+            }
+            if (result < 0 && errno == ECHILD) {
+                childWaitError_ = errno;
+                std::fprintf(stderr,
+                    "[ServerProcess] child was reaped before readiness "
+                    "(port=%u world=%s)\n",
+                    static_cast<unsigned>(port), worldDir.c_str());
                 pid = -1;
                 (void)cleanupWorld();
                 return false;
@@ -158,21 +192,61 @@ public:
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-        stop();
+        std::fprintf(stderr,
+            "[ServerProcess] readiness timeout after %d ms "
+            "(pid=%ld port=%u world=%s)\n",
+            std::max(0, options.readyTimeoutMs), static_cast<long>(pid),
+            static_cast<unsigned>(port), worldDir.c_str());
+        (void)stop();
         return false;
     }
+
+    // Reap a server that exited unexpectedly so a live integration suite can
+    // stop after the scenario that lost its server instead of timing out in
+    // every later scenario. A returned true means the child is no longer
+    // owned by waitpid, either because it exited or because reaping failed.
+    bool pollChildExit() noexcept {
+        if (pid <= 0)
+            return childExitStatus_.has_value() || childWaitError_ != 0;
+
+        int status = 0;
+        pid_t result = -1;
+        do {
+            result = waitpid(pid, &status, WNOHANG);
+        } while (result < 0 && errno == EINTR);
+
+        if (result == 0) return false;
+        if (result == pid) {
+            childExitStatus_ = status;
+            pid = -1;
+            return true;
+        }
+
+        childWaitError_ = errno;
+        pid = -1;
+        return true;
+    }
+
+    [[nodiscard]] const std::optional<int>& childExitStatus() const noexcept {
+        return childExitStatus_;
+    }
+
+    [[nodiscard]] int childWaitError() const noexcept { return childWaitError_; }
 
     bool stop() noexcept {
         const pid_t child = pid;
         bool reaped = child <= 0;
         bool signalOk = true;
+        bool forcedTermination = false;
         if (child > 0) {
             if (::kill(child, SIGTERM) < 0 && errno != ESRCH) signalOk = false;
             int status = 0;
-            for (int i = 0; i < 600; ++i) {
+            const int gracefulWaitAttempts = (gracefulStopTimeoutMs_ + 99) / 100;
+            for (int i = 0; i < gracefulWaitAttempts; ++i) {
                 const pid_t result = waitpid(child, &status, WNOHANG);
                 if (result == child) {
                     reaped = true;
+                    childExitStatus_ = status;
                     break;
                 }
                 if (result < 0) {
@@ -187,14 +261,17 @@ public:
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
             if (!reaped) {
+                forcedTermination = true;
                 if (::kill(child, SIGKILL) < 0 && errno != ESRCH) signalOk = false;
                 for (;;) {
                     const pid_t result = waitpid(child, &status, 0);
                     if (result == child) {
                         reaped = true;
+                        childExitStatus_ = status;
                         break;
                     }
                     if (result < 0 && errno == EINTR) continue;
+                    if (result < 0) childWaitError_ = errno;
                     signalOk = false;
                     break;
                 }
@@ -202,7 +279,12 @@ public:
         }
         if (reaped) pid = -1;
         const bool worldRemoved = reaped && cleanupWorld();
-        if (!reaped || !signalOk || !worldRemoved) {
+        if (forcedTermination) {
+            std::fprintf(stderr,
+                         "[ServerProcess] child required forced termination after %d ms\n",
+                         gracefulStopTimeoutMs_);
+        }
+        if (!reaped || !signalOk || !worldRemoved || forcedTermination) {
             std::fprintf(stderr,
                          "[ServerProcess] cleanup failed (pid=%ld reaped=%s signal=%s world=%s)\n",
                          static_cast<long>(child), reaped ? "yes" : "no",
@@ -245,6 +327,10 @@ private:
         }
         return true;
     }
+
+    int gracefulStopTimeoutMs_ = 60000;
+    std::optional<int> childExitStatus_;
+    int childWaitError_ = 0;
 };
 
 using ServerProc = ServerProcess;

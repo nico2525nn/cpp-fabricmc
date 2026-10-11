@@ -5,11 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import struct
 import sys
 import tempfile
 import time
+from collections import Counter
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -33,7 +35,95 @@ PLAY_SET_EQUIPMENT = 0x60
 PLAY_RESPAWN = 0x4C
 PLAY_GAME_EVENT = 0x23
 PLAY_PLAYER_POSITION = 0x42
+PLAY_BLOCK_BREAK_ANIMATION = 0x06
 PLAY_REMOVE_ENTITIES = 0x47
+PLAY_LEVEL_CHUNK_WITH_LIGHT = 0x28
+PLAY_SET_CENTER_CHUNK = 0x58
+
+
+def wait_for_chunk_view(client: LiveClient, packet_start: int,
+                        expected_center: tuple[int, int],
+                        expected_chunk: tuple[int, int],
+                        minimum_chunks: int,
+                        description: str,
+                        timeout_seconds: float = 30.0,
+                        settle_seconds: float = 1.0) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_seconds
+    centers: set[tuple[int, int]] = set()
+    last_center: tuple[int, int] | None = None
+    chunk_counts: Counter[tuple[int, int]] = Counter()
+    width = math.isqrt(minimum_chunks)
+    if width * width != minimum_chunks or width % 2 == 0:
+        raise ValueError("minimum_chunks must be an odd square for a centered view")
+    radius = width // 2
+    expected_chunks = {
+        (expected_center[0] + dx, expected_center[1] + dz)
+        for dx in range(-radius, radius + 1)
+        for dz in range(-radius, radius + 1)
+    }
+    packet_cursor = packet_start
+    last_view_packet_at: float | None = None
+    view_ready = False
+    while time.monotonic() < deadline:
+        while packet_cursor < len(client.packet_payloads):
+            packet_id, payload = client.packet_payloads[packet_cursor]
+            packet_cursor += 1
+            if packet_id == PLAY_SET_CENTER_CHUNK:
+                center_x, offset = read_varint(payload, 0)
+                center_z, offset = read_varint(payload, offset)
+                if offset != len(payload):
+                    raise AssertionError("SetCenterChunk has trailing bytes")
+                last_center = (center_x, center_z)
+                centers.add((center_x, center_z))
+                last_view_packet_at = time.monotonic()
+            elif packet_id == PLAY_LEVEL_CHUNK_WITH_LIGHT:
+                if len(payload) < 8:
+                    raise AssertionError("LevelChunkWithLight is truncated")
+                chunk_counts[struct.unpack(">ii", payload[:8])] += 1
+                last_view_packet_at = time.monotonic()
+
+        duplicates = {position: count for position, count in chunk_counts.items()
+                      if count > 1}
+        if duplicates:
+            raise AssertionError(
+                f"{description} sent duplicate chunk packets: {duplicates}")
+        if client.disconnected:
+            raise AssertionError(
+                f"{description} disconnected while collecting its chunk view")
+
+        if (last_center == expected_center and
+                expected_chunk in chunk_counts and
+                len(chunk_counts) >= minimum_chunks):
+            view_ready = True
+        now = time.monotonic()
+        if (view_ready and last_view_packet_at is not None and
+                now - last_view_packet_at >= settle_seconds):
+            received_chunks = set(chunk_counts)
+            if received_chunks != expected_chunks:
+                unexpected = sorted(received_chunks - expected_chunks)
+                missing = sorted(expected_chunks - received_chunks)
+                raise AssertionError(
+                    f"{description} settled with a non-vanilla chunk view: "
+                    f"unexpected={unexpected}, missing={missing}, "
+                    f"last_center={last_center}")
+            return {
+                "center": last_center,
+                "destination_chunk": expected_chunk,
+                "chunks_received": sum(chunk_counts.values()),
+                "unique_chunks": len(chunk_counts),
+                "duplicate_chunk_packets": 0,
+                "settle_seconds": settle_seconds,
+            }
+        client.pump(0.25)
+
+    raise AssertionError(
+        f"{description} did not publish and settle its destination chunk view: "
+        f"expected center={expected_center}, chunk={expected_chunk}, "
+        f"minimum_chunks={minimum_chunks}, centers={sorted(centers)}, "
+        f"received_chunks={sum(chunk_counts.values())}, "
+        f"unique_chunks={len(chunk_counts)}, view_ready={view_ready}, "
+        f"disconnected={client.disconnected}"
+    )
 
 
 def skip_slot(payload: bytes, offset: int) -> int:
@@ -72,6 +162,44 @@ def parse_block_update(payload: bytes) -> tuple[tuple[int, int, int], int]:
     return position, state
 
 
+def parse_block_break_animation(
+        payload: bytes) -> tuple[int, tuple[int, int, int], int]:
+    entity_id, offset = read_varint(payload, 0)
+    if offset + 9 != len(payload):
+        raise AssertionError("BlockBreakAnimation has an invalid payload length")
+    position = unpack_position(struct.unpack(">q", payload[offset:offset + 8])[0])
+    stage = struct.unpack(">b", payload[offset + 8:offset + 9])[0]
+    return entity_id, position, stage
+
+
+def wait_for_center_chunk(client: LiveClient, packet_start: int,
+                          expected: tuple[int, int], description: str,
+                          timeout_seconds: float = 15.0) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    cursor = packet_start
+    while time.monotonic() < deadline:
+        while cursor < len(client.packet_payloads):
+            packet_id, payload = client.packet_payloads[cursor]
+            cursor += 1
+            if packet_id != PLAY_SET_CENTER_CHUNK:
+                continue
+            center_x, offset = read_varint(payload, 0)
+            center_z, offset = read_varint(payload, offset)
+            if offset != len(payload):
+                raise AssertionError("SetCenterChunk has trailing bytes")
+            if (center_x, center_z) == expected:
+                return
+        if client.disconnected:
+            break
+        client.pump(0.25)
+    raise AssertionError(
+        f"{description} did not reach chunk center {expected}; "
+        f"disconnected={client.disconnected}")
+
+
+POSE_METADATA_TYPE_ID_1_21_4 = 21
+
+
 def parse_metadata(payload: bytes) -> tuple[int, dict[int, int]]:
     entity_id, offset = read_varint(payload, 0)
     values: dict[int, int] = {}
@@ -87,7 +215,9 @@ def parse_metadata(payload: bytes) -> tuple[int, dict[int, int]]:
             values[index] = payload[offset]
             offset += 1
         elif index == 6:
-            if type_id != 1:
+            # Mojang 1.21.4 registers POSE as serializer id 21. It carries a
+            # VarInt value, but its metadata type is not the generic VarInt id.
+            if type_id != POSE_METADATA_TYPE_ID_1_21_4:
                 raise AssertionError("unexpected pose metadata type")
             values[index], offset = read_varint(payload, offset)
         else:
@@ -110,7 +240,8 @@ def parse_equipment(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
     entity_id, offset = read_varint(payload, 0)
     entries: list[tuple[int, int]] = []
     while offset < len(payload):
-        marker, offset = read_varint(payload, offset)
+        marker = payload[offset]
+        offset += 1
         slot = marker & 0x7F
         offset = skip_slot(payload, offset)
         entries.append((slot, marker))
@@ -119,17 +250,28 @@ def parse_equipment(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
     return entity_id, entries
 
 
+def assert_multi_slot_equipment_marker() -> None:
+    stack = b"\x01\x01\x00\x00"  # count, item id, zero added/removal components
+    payload = (write_varint(123) + b"\x80" + stack + b"\x01" + stack)
+    decoded = parse_equipment(payload)
+    if decoded != (123, [(0, 0x80), (1, 0x01)]):
+        raise AssertionError(
+            f"multi-slot equipment continuation marker decoded incorrectly: {decoded}")
+
+
 def ack_sequences(packets: list[tuple[int, bytes]]) -> list[int]:
     return [read_varint(payload, 0)[0]
             for packet_id, payload in packets if packet_id == PLAY_ACK_BLOCK_CHANGE]
 
 
 def run(binary: Path, artifact_root: Path) -> dict[str, object]:
+    assert_multi_slot_equipment_marker()
     artifact_root.mkdir(parents=True, exist_ok=True)
     server_root = artifact_root / "server-root"
     world = artifact_root / "world"
     server, port = start_server(binary, server_root, world)
     client: LiveClient | None = None
+    observer: LiveClient | None = None
     observations: dict[str, object] = {}
     try:
         client = LiveClient(port, "GoalFeatureOp")
@@ -138,7 +280,29 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             raise AssertionError("live Login entity id was not observed")
 
         client.command("gamemode creative", "Set own game mode to creative")
+        # Drain and acknowledge the initial 7x7 view first, so a later chunk
+        # batch acknowledgement cannot mask a missing teleport-ack refresh.
+        initial_view = wait_for_chunk_view(
+            client, 0, (0, 0), (0, 0), 49,
+            "initial spawn chunk view")
+
+        teleport_start = len(client.packet_payloads)
+        client.command("tp @s 1000 -60 1000", "Teleported 1 entity")
+        far_view = wait_for_chunk_view(
+            client, teleport_start, (62, 62), (62, 62), 49,
+            "teleport-ack-only far chunk refresh")
+
+        return_start = len(client.packet_payloads)
         client.command("tp @s 40 -60 40", "Teleported 1 entity")
+        return_view = wait_for_chunk_view(
+            client, return_start, (2, 2), (2, 2), 49,
+            "teleport-ack-only return chunk refresh")
+        observations["teleport_chunk_refresh"] = {
+            "initial_view": initial_view,
+            "far_view": far_view,
+            "return_view": return_view,
+            "movement_packets_sent": 0,
+        }
 
         client.command("setblock 40 -60 42 minecraft:chest", "Changed the block")
         menu_packets = client.use_item_on(40, -60, 42, 1, 10)
@@ -242,15 +406,57 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         if not any(state != 0 for _, state in updates):
             raise AssertionError(f"placement updates were all air: {updates}")
 
+        # A block-use packet must read and consume the hand named on the wire.
+        # Keep the selected main hand empty so only the off-hand fixture can
+        # make this placement succeed.
+        client.command("setblock 42 -60 40 minecraft:stone", "Changed the block")
+        client.command("item replace entity @s weapon.mainhand with minecraft:air",
+                       "Replaced entity slot")
+        client.command("item replace entity @s weapon.offhand with minecraft:stone 1",
+                       "Replaced entity slot")
+        offhand_packets = client.use_item_on(42, -60, 40, 1, 12, hand=1)
+        offhand_updates = [parse_block_update(payload)
+                           for packet_id, payload in offhand_packets
+                           if packet_id == PLAY_BLOCK_UPDATE]
+        if (12 not in ack_sequences(offhand_packets) or
+                not any(state != 0 for _, state in offhand_updates)):
+            raise AssertionError(
+                "off-hand UseItemOn failed with empty main hand: "
+                f"packets={offhand_packets}, updates={offhand_updates}"
+            )
+        observations["offhand_block_placement"] = {
+            "acknowledged": True,
+            "block_updates": offhand_updates,
+            "main_hand_empty": True,
+        }
+
         client.command("item replace entity @s weapon.mainhand with minecraft:iron_pickaxe",
                        "Replaced entity slot")
+        observer = LiveClient(port, "GoalObserver")
+        observer.pump(1.0)
+        if observer.entity_id is None:
+            raise AssertionError("observer Login entity id was not observed")
+        observer_center_start = len(observer.packet_payloads)
+        client.command("tp GoalObserver 32 -60 32", "Teleported")
+        wait_for_center_chunk(observer, observer_center_start, (2, 2),
+                              "break-animation observer teleport")
         start_packets = client.player_action(0, 41, -59, 40, 1, 12)
-        if 0x06 not in [packet_id for packet_id, _ in start_packets]:
+        observer_packets = observer.pump(1.0)
+        break_animations = [
+            parse_block_break_animation(payload)
+            for packet_id, payload in observer_packets
+            if packet_id == PLAY_BLOCK_BREAK_ANIMATION
+        ]
+        expected_animation = (client.entity_id, (41, -59, 40), 0)
+        if expected_animation not in break_animations:
             raise AssertionError(
-                f"PlayerAction start did not emit break animation: "
-                f"{[packet_id for packet_id, _ in start_packets]}"
+                "PlayerAction start did not publish its initial break animation "
+                f"to the nearby observer: {break_animations}"
             )
-        time.sleep(5.0)
+        # STOP can reach the server before its next authoritative mining
+        # deadline even when the client's local progress is complete. Keep
+        # the START/STOP gap deliberately short to cover that phase skew.
+        time.sleep(0.01)
         dig_packets = client.player_action(2, 41, -59, 40, 1, 13)
         dig_packets += client.pump(3.0)
         if 13 not in ack_sequences(client.packet_payloads):
@@ -268,18 +474,40 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
         observations["block_interaction"] = {
             "placement_ack": 11,
             "placement_updates": updates,
+            "break_animation": expected_animation,
+            "break_animation_viewer": observer.name,
             "dig_ack": 13 if 13 in dig_acks else 14,
             "dig_ack_sequences": dig_acks,
             "dig_updates": dig_updates,
         }
 
         client.command("gamemode creative", "Set own game mode to creative")
+        portal_capture_start = len(client.packet_payloads)
         client.command("setblock 40 -60 40 minecraft:nether_portal", "Changed the block")
         portal_packets = client.move_player_pos_rot(40.0, -60.0, 40.0, 0.0, 0.0)
+        # A teleport response can arrive while the command helper pumps the
+        # connection. Cold destination chunk preparation may also take longer
+        # than one movement pump, so await the actual transition packet with a
+        # bounded timeout instead of inferring success from saved player data.
+        portal_deadline = time.monotonic() + 30.0
+        while (not any(packet_id == PLAY_RESPAWN
+                       for packet_id, _ in client.packet_payloads[portal_capture_start:]) and
+               time.monotonic() < portal_deadline):
+            client.pump(0.25)
+        portal_packets = client.packet_payloads[portal_capture_start:]
         if not any(packet_id == PLAY_RESPAWN for packet_id, _ in portal_packets):
-            raise AssertionError("portal movement emitted no Respawn packet")
+            raise AssertionError(
+                "portal movement emitted no Respawn packet; "
+                f"observed packet IDs={[packet_id for packet_id, _ in portal_packets]}"
+            )
         if not any(packet_id == PLAY_PLAYER_POSITION for packet_id, _ in portal_packets):
             raise AssertionError("portal movement emitted no PlayerPosition packet")
+        respawn_index = next(index for index, (packet_id, _) in enumerate(portal_packets)
+                             if packet_id == PLAY_RESPAWN)
+        position_index = next(index for index, (packet_id, _) in enumerate(portal_packets)
+                              if packet_id == PLAY_PLAYER_POSITION)
+        if respawn_index >= position_index:
+            raise AssertionError("portal Respawn must precede destination PlayerPosition")
         observations["portal"] = {
             "packet_ids": [packet_id for packet_id, _ in portal_packets],
             "respawn": sum(packet_id == PLAY_RESPAWN for packet_id, _ in portal_packets),
@@ -295,6 +523,8 @@ def run(binary: Path, artifact_root: Path) -> dict[str, object]:
             "artifact_root": str(artifact_root),
         }
     finally:
+        if observer is not None:
+            observer.close()
         if client is not None:
             client.close()
         result = server.stop()

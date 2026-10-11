@@ -1,6 +1,7 @@
 #pragma once
 // MetadataTypes: entity metadata type ids per 1.21.4 protocol.json entityMetadataLoop Verified against Prismarine minecraft-data 1.21.4
 // proto.yml entityMetadataEntry type varint and Yarn 1.21.4 TrackedDataHandlerRegistry (BOOLEAN=8, BYTE=0, OPTIONAL_BLOCK_STATE=15). Used
+#include <array>
 #include <cstdint>
 #include <optional>
 #include "../core/ByteBuffer.hpp"
@@ -42,6 +43,27 @@ inline void writeMetaByte(WriteBuffer& out, std::uint8_t idx, std::uint8_t v) {
     out.u8(idx);
     out.varint(static_cast<int>(Type::Byte));
     out.u8(v);
+}
+
+inline void writeMetaFloat(WriteBuffer& out, std::uint8_t idx, float value) {
+    out.u8(idx);
+    out.varint(static_cast<int>(Type::Float));
+    out.f32(value);
+}
+
+inline void writeMetaPose(WriteBuffer& out, std::uint8_t idx,
+                          std::int32_t pose) {
+    out.u8(idx);
+    out.varint(static_cast<int>(Type::Pose));
+    out.varint(pose);
+}
+
+inline void writeMetaOptPosition(WriteBuffer& out, std::uint8_t idx,
+                                 std::optional<std::array<std::int32_t, 3>> pos) {
+    out.u8(idx);
+    out.varint(static_cast<int>(Type::OptPosition));
+    out.boolean(pos.has_value());
+    if (pos) out.position((*pos)[0], (*pos)[1], (*pos)[2]);
 }
 
 inline void writeMetaOptBlockState(WriteBuffer& out, std::uint8_t idx, std::optional<std::uint32_t> state) {

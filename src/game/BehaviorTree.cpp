@@ -1,6 +1,7 @@
 #include "BehaviorTree.hpp"
 #include "GameServer.hpp"
 #include "AiBehaviorSupport.hpp"
+#include "MobGrounding.hpp"
 #include "World.hpp"
 #include "MetadataTypes.hpp"
 #include "Particles.hpp"
@@ -35,6 +36,18 @@ MobStateLockContext setBehaviorTreeMobStateLock(
 
 MobStateLockContext currentMobStateLockContext() noexcept {
     return activeMobStateLockContext;
+}
+
+void cancelMobSpawnOutsideMobStateLock(
+    jvm::JvmRuntime& runtime, MobEntity& spawnedMob) noexcept {
+    const auto context = activeMobStateLockContext;
+    if (context.lock && context.lock->owns_lock()) {
+        context.lock->unlock();
+        runtime.cancelMobSpawn(spawnedMob);
+        context.lock->lock();
+        return;
+    }
+    runtime.cancelMobSpawn(spawnedMob);
 }
 
 bool runWithoutMobStateLock(
@@ -155,17 +168,26 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
     if (now - m.lastTeleportTick < 20) return BTStatus::Failure;
     World* world = dimensionWorld(ctx, m);
     if (!world) return BTStatus::Failure;
-    auto emitTeleport = [&](std::int8_t dimension, std::int32_t entityId,
-                            double x, double y, double z, float yaw,
-                            double oldX, double oldY, double oldZ) {
+    auto emitTeleport = [&](std::int8_t dimension, double oldX,
+                            double oldY, double oldZ) {
+        const double destinationX = m.x;
+        const double destinationY = m.y;
+        const double destinationZ = m.z;
+        const auto teleportPackets = m.takeTeleportPacketsWithGroundState([&] {
+            return mob_grounding::isMobGroundedAt(
+                m, [world](const std::int32_t x, const std::int32_t y,
+                           const std::int32_t z) {
+                    return world->getBlock(x, y, z);
+                });
+        });
         return withoutMobStateLock(m, [&] {
             ctx.srv->broadcastSoundFor(
                 dimension, "minecraft:entity.enderman.teleport",
-                x, y, z, 1.f, 1.f, "hostile");
-            const WriteBuffer tp = makeEntityTeleportBody(
-                entityId, x, y, z, 0.0, 0.0, 0.0, yaw, 0.0f, 0, true);
-            ctx.srv->broadcastPacketExceptInDimension(
-                dimension, nullptr, proto::pl::sc::EntityTeleport, tp);
+                destinationX, destinationY, destinationZ,
+                1.f, 1.f, "hostile");
+            for (const auto& packet : teleportPackets)
+                ctx.srv->broadcastMobPositionUpdate(
+                    m, packet.packetId, packet.body);
             for (int i=0; i<8; ++i) {
                 const WriteBuffer pt = makeWorldParticlesBody(
                     oldX + (nextRandom()/(double)RAND_MAX-0.5)*1.5,
@@ -188,58 +210,73 @@ BTStatus TeleportRandomAction::tick(MobEntity& m, AiContext& ctx, std::int64_t n
                 world->generateChunkIfMissing(ix>>4, iz>>4);
             })) return BTStatus::Failure;
         // try around iy first, fall back to column search if needed
+        const auto geometry = world->verticalGeometry();
         for (int dy=-4; dy<=4; ++dy) {
             int tryY = iy + dy;
-            if (tryY < kMinY || tryY > kMinY+320) continue;
+            if (tryY < geometry.minY || tryY >= geometry.maxY() - 1) continue;
             std::uint16_t a1 = world->getBlock(ix, tryY, iz);
             std::uint16_t a2 = world->getBlock(ix, tryY+1, iz);
             std::uint16_t below = world->getBlock(ix, tryY-1, iz);
             if (a1==0 && a2==0 && below!=0) {
+                const auto getBlock = [world](const std::int32_t x,
+                                              const std::int32_t y,
+                                              const std::int32_t z) {
+                    return world->getBlock(x, y, z);
+                };
+                const auto landingY =
+                    mob_grounding::teleportLandingSurfaceY(
+                        m, ix + 0.5, iz + 0.5, tryY, getBlock);
+                if (!landingY) continue;
                 double ox=m.x, oy=m.y, oz=m.z;
-                m.x = ix + 0.5; m.z = iz + 0.5; m.y = tryY + 0.5;
+                m.x = ix + 0.5; m.z = iz + 0.5; m.y = *landingY;
                 const auto dimension = canonicalDimension(m.dimension);
                 const auto entityId = m.entityId;
-                const auto yaw = m.yaw;
                 const double newX = m.x, newY = m.y, newZ = m.z;
-                if (ctx.srv && !emitTeleport(
-                        dimension, entityId, newX, newY, newZ, yaw,
-                        ox, oy, oz)) return BTStatus::Failure;
+                if (ctx.srv && !emitTeleport(dimension, ox, oy, oz))
+                    return BTStatus::Failure;
                 // A callback may have transferred or moved this entity while
                 // packets were emitted.  Do not overwrite its new state.
                 if (m.entityId == entityId &&
                     canonicalDimension(m.dimension) == dimension &&
-                    m.x == newX && m.y == newY && m.z == newZ)
+                    m.x == newX && m.y == newY && m.z == newZ) {
                     m.lastTeleportTick = now;
+                }
                 return BTStatus::Success;
             }
         }
-        // fallback column search if not found around ny
-        int col = 4;
-        bool found=false;
+        // Fallback to the highest actual collision surface, not merely the
+        // top of a non-air block (which double-raised the old target).
+        std::optional<double> fallbackLandingY;
         if (!withoutMobStateLock(m, [&] {
-                world->withChunk(ix>>4, iz>>4,[&](const Chunk& c){
-                    for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, iz&15, ix&15)]!=0){col=ry+1; found=true; break;}
-                });
+                fallbackLandingY =
+                    mob_grounding::highestSupportSurfaceY(
+                        ix + 0.5, iz + 0.5, geometry.minY,
+                        geometry.maxY(),
+                        [world](const std::int32_t x,
+                                const std::int32_t y,
+                                const std::int32_t z) {
+                            return world->getBlock(x, y, z);
+                        },
+                        mobGroundingHalfWidth(m));
             })) return BTStatus::Failure;
-        if(!found) continue;
-        int feetY = kMinY + col;
-        std::uint16_t a1 = world->getBlock(ix, feetY, iz);
-        std::uint16_t a2 = world->getBlock(ix, feetY+1, iz);
-        std::uint16_t below = world->getBlock(ix, feetY-1, iz);
-        if (a1==0 && a2==0 && below!=0) {
+        if (!fallbackLandingY) continue;
+        const int clearanceY = static_cast<int>(
+            std::ceil(*fallbackLandingY -
+                      mob_grounding::kContactTolerance));
+        if (world->getBlock(ix, clearanceY, iz) == 0 &&
+            world->getBlock(ix, clearanceY + 1, iz) == 0) {
             double ox=m.x, oy=m.y, oz=m.z;
-            m.x = ix + 0.5; m.z = iz + 0.5; m.y = feetY + 1.0;
+            m.x = ix + 0.5; m.z = iz + 0.5; m.y = *fallbackLandingY;
             const auto dimension = canonicalDimension(m.dimension);
             const auto entityId = m.entityId;
-            const auto yaw = m.yaw;
             const double newX = m.x, newY = m.y, newZ = m.z;
-            if (ctx.srv && !emitTeleport(
-                    dimension, entityId, newX, newY, newZ, yaw,
-                    ox, oy, oz)) return BTStatus::Failure;
+            if (ctx.srv && !emitTeleport(dimension, ox, oy, oz))
+                return BTStatus::Failure;
             if (m.entityId == entityId &&
                 canonicalDimension(m.dimension) == dimension &&
-                m.x == newX && m.y == newY && m.z == newZ)
+                m.x == newX && m.y == newY && m.z == newZ) {
                 m.lastTeleportTick = now;
+            }
             return BTStatus::Success;
         }
     }
@@ -502,13 +539,13 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     baby->age = -24000; // plan14 §3: 20 min
     baby->x = bx; baby->y = breedY; baby->z = bz;
     baby->dimension = breedDimension;
-    bool spawnAllowed = true;
-    if (ctx.srv->jvmRuntime()) {
-        if (!withoutMobStateLock(m, [&] {
-            spawnAllowed = ctx.srv->jvmRuntime()->onMobSpawn(
-                *baby, baby->x, baby->y, baby->z);
+    jvm::MobSpawnAdmission admission(
+        ctx.srv->jvmRuntime(), *baby,
+        &cancelMobSpawnOutsideMobStateLock);
+    bool spawnAllowed = false;
+    if (!withoutMobStateLock(m, [&] {
+            spawnAllowed = admission.approve(baby->x, baby->y, baby->z);
         })) return BTStatus::Failure;
-    }
     bool reservationValid = false;
     if (!withoutMobStateLock(m, [&] {
             std::scoped_lock pairLock(*m.stateMtx, *partner->stateMtx);
@@ -534,10 +571,14 @@ BTStatus BreedAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
     }
     if (!reservationValid) return BTStatus::Failure;
 
+    bool added = false;
     if (!withoutMobStateLock(m, [&] {
-            ctx.srv->addMob(baby);
+            added = ctx.srv->addMob(baby);
+            if (!added) return;
+            admission.commit();
             ctx.srv->broadcastMobSpawn(*baby);
         })) return BTStatus::Failure;
+    if (!added) return BTStatus::Failure;
     const auto xp = static_cast<std::int32_t>(1 + (nextRandom()%7));
     withoutMobStateLock(m, [&] {
         ctx.srv->spawnXpOrbsFor(breedDimension, bx, breedY + 0.5, bz,
@@ -596,20 +637,23 @@ BTStatus WanderAction::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
         const double queryX = m.x, queryZ = m.z;
         const int chunkX = static_cast<int>(queryX) >> 4;
         const int chunkZ = static_cast<int>(queryZ) >> 4;
-        const int blockX = static_cast<int>(queryX);
-        const int blockZ = static_cast<int>(queryZ);
         withoutMobStateLock(m, [&] {
             world->generateChunkIfMissing(chunkX, chunkZ);
         });
-        int col=4;
+        const auto geometry = world->verticalGeometry();
+        std::optional<double> surfaceY;
         withoutMobStateLock(m, [&] {
-            world->withChunk(chunkX, chunkZ,[&](const Chunk& c){
-                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, blockZ&15, blockX&15)]!=0){col=ry+1;break;}
-            });
+            surfaceY = mob_grounding::highestSupportSurfaceY(
+                queryX, queryZ, geometry.minY, geometry.maxY(),
+                [world](const std::int32_t x, const std::int32_t y,
+                        const std::int32_t z) {
+                    return world->getBlock(x, y, z);
+                },
+                mobGroundingHalfWidth(m));
         });
         if (canonicalDimension(m.dimension) == dimension &&
-            m.x == queryX && m.z == queryZ)
-            m.y = kMinY + col + 1.0;
+            m.x == queryX && m.z == queryZ && surfaceY)
+            m.y = *surfaceY;
     }
     return BTStatus::Running;
 }

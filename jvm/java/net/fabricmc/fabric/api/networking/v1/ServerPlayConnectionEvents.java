@@ -1,6 +1,5 @@
 package net.fabricmc.fabric.api.networking.v1;
 
-import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
 import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.server.MinecraftServer;
@@ -21,7 +20,13 @@ public final class ServerPlayConnectionEvents {
         Init.class, callbacks -> (handler, server) -> {
             for (Init callback : callbacks) callback.onPlayInit(handler, server);
         });
-    public static final Event<Join> JOIN = new Event<>(CppModRuntime::registerPlayerJoin, Join.class, callbacks -> (handler, sender, server) -> { for (Join callback : callbacks) callback.onPlayReady(handler, sender, server); });
-    public static final Event<Disconnect> DISCONNECT = new Event<>(CppModRuntime::registerPlayerQuit, Disconnect.class, callbacks -> (handler, server) -> { for (Disconnect callback : callbacks) callback.onPlayDisconnect(handler, server); });
+    public static final Event<Join> JOIN = EventFactory.createArrayBacked(
+        Join.class, callbacks -> (handler, sender, server) -> {
+            for (Join callback : callbacks) callback.onPlayReady(handler, sender, server);
+        });
+    public static final Event<Disconnect> DISCONNECT = EventFactory.createArrayBacked(
+        Disconnect.class, callbacks -> (handler, server) -> {
+            for (Disconnect callback : callbacks) callback.onPlayDisconnect(handler, server);
+        });
     public static void clear() { INIT.clear(); JOIN.clear(); DISCONNECT.clear(); }
 }

@@ -38,9 +38,13 @@ void testVanillaDefaultsAndSeedSemantics() {
     const ServerConfig defaults;
     check(defaults.onlineMode && defaults.enforceSecureProfile,
           "online authentication and secure profiles default to vanilla enabled");
+    check(defaults.gameMode == 0 && !defaults.forceGameMode,
+          "default game mode is survival and force-gamemode is disabled by default");
     check(defaults.viewDistance == 10 && defaults.motd == "A Minecraft Server" &&
               defaults.difficulty == "easy",
           "view distance, MOTD, and difficulty use vanilla defaults");
+    check(defaults.entityBroadcastRangePercentage == 100,
+          "entity broadcast range uses the vanilla 100 percent default");
     check(defaults.seed != 1378645410614731511ULL &&
               defaults.hashedSeed == static_cast<std::int64_t>(defaults.seed),
           "an unspecified level seed is randomized and matches its signed login seed");
@@ -130,10 +134,13 @@ void testCanonicalProperties() {
               "server-port=25571\n"
               "max-players=17\n"
               "view-distance=12\n"
+              "entity-broadcast-range-percentage=75\n"
               "simulation-distance=9\n"
               "motd=matrix server\n"
               "world-dir=matrix world\n"
               "level-type=flat\n"
+              "gamemode=creative\n"
+              "force-gamemode=true\n"
               "difficulty=hard\n"
               "spawn-protection=32\n"
               "start-time=-123\n"
@@ -170,12 +177,15 @@ void testCanonicalProperties() {
     check(diagnostics.entries.empty(),
           "canonical settings apply without unsupported or invalid diagnostics");
     check(config.port == 25571 && config.maxPlayers == 17 && config.viewDistance == 12 &&
-              config.simulationDistance == 9,
+              config.simulationDistance == 9 &&
+              config.entityBroadcastRangePercentage == 75,
           "numeric server settings apply exactly");
     check(config.motd == "matrix server" && config.worldDir == "matrix world" &&
               config.levelType == "flat" && config.difficulty == "hard" &&
               config.startTime == -123,
           "text, difficulty, and level settings preserve their values");
+    check(config.gameMode == 1 && config.forceGameMode,
+          "gamemode and force-gamemode properties are applied");
     check(config.spawnProtection == 32 && config.compressionThreshold == 128 &&
               config.maxLoadedChunks == 4096 && config.ioWorkerThreads == 8,
           "bounded operational settings apply exactly");
@@ -258,6 +268,36 @@ void testDifficultyOrdinals() {
           "malformed signed integer properties are rejected instead of being clamped");
     check(malformedConfig.hashedSeed == 42767 && malformedConfig.seed == 42767,
           "a non-numeric level-seed with a doubled sign uses Java string hashing");
+}
+
+void testGameModeSettings() {
+    std::cout << "\n[game-mode property parsing and CLI precedence]\n";
+    ServerProperties properties;
+    check(properties.loadText("gamemode=3\nforce-gamemode=false\n"),
+          "numeric game mode fixture parses");
+    ServerConfig config;
+    ConfigDiagnostics diagnostics;
+    applyServerProperties(config, properties, &diagnostics);
+    check(diagnostics.entries.empty() && config.gameMode == 3 && !config.forceGameMode,
+          "numeric game mode follows the vanilla ordinal mapping");
+
+    const auto cli = parseCommandLine(
+        {"--gamemode=survival", "--force-gamemode=true"});
+    check(cli.diagnostics.entries.empty() && cli.assignments.size() == 2,
+          "game-mode CLI settings parse");
+    applyCommandLine(config, cli, &diagnostics);
+    check(config.gameMode == 0 && config.forceGameMode,
+          "CLI game-mode settings override server.properties");
+
+    ServerProperties invalidProperties;
+    check(invalidProperties.loadText("gamemode=creative-ish\n"),
+          "invalid game mode fixture parses as properties text");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, invalidProperties, &diagnostics);
+    check(config.gameMode == 0 &&
+              hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "gamemode"),
+          "invalid game mode is diagnosed without replacing the vanilla default");
 }
 
 void testAliasOrderAndMapMutation() {
@@ -348,6 +388,51 @@ void testInvalidSettings() {
           "invalid numbers, text seeds, Java-style booleans, and unsupported keys remain distinguishable");
 }
 
+void testEntityBroadcastRangePercentage() {
+    std::cout << "\n[entity broadcast range percentage]\n";
+    ServerProperties properties;
+    check(properties.loadText("entity-broadcast-range-percentage=50\n"),
+          "entity broadcast range property parses");
+    ServerConfig config;
+    ConfigDiagnostics diagnostics;
+    applyServerProperties(config, properties, &diagnostics);
+    check(config.entityBroadcastRangePercentage == 50 && diagnostics.entries.empty(),
+          "entity broadcast range property applies to server config");
+
+    const auto cli = parseCommandLine({"--entity-broadcast-range-percentage=250"});
+    applyCommandLine(config, cli, &diagnostics);
+    check(cli.diagnostics.entries.empty() && diagnostics.entries.empty() &&
+              config.entityBroadcastRangePercentage == 250,
+          "CLI entity broadcast range overrides server.properties");
+
+    check(properties.loadText("entity-broadcast-range-percentage=1\n"),
+          "lower entity broadcast range boundary fixture parses");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, properties, &diagnostics);
+    check(config.entityBroadcastRangePercentage == 10 && diagnostics.entries.empty(),
+          "entity broadcast range clamps to vanilla lower bound");
+
+    check(properties.loadText("entity-broadcast-range-percentage=5000\n"),
+          "upper entity broadcast range boundary fixture parses");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, properties, &diagnostics);
+    check(config.entityBroadcastRangePercentage == 1000 && diagnostics.entries.empty(),
+          "entity broadcast range clamps to vanilla upper bound");
+
+    check(properties.loadText("entity-broadcast-range-percentage=invalid\n"),
+          "invalid entity broadcast range fixture parses as properties text");
+    config = ServerConfig{};
+    config.entityBroadcastRangePercentage = 200;
+    diagnostics.entries.clear();
+    applyServerProperties(config, properties, &diagnostics);
+    check(config.entityBroadcastRangePercentage == 200 &&
+              hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue,
+                            "entity-broadcast-range-percentage"),
+          "malformed entity broadcast range retains its previous value and is diagnosed");
+}
+
 } // namespace
 
 int main() {
@@ -356,9 +441,11 @@ int main() {
     testPropertyKeyCaseAndBooleanSemantics();
     testCanonicalProperties();
     testDifficultyOrdinals();
+    testGameModeSettings();
     testAliasOrderAndMapMutation();
     testCommandLinePrecedence();
     testInvalidSettings();
+    testEntityBroadcastRangePercentage();
     std::cout << "\nsettings_matrix: " << passed << " PASS " << failed << " FAIL\n";
     return failed == 0 ? 0 : 1;
 }

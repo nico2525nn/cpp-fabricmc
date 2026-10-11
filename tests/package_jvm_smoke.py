@@ -34,6 +34,27 @@ class GateError(RuntimeError):
     """A package-gate precondition or runtime assertion failed."""
 
 
+def _required_embedded_assets() -> list[str]:
+    manifest = Path(__file__).resolve().parents[1] / "cmake" / \
+        "required_embedded_assets.txt"
+    try:
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise GateError(f"required embedded-asset manifest is unreadable: {manifest}") from exc
+    assets = []
+    for line in lines:
+        value = line.strip()
+        if not value or value.startswith("#"):
+            continue
+        path = PurePosixPath(value)
+        if path.is_absolute() or ".." in path.parts or "\\" in value:
+            raise GateError(f"unsafe required embedded-asset path: {value!r}")
+        assets.append(value)
+    if not assets:
+        raise GateError(f"required embedded-asset manifest is empty: {manifest}")
+    return assets
+
+
 def _terminate(process: subprocess.Popen[object], timeout: float = STOP_TIMEOUT) -> None:
     """Terminate only the process group owned by *process*."""
 
@@ -191,10 +212,21 @@ def main() -> int:
             raise GateError("package JVM gate found no extracted embedded .class files")
         if not (server / "assets" / "registry").is_dir():
             raise GateError("package JVM gate found no extracted registry assets")
+        missing_assets = [
+            relative for relative in _required_embedded_assets()
+            if not (server / "assets" / relative).is_file() or
+            (server / "assets" / relative).stat().st_size == 0
+        ]
+        if missing_assets:
+            raise GateError(
+                "package JVM gate found missing or empty extracted assets: "
+                + ", ".join(missing_assets)
+            )
         print("package_jvm_smoke: PASS")
         print("  CPack archive: one executable")
         print("  JVM: embedded default-on startup with strict availability")
         print(f"  extracted classes: {len(class_files)} files")
+        print(f"  required assets: {len(_required_embedded_assets())} verified")
         for line in output:
             if "embedded HotSpot started" in line:
                 print(f"  evidence: {line}")
