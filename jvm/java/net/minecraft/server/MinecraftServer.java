@@ -28,9 +28,10 @@ public class MinecraftServer {
     private final Deque<Runnable> tasks = new ArrayDeque<>();
     private static final int MAX_TASKS_PER_TICK = 10_000;
     private volatile boolean stopping;
+    private volatile boolean worldsAvailable;
     private volatile long tick;
     private final CommandManager commandManager;
-    private final PlayerManager playerManager;
+    private volatile PlayerManager playerManager;
     private final GameRules gameRules = new GameRules();
     private final net.minecraft.network.message.MessageDecorator messageDecorator =
         net.minecraft.network.message.MessageDecorator.NOOP;
@@ -40,7 +41,6 @@ public class MinecraftServer {
         this.commandManager = new CommandManager(
             CommandManager.RegistrationEnvironment.DEDICATED,
             new net.minecraft.command.CommandRegistryAccess());
-        this.playerManager = new PlayerManager();
     }
 
     /**
@@ -90,9 +90,11 @@ public class MinecraftServer {
         MixinHooks.invokeTail(this, "setTick", tick);
     }
     public ServerWorld getOverworld() {
-        return ServerWorld.of(NativeAccess.serverWorld(0), this);
+        return worldsAvailable
+            ? ServerWorld.of(NativeAccess.serverWorld(0), this) : null;
     }
     public ServerWorld getWorld(RegistryKey<World> key) {
+        if (!worldsAvailable) return null;
         String value = key == null ? "minecraft:overworld" : key.getValue().toString();
         int dimension = value.endsWith("the_nether") ? -1 : value.endsWith("the_end") ? 1 : 0;
         return ServerWorld.of(NativeAccess.serverWorld(dimension), this);
@@ -194,6 +196,7 @@ public class MinecraftServer {
     public CommandManager getCommandManager() { return commandManager; }
     public PlayerManager getPlayerManager() { return playerManager; }
     public List<ServerWorld> getWorlds() {
+        if (!worldsAvailable) return List.of();
         ServerWorld overworld = getOverworld();
         ServerWorld nether = ServerWorld.of(NativeAccess.serverWorld(-1), this);
         ServerWorld end = ServerWorld.of(NativeAccess.serverWorld(1), this);
@@ -217,10 +220,22 @@ public class MinecraftServer {
         stopping = true;
         synchronized (taskLock) { tasks.clear(); }
     }
+    /** Called after Fabric's per-world unload callbacks have returned. */
+    public void finishWorldUnload() {
+        worldsAvailable = false;
+        playerManager = null;
+    }
+    public void finishWorldLoad() {
+        playerManager = new PlayerManager();
+        worldsAvailable = true;
+    }
     /** Yarn's mapped entrypoint delegates to the metadata builder. */
     public ServerMetadata.Players buildPlayerStatus() { return createMetadataPlayers(); }
     /** Mojang-mapped body; Carpet's constant injector targets this method. */
     public ServerMetadata.Players createMetadataPlayers() {
-        return new ServerMetadata.Players(12, getPlayerManager().getCurrentPlayerCount(), List.of());
+        PlayerManager currentPlayerManager = playerManager;
+        int currentPlayers = currentPlayerManager == null
+            ? 0 : currentPlayerManager.getCurrentPlayerCount();
+        return new ServerMetadata.Players(12, currentPlayers, List.of());
     }
 }

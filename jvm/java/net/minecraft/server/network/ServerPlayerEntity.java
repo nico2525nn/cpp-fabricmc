@@ -26,6 +26,12 @@ public class ServerPlayerEntity extends PlayerEntity {
     public ServerWorld getServerWorld() {
         return ServerWorld.of(NativeAccess.playerWorld(nativeHandle), getServer());
     }
+    @Override public ServerWorld getWorld() {
+        if (world instanceof ServerWorld serverWorld) return serverWorld;
+        ServerWorld serverWorld = getServerWorld();
+        setWorld(serverWorld);
+        return serverWorld;
+    }
     public MinecraftServer getServer() {
         return MinecraftServer.of(NativeAccess.serverHandle());
     }
