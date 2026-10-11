@@ -9,7 +9,11 @@ struct Player;
 class World;
 class GameServer;
 
-struct FoodInfo { int food; float saturation; };
+struct FoodInfo {
+    int food;
+    float saturation;
+    bool canAlwaysEat = false;
+};
 
 class HungerManager {
 public:
@@ -41,7 +45,6 @@ public:
     // Exhaustion -> saturation/food conversion and regen/starve
     static void addExhaustion(Player& p, float amount);
     static void addFoodAndSaturation(Player& p, int food, float sat);
-    static void handleFoodConsume(Player& p, const std::string& itemName, GameServer& srv);
     static bool handleCakeBlockConsume(GameServer& srv, Player& p, std::int32_t x, std::int32_t y, std::int32_t z);
 
     // Called from GameServer::survivalTick per player
@@ -66,11 +69,9 @@ public:
             {"minecraft:beetroot", {1, 1.2f}},
             {"minecraft:beetroot_soup", {6, 7.2f}},
             {"minecraft:bread", {5, 6.0f}},
-            {"minecraft:cake", {2, 0.4f}},
             {"minecraft:carrot", {3, 3.6f}},
-            {"minecraft:chorus_fruit", {4, 2.4f}},
+            {"minecraft:chorus_fruit", {4, 2.4f, true}},
             {"minecraft:cooked_beef", {8, 12.8f}},
-            {"minecraft:steak", {8, 12.8f}},
             {"minecraft:cooked_chicken", {6, 7.2f}},
             {"minecraft:cooked_cod", {5, 6.0f}},
             {"minecraft:cooked_mutton", {6, 9.6f}},
@@ -79,18 +80,18 @@ public:
             {"minecraft:cooked_salmon", {6, 9.6f}},
             {"minecraft:cookie", {2, 0.4f}},
             {"minecraft:dried_kelp", {1, 0.6f}},
-            {"minecraft:enchanted_golden_apple", {4, 9.6f}},
-            {"minecraft:golden_apple", {4, 9.6f}},
+            {"minecraft:enchanted_golden_apple", {4, 9.6f, true}},
+            {"minecraft:golden_apple", {4, 9.6f, true}},
             {"minecraft:golden_carrot", {6, 14.4f}},
             {"minecraft:glow_berries", {2, 0.4f}},
-            {"minecraft:honey_bottle", {6, 1.2f}},
+            {"minecraft:honey_bottle", {6, 1.2f, true}},
             {"minecraft:melon_slice", {2, 1.2f}},
             {"minecraft:mushroom_stew", {6, 7.2f}},
             {"minecraft:poisonous_potato", {2, 1.2f}},
             {"minecraft:potato", {1, 0.6f}},
             {"minecraft:pumpkin_pie", {8, 4.8f}},
             {"minecraft:rabbit_stew", {10, 12.0f}},
-            {"minecraft:suspicious_stew", {6, 7.2f}},
+            {"minecraft:suspicious_stew", {6, 7.2f, true}},
             {"minecraft:beef", {3, 1.8f}},
             {"minecraft:chicken", {2, 1.2f}},
             {"minecraft:porkchop", {3, 1.8f}},
@@ -109,10 +110,12 @@ public:
 
     // Food values live here so consumption and movement exhaustion share one source of truth.
     static inline bool isFoodItem(const std::string& name) {
-        return foodTable().find(name) != foodTable().end()
-            || name.find("stew") != std::string::npos
-            || name.find("soup") != std::string::npos
-            || name.find("cake") != std::string::npos;
+        return foodTable().contains(name);
+    }
+
+    static inline bool canAlwaysEatItem(const std::string& name) {
+        const auto found = foodTable().find(name);
+        return found != foodTable().end() && found->second.canAlwaysEat;
     }
 };
 

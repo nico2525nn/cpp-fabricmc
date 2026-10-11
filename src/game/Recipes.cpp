@@ -44,8 +44,14 @@ std::vector<std::string> Recipe::trimBlankRows(const std::vector<std::string>& r
     return out;
 }
 void RecipeManager::syncTagsFrom(const TagManager& tm) {
-    tm.applyToRecipeTags(tags_);
-    if (auto* p = tm.getItemTag("minecraft:planks")) tagPlanks_ = *p;
+    auto replacementTags = builtInTags_;
+    for (const auto& [name, values] : tm.itemTags)
+        replacementTags[name] = values;
+    const auto planks = replacementTags.find("minecraft:planks");
+    auto replacementPlanks = planks == replacementTags.end()
+        ? std::unordered_set<std::uint32_t>{} : planks->second;
+    tags_.swap(replacementTags);
+    tagPlanks_.swap(replacementPlanks);
 }
 void RecipeManager::addShaped(const std::string& id, const std::string& outName,
                               int count, const std::vector<std::string>& rows,
@@ -120,7 +126,7 @@ void RecipeManager::loadDefaults() {
             const auto id = itemIdOr0(n);
             if (id) s.insert(id);
         }
-        tags_["minecraft:" + name] = std::move(s);
+        builtInTags_["minecraft:" + name] = std::move(s);
     };
     fillTag("planks", {"minecraft:oak_planks", "minecraft:spruce_planks",
                        "minecraft:birch_planks", "minecraft:jungle_planks",
@@ -132,6 +138,7 @@ void RecipeManager::loadDefaults() {
                      "minecraft:acacia_log", "minecraft:dark_oak_log"});
     fillTag("stone", {"minecraft:stone", "minecraft:granite", "minecraft:diorite",
                       "minecraft:andesite"});
+    tags_ = builtInTags_;
     tagPlanks_ = tags_["minecraft:planks"];
     // §3). loadDirectory will populate recipes_; no built-in registration here.
 }

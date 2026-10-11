@@ -2,27 +2,33 @@
 // boundary and valid values must retain their wire representation.
 
 #include "../src/api/EventBus.hpp"
+#include "../src/core/BitMath.hpp"
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/Json.hpp"
 #include "../src/core/NBT.hpp"
 #include "../src/core/NBTValue.hpp"
 #include "../src/core/Zlib.hpp"
 #include "../src/game/RegionFile.hpp"
+#include "../src/game/Constants.hpp"
 #include "../src/game/ServerProperties.hpp"
 #include "../src/net/PacketDecoder.hpp"
 #include "../src/net/PacketEncoder.hpp"
+#include "../src/net/CookieResponse.hpp"
 #include "../src/net/Rcon.hpp"
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdio>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <unistd.h>
+#include <utility>
 #include <vector>
 
 using namespace cppfm;
@@ -67,6 +73,30 @@ std::vector<std::uint8_t> nestedNetworkNbt(std::size_t depth) {
     return out.data;
 }
 
+void testBitMath() {
+    check(ceilLog2(0) == 0 && ceilLog2(1) == 0 && ceilLog2(2) == 1 &&
+              ceilLog2(3) == 2 && ceilLog2(256) == 8 &&
+              ceilLog2(std::numeric_limits<std::uint32_t>::max()) == 32,
+          "ceilLog2 handles boundaries without overflowing the shift width");
+}
+
+void testProtocolAngleBytes() {
+    const float hugeFiniteAngle = 1.0e10F;
+    const float equivalentWrappedAngle = std::fmod(hugeFiniteAngle, 360.0F);
+    check(constants::protocolAngleByte(0.0F) == 0 &&
+              constants::protocolAngleByte(90.0F) == 64 &&
+              constants::protocolAngleByte(180.0F) == 128 &&
+              constants::protocolAngleByte(270.0F) == 192 &&
+              constants::protocolAngleByte(360.0F) == 0 &&
+              constants::protocolSignedAngleByte(180.0F) ==
+                  std::numeric_limits<std::int8_t>::min() &&
+              constants::protocolAngleByte(hugeFiniteAngle) ==
+                  constants::protocolAngleByte(equivalentWrappedAngle) &&
+              constants::protocolAngleByte(
+                  std::numeric_limits<float>::infinity()) == 0,
+          "protocol angles wrap safely before narrowing to an 8-bit value");
+}
+
 void testByteBuffer() {
     std::printf("\n[ByteBuffer boundary checks]\n");
     WriteBuffer out;
@@ -85,6 +115,51 @@ void testByteBuffer() {
     ReadBuffer javaVarLongInput(javaVarLongHighPayload);
     check(javaVarLongInput.varlong() == 0,
           "VarLong tenth-byte high payload bits follow Java long shift truncation");
+
+    const std::vector<std::uint8_t> skipPayload{0x11, 0x22, 0x33};
+    ReadBuffer skipInput(skipPayload);
+    skipInput.skip(2);
+    check(skipInput.remaining() == 1 && skipInput.u8() == 0x33,
+          "ReadBuffer skip advances without allocating a discarded payload");
+    expectThrow("ReadBuffer skip rejects lengths beyond the frame",
+                [&] { skipInput.skip(1); });
+
+    WriteBuffer cookieWithValue;
+    cookieWithValue.string("example:probe");
+    cookieWithValue.boolean(true);
+    cookieWithValue.varint(3);
+    cookieWithValue.u8(1);
+    cookieWithValue.u8(2);
+    cookieWithValue.u8(3);
+    ReadBuffer cookieValueInput(cookieWithValue.data);
+    net::consumeCookieResponseBody(cookieValueInput);
+    check(cookieValueInput.remaining() == 0,
+          "cookie response consumes its bounded byte-array without retaining it");
+
+    WriteBuffer cookieWithoutValue;
+    cookieWithoutValue.string("example:missing");
+    cookieWithoutValue.boolean(false);
+    ReadBuffer cookieMissingInput(cookieWithoutValue.data);
+    net::consumeCookieResponseBody(cookieMissingInput);
+    check(cookieMissingInput.remaining() == 0,
+          "cookie response without a value consumes only its optional marker");
+
+    WriteBuffer negativeCookieLength;
+    negativeCookieLength.string("example:invalid");
+    negativeCookieLength.boolean(true);
+    negativeCookieLength.varint(-1);
+    ReadBuffer negativeCookieInput(negativeCookieLength.data);
+    expectThrow("cookie response rejects a negative value length",
+                [&] { net::consumeCookieResponseBody(negativeCookieInput); });
+
+    WriteBuffer truncatedCookieValue;
+    truncatedCookieValue.string("example:truncated");
+    truncatedCookieValue.boolean(true);
+    truncatedCookieValue.varint(2);
+    truncatedCookieValue.u8(1);
+    ReadBuffer truncatedCookieInput(truncatedCookieValue.data);
+    expectThrow("cookie response rejects a value extending past the packet",
+                [&] { net::consumeCookieResponseBody(truncatedCookieInput); });
 
     WriteBuffer position;
     position.position(-12345, -2048, 54321);
@@ -173,6 +248,76 @@ void testNbt() {
               values->elemType() == nbt::Int && values->list.size() == 2 &&
               values->list[1].i == 9,
           "named NBT list preserves element type and values");
+    bool validSerializedRootAccepted = false;
+    try {
+        ReadBuffer validationInput(encoded.data);
+        nbt::Parser validationParser(validationInput);
+        validationParser.validateFileRoot();
+        validSerializedRootAccepted = validationInput.remaining() == 0;
+    } catch (...) {
+    }
+    check(validSerializedRootAccepted,
+          "allocation-free NBT preflight accepts readable persisted roots");
+
+    WriteBuffer oversizedList;
+    oversizedList.u8(nbt::Compound);
+    oversizedList.u16(0);
+    oversizedList.u8(nbt::List);
+    oversizedList.u16(4);
+    oversizedList.raw("huge", 4);
+    oversizedList.u8(nbt::Byte);
+    oversizedList.i32(1'000'000);
+    oversizedList.u8(nbt::End);
+    bool allocationBudgetRejected = false;
+    try {
+        ReadBuffer budgetInput(oversizedList.data);
+        nbt::Parser budgetParser(budgetInput, 4096);
+        (void)budgetParser.readFileRoot();
+    } catch (const std::length_error&) {
+        allocationBudgetRejected = true;
+    }
+    check(allocationBudgetRejected,
+          "NBT parser checks cumulative allocation budget before reserving a declared list");
+
+    WriteBuffer growingCompound;
+    growingCompound.u8(nbt::Compound);
+    for (std::int32_t i = 0; i < 9; ++i) {
+        growingCompound.u8(nbt::Int);
+        growingCompound.u16(0);
+        growingCompound.i32(i);
+    }
+    growingCompound.u8(nbt::End);
+    bool compoundGrowthRejected = false;
+    try {
+        constexpr std::size_t pairBytes =
+            sizeof(std::pair<std::string, nbt::Value>);
+        ReadBuffer growthInput(growingCompound.data);
+        nbt::Parser growthParser(growthInput, pairBytes * 20);
+        (void)growthParser.readAnonymousRoot();
+    } catch (const std::length_error&) {
+        compoundGrowthRejected = true;
+    }
+    check(compoundGrowthRejected,
+          "NBT parser accounts for every compound vector reallocation before growth");
+
+    nbt::Value manyFields = nbt::Value::makeCompound();
+    for (int index = 0; index < 9; ++index)
+        manyFields.set("f" + std::to_string(index),
+                       nbt::Value::makeByte(static_cast<std::int8_t>(index)));
+    WriteBuffer persistedManyFields;
+    nbt::writeFileRoot(persistedManyFields, manyFields);
+    bool persistedBudgetRejected = false;
+    try {
+        constexpr std::size_t pairBytes =
+            sizeof(std::pair<std::string, nbt::Value>);
+        ReadBuffer persistedInput(persistedManyFields.data);
+        nbt::Parser persistedParser(persistedInput, pairBytes * 20);
+        persistedParser.validateFileRoot();
+    } catch (const std::length_error&) {
+        persistedBudgetRejected = true;
+    }
+    check(persistedBudgetRejected,
+          "serialized NBT preflight mirrors compound-growth allocation charges");
 
     nbt::Value emptyEndList = nbt::Value::makeList(nbt::End);
     root.set("empty", emptyEndList);
@@ -302,6 +447,14 @@ void testRegionFile() {
         expectThrow("Anvil rejects local coordinates outside a region", [&] {
             region.store(32, 0, bytes);
         });
+        const auto truncatedPath = path.parent_path() / "r.short.mca";
+        {
+            std::ofstream truncated(truncatedPath, std::ios::binary);
+            truncated.put('\0');
+        }
+        expectThrow("Anvil rejects a truncated existing region instead of treating it as empty", [&] {
+            (void)RegionFile(truncatedPath.string()).load(0, 0);
+        });
     } catch (const std::exception& e) {
         check(false, e.what());
     }
@@ -394,6 +547,8 @@ void testWhitelist() {
 } // namespace
 
 int main() {
+    testBitMath();
+    testProtocolAngleBytes();
     testByteBuffer();
     testJson();
     testConfigurationAndEncoding();

@@ -19,22 +19,22 @@ handoff notes are not part of the public documentation set.
 
 | field | value |
 |---|---|
-| `updated` | `2026-09-26` |
-| `implementation_baseline` | integrated `main` HEAD `81b6f4f` (2026-09-24); unmerged refactor work is recorded in §1E |
-| `implementation_baseline_short` | `81b6f4f` (`335fca5` history plus PR #2–#4 integration) |
-| `documentation_commit` | historical final documentation sequence after source integration `335fca5`; this snapshot refresh is on the §1E branch |
-| `main_integration_merge` | `81b6f4f` (PR #4; no architecture refactor is merged) |
-| `plan` | compatibility baseline plan53/54; separate active architecture-quality refactor in §1E |
-| `phase` | `behavior-preserving-architecture-refactor` |
-| `phase_status` | `IN_PROGRESS_DIMENSION_RUNTIME_SLICE; QUALITY_GOAL_NOT_MET` |
+| `updated` | `2026-09-30` |
+| `implementation_baseline` | integrated `main` HEAD `4756a5b0` (2026-09-26; PR #5 DimensionRuntime ownership) |
+| `implementation_baseline_short` | `4756a5b0` (`81b6f4f` plus PR #5) |
+| `documentation_commit` | current architecture-quality refactor and verification updates are uncommitted on `codex/deep-refactor-quality` |
+| `main_integration_merge` | `4756a5b0` (PR #5 DimensionRuntime ownership slice) |
+| `plan` | compatibility baseline plan53/54; active architecture/storage compatibility work in §1F |
+| `phase` | `behavior-preserving-architecture-refactor-and-recovery-compatibility` |
+| `phase_status` | `IN_PROGRESS_DEEP_REFACTOR; STORAGE_COMPATIBILITY_PARTIAL; FRESH_STRICT_REVIEW_PENDING; QUALITY_GOAL_NOT_MET` |
 | `publication_status` | `BLOCKED` |
-| `runtime_reference_snapshot` | integrated main `81b6f4f`; unmerged architecture work is listed separately in §1E |
+| `runtime_reference_snapshot` | integrated main `4756a5b0`; current unmerged world-mutation work is listed separately in §1E |
 | `canonical_workflow` | `docs/DEVELOPMENT.md#research-workflow` |
 | `research_entrypoint` | `docs/research-prompt.md` is a legacy redirect only |
 | `research_viewpoints` | `16` current viewpoints; old `13` wording is historical |
 | `taxonomy_snapshot` | MISSING `#1–#90`; historical matrix counts `DONE=90, PARTIAL=0, TODO=0` |
 | `strict_assessment_1` | `78 gaps`; `HISTORICAL` archive label, not a current aggregate |
-| `next_plan` | submit the dimension-runtime ownership slice through PR and exact-head Actions, then continue the block-mutation and session-state ownership refactors; do not begin Mineflayer until independent code-quality review supports the quality gate |
+| `next_plan` | finish two fresh independent reviews of the complete current diff; resolve every material finding and continue cleanup until strict code-quality review is at least 6/10, then rerun gates, submit a PR, and require exact-head Actions before any merge |
 
 The previous baseline was the plan50 runtime follow-up after the plan49 implementation integration and cleanup commit
 `db12df96093a0869e958f62b11f9a9cd68ba3ef1` and safety commit
@@ -164,39 +164,171 @@ the two contiguous inventory ranges directly (hotbar 36–44, main inventory
 failure); local `native` and `wire_b6` CTest targets passed **2/2**. This local
 evidence does not replace Actions for the updated PR head.
 
-## 1E. Behavior-preserving architecture refactor (working branch, 2026-09-26)
+## 1E. Behavior-preserving architecture refactor (2026-09-26)
 
-This is unmerged work on `codex/goal-dimension-runtime`, based on `main`
-`81b6f4f246b8616e53f537a60f2a0900cc00f690`. The source commits are
-`62691578` (group per-dimension ownership in `GameServer::DimensionRuntime`) and
-`c56c4f09` (route state selection through one dimension-to-runtime mapping).
-The changes do not add gameplay behavior or promote any compatibility-matrix
-status.
+### Merged DimensionRuntime ownership slice
 
-Each runtime now groups its `World`, dispenser/detector-rail bookkeeping,
-`BlockEntityStore`, light/fluid/redstone/block-tick services, and persistence.
-Persistence is declared after its callback targets so reverse member destruction
-stops it first. Two independent reviews found no valid-dimension behavior or
-lifetime regression. Both identified duplicated runtime selection in the first
-commit; that finding was removed in `c56c4f09`, and both follow-up reviews had no
-remaining finding. The reviews also noted that service construction and callback
-wiring still live in `GameServer::init()` and that engine pointers are nullable
-before initialization. This is an ownership step, not a finished lifecycle
-component or evidence that the repository has reached code-quality 6/10. Reviewer
-scores for this slice were 6.5/10 and 5/10; neither is an overall repository
-score or a pass of the goal's two-review quality gate.
+PR #5 is merged into `main` at `4756a5b0cc660de714f1971e8a6c080d1ea02640`.
+Its source commits are `62691578` (group per-dimension ownership in
+`GameServer::DimensionRuntime`) and `c56c4f09` (route state selection through one
+dimension-to-runtime mapping). Each runtime groups its `World`, local dispenser
+and detector-rail bookkeeping, `BlockEntityStore`, per-dimension simulation
+services, and persistence. Persistence is declared after callback targets so
+reverse member destruction stops it first. The service-construction and
+callback-wiring path remains in `GameServer::init()`; this slice did not finish
+lifecycle composition or establish repository code-quality 6/10.
+
+The merged source passed the configured RelWithDebInfo build and the recorded
+non-nightly/non-package CTest run (`55/55`, `530.73s`, including smoke80 and live
+goal scenarios) before merge. Reviews of that slice scored `6.5/10` and `5/10`;
+these are slice scores, not an overall repository score.
+
+### Current world-mutation boundary (unmerged)
+
+The current branch is `codex/deep-refactor-quality`, based on merged `main`
+`4756a5b0`. It narrows detached chunk construction and NBT decode to a
+value-only `ChunkBuildWriter`, hides live block and skylight storage, separates
+bulk loaded-chunk publication from gameplay writes, serializes block mutation
+callbacks in revision order, and records pre-refactor chunk, wire-body, and NBT
+hashes for all three dimensions. The soak bot now has a protocol-level position
+acknowledgement path and a focused dispatcher test. Recent targeted corrections
+make invalid `/place feature` edits fail closed and repair its coordinate-free
+origin, but do not promote any compatibility-matrix status. The command still
+uses fixed patterns rather than executing vanilla's configured-feature data.
+The latest Mineflayer restart scenario exposed and fixed a real spawn-area
+world-load bug: `GameServer::init()` generated the 5×5 spawn-ticket area before
+registering Persistence's chunk loader, so saved spawn chunks were treated as
+new terrain. Persistence now starts before that area is ensured, and the live
+client verifies sign text and block state after a full restart.
 
 | gate | result | scope |
 |---|---|---|
-| configured RelWithDebInfo build | `PASS` | `cmake --build build-dimension-runtime -j4`; the selector cleanup rebuilt affected targets, and a subsequent build reported no work remaining |
-| non-nightly, non-package CTest | `55/55 PASS` | exact `c56c4f09` source commit (before docs-only edits); `ctest --test-dir build-dimension-runtime -LE 'nightly|package' --output-on-failure --timeout 600`; `530.73s`, including smoke80 and live goal scenarios |
-| child-process cleanup | `PASS` | post-suite `pgrep -a -f 'cppfm --por[t]'` found no remaining server process |
-| GitHub Actions | `PENDING` | this working branch has not yet been submitted as a PR; local test results do not replace exact-head Actions |
+| RelWithDebInfo configure | `PASS` | `cmake -S . -B /tmp/cppfm-deep-refactor-build-qBzLbe -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo` |
+| full build | `PASS` | Timeout-wrapped `cmake --build build/deep-refactor -j4` completed after extracting Anvil admission from `GameServer.hpp`; latest broad rebuild completed 112 Ninja steps. |
+| latest-source focused CTest | `7/7 PASS` | `native`, `plan43`, `world_mutation_contract`, `persistence_recovery`, `block_entity_contract`, `redstone_engine_full`, and `quality_audit`; `42.76s`. The clone capacity regression now calls the production block-state and opaque Block Entity projection helpers and checks the real 255-sector RegionFile limit; piston save-barrier and rejected-candidate immutability also pass. |
+| post-startup-order-fix CTest | `6/6 PASS` | `native`, `jvm_native_bridge`, `world_mutation_contract`, `persistence_recovery`, `world_data_contract`, and `block_entity_contract`; `15.53s` after the spawn-chunk loader ordering fix. |
+| latest normal CTest | `61/61 PASS` | `759.75s`; `ctest -LE 'nightly|package' --output-on-failure --timeout 600`. Includes Smoke80 (`370.79s`), JVM compatibility/corpus, three live goal scenarios, world/persistence contracts, multi-client, bot smoke, and quality/tautology audits. Nightly soaks and package-labeled gates were excluded; this is not full package or long-soak evidence. |
+| earlier full current-source CTest | `62/62 PASS` | `736.08s`; predates the latest `/time set` branch fix, bot timing correction, and CTest working-directory cleanup. It excluded `soak2h`, `soak_bot`, and `soak_bot_protocol`; the protocol-only bot test was run separately then. Superseded as the latest-source result by the 61/61 run above. |
+| full CTest before final projection extraction | `63/63 PASS` | `735.97s`, excluding both `soak2h` and the five-minute `soak_bot`; included `smoke80` (`356.70s`), JVM corpus, all three live goal scenarios, `package_archive`, and `package_jvm_smoke`. The final small projection extraction was followed by the focused 7/7 rerun, but not another full-suite rerun. This is not 2h/24h soak evidence. |
+| Mineflayer live probe | `PASS` | Two consecutive clean post-fix runs with Mineflayer `4.25.0` / minecraft-data `3.117.0` covered two-client 1.21.4 login/spawn, chat, movement (measured `0.35` blocks), digging, filtered clone, chest transfer, feature overwrite/support guards, coordinate-free command origin, chest/shulker destruction drops, edited sign text across a full restart, and unloaded-chunk inventory persistence. One earlier run failed to observe chest-drop pickup within its bounded wait; subsequent two runs passed, so pickup is not yet treated as robust soak evidence. This remains bounded gameplay evidence, not GUI or full client/mod parity. |
+| harness checks / cleanup | `PASS` | `node --check tests/mineflayer_live_smoke.cjs`, `git diff --check`, Python `py_compile` checks, and post-run `pgrep -a -x cppfm` passed; no owned server remained. An isolated temporary world retained by the failed run was removed after inspection. |
+| independent hostile reviews | `5.1/10` quality, `5.0/10` compatibility (last pre-fix scores) | Those reviews identified the Anvil-capacity bypass in sign/item mutations, undrained scheduled piston work at save barriers, and a clone test that duplicated production projection. These paths have since been addressed and tested as above; a fresh complete-diff score is still pending, so no current `≥6` claim is justified. |
+| PR / exact-head Actions | `PENDING` | not submitted; local results do not replace required Actions |
 
-The architecture-quality goal remains active. The next source boundary is the
-world block-mutation contract; after the ownership refactors and independent
-review gate, run the pinned Mineflayer 1.21.4 real-use scenarios. No Mineflayer
-result or overall quality score is claimed by this checkpoint.
+The architecture-quality goal remains active. The bounded Mineflayer scenario
+and local full CTest are black-box/regression evidence for the named paths; they
+do not themselves satisfy the independent ≥6/10 quality gate, establish GUI
+compatibility, or prove broad vanilla/mod parity. Do not claim an overall score
+until both independent reviewers have assessed the current complete diff and
+any material findings are resolved.
+
+## 1F. Deep quality-refactor and real-use verification (2026-09-30)
+
+The active worktree remains `codex/deep-refactor-quality` on integrated base
+`4756a5b0`; this section records the current unmerged source state. The refactor
+is intentionally broad: it separates session interaction/menu handling,
+transactional clone operations, block-entity value/codec/projection/index/wire
+responsibilities, chunk snapshot/cache and mutation coordination, staged region
+recovery, and shared parsing/bit utilities. It also tightens ownership and
+failure paths in persistence, generated block IDs, and test process management.
+The added regression code is not counted as source deletion or as proof of
+universal parity. Untracked root `package.json` and `bun.lock` are unrelated
+user-owned files and are excluded from this work's staging scope.
+
+| gate | current result | exact scope / boundary |
+|---|---|---|
+| full RelWithDebInfo build | `PASS` | `timeout --foreground --kill-after=10 1200 cmake --build build -j8`; latest rebuild after the recovery and StructurePlacer fixes completed all 31 remaining Ninja steps |
+| full non-nightly/non-package CTest (before the self-movement echo fix) | `72/72 PASS` | `timeout --foreground --kill-after=15 3600 ctest --test-dir build -LE 'nightly|package' --output-on-failure --timeout 600 -j1`; `788.20s`. Nightly soaks and package-labeled gates were excluded. This is not Actions or package/long-soak evidence; rerun after the latest C++ movement change remains required. |
+| focused live gameplay | `3/3 PASS` | `goal_live_features` `57.54s`, `goal_live_interactions` `30.49s`, and `goal_live_remaining` `54.16s`; includes complete 7×7 (49 chunk) teleport return-view observation, menus, block interaction, portal, and gameplay commands |
+| recovery regression | `120 PASS / 0 FAIL` | Includes fallback after seed rejection without leaking spawn/difficulty/border/forced-chunk/consumer state; a post-commit consumer exception propagates and leaves primary plus `.new` candidates intact rather than trying to combine them |
+| configured-structure ownership regression | `29 PASS / 0 FAIL`; CTest repeated `5/5 PASS` | `StructurePlacer::load()` now preserves the feature name before moving the configuration into its map; regression exercises one-time loot/mob publication at negative coordinates and requires the fixture to load exactly once |
+| Mineflayer live smoke (after self-movement echo fix) | `2 consecutive PASS / EXIT 0` | Mineflayer `4.25.0`, minecraft-data `3.117.0`; two 1.21.4 offline clients covered login/spawn, TP acknowledgement, chest GUI, movement, mining/loot, placement, filtered clone/tags, concurrent container edits, gamemodes, sign/block-entity data, player-data preservation, and restart persistence. The movement probe confirms the observer tracks the moving player and the moving player receives zero self entity-tracking packets. The fixture waits for support/headroom updates; the movement input is held for 500 ms to exceed its 0.2-block observation threshold reliably. This is bounded offline-client evidence, not authenticated real-client GUI or universal mod/client parity. |
+| Mineflayer harness unit/syntax | `1/1 PASS`; Node syntax `PASS` | RCON out-of-order/timeout reply test and `node --check tests/mineflayer_live_smoke.cjs` |
+| worktree/process hygiene | `PASS` | `git diff --check`; post-run `ps -C cppfm ...` found no remaining server/test processes. Root `package.json`/`bun.lock` remain untracked, user-owned, and untouched |
+| post-fix production build | `PASS` | `timeout --foreground --kill-after=5 300 cmake --build build --target cppfm -j12`; 34 Ninja steps including relink after the self-movement broadcast fix. A full all-target build and non-nightly CTest rerun after this change remain required. |
+| independent strict quality score | `PENDING` | Earlier numeric scores and findings were not a current whole-diff sign-off. Two fresh independent complete-diff reviews are in progress; one scoped review's post-commit recovery exception finding has been fixed and tested. A separate scoped clone review identified possible callback/observer atomicity concerns on rollback; current server wiring shows no client block packet before commit, but full reader isolation and dirty-generation behavior remain under review. No `≥6/10` claim is made. |
+| PR and exact-head Actions | `PENDING` | No PR has been submitted for this worktree; local tests do not replace the required branch PR and exact-head GitHub Actions. |
+
+The latest full suite initially exposed a test-environment dependency and a
+real configured-feature registration bug. `goal_gameplay_bugs` is now run from
+the source root because it intentionally reads checked-in structure fixtures;
+`StructurePlacer::load()` copies the feature key before moving the parsed value,
+so its configured and placed registries agree. The same loop also made level
+metadata decoding transactional before candidate acceptance. Failures after
+state application begins now abort startup instead of being misclassified as a
+corrupt candidate and falling through to another save. Those changes were
+followed by the full build and `72/72` CTest pass above. The subsequent
+self-movement echo correction has a fresh `cppfm` target build and two clean
+Mineflayer full runs; the full CTest aggregate is explicitly pending again for
+that latest C++ change.
+
+The latest review-driven compatibility corrections make empty player `Tags`
+NBT serialize as `TAG_End` and load both Vanilla-empty and prior empty-string
+forms; `/tag` now retains `PlayerRef`, enforces the Vanilla 1,024-tag limit,
+and reports no-op add/remove as failures. Those details are covered by the
+player-data transaction test and the live feature scenario. The [Yarn 1.21.4
+`NbtList` reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.1/net/minecraft/nbt/NbtList.html)
+confirms empty lists report `END_TYPE`; the [Yarn 1.21.4 `Entity`
+reference](https://maven.fabricmc.net/docs/yarn-1.21.4%2Bbuild.8/net/minecraft/entity/Entity.html)
+documents the 1,024 command-tag limit.
+
+### Storage, item-codec, and current-binary follow-up (2026-10-01)
+
+Two earlier whole-diff hostile reviews scored code quality `5/10` and `4/10`,
+and compatibility `4.5/10` and `3.5/10`. Their scores predate the fixes below
+and remain the latest completed whole-diff scores until the current independent
+reviews finish. They identified the LZ4 checksum mismatch, gzip Anvil rejection,
+missing valid item component IDs 13/40, Vanilla in-flight piston resume, and
+external Anvil sidecar transaction gaps. No repository-wide `6/10` claim is
+made while fresh reviews and full validation are pending.
+
+Pinned 1.21.4 research established LZ4 codec ID 4 as lz4-java 1.8.0's
+LZ4Block stream (not LZ4 Frame), with default XXHash32 seed `0x9747b28c` and a
+low-28-bit checksum value. A golden stream generated by lz4-java 1.8.0 now tests
+the exact bytes. Anvil compression type 1 now uses a bounded RFC 1952 decoder
+that validates trailers, accepts concatenated members, rejects trailing junk,
+and shares RAII/error/budget handling with the zlib decoder. Region external
+chunks read inline or sidecar raw/LZ4/gzip payloads when canonical, but staged
+`.mca.new` generations with external chunks fail closed until MCA and `.mcc`
+promotion can be coordinated. This remains **read support only** for external
+sidecar data: writes, pair journaling, quarantine, and crash-pair recovery remain
+incomplete; do not claim large-chunk Anvil parity.
+
+The protocol/NBT codecs now cover vanilla 1.21.4 item component 13
+`attribute_modifiers` and 40 `bundle_contents`, including nested non-empty
+ItemStacks, protocol round trips, and bounds. Attribute raw IDs use the vanilla
+registry table only; they cannot be assumed for modded Fabric registries. The
+bundle element/payload/depth limits are project safety policy rather than a
+vanilla component limit. Bundle selection accepts the vanilla `-1` deselection
+sentinel. Vanilla in-flight piston block-entity resume is still unimplemented.
+
+`WorldDataManager::tryLoadFile` now uses a bounded regular-file reader which
+opens POSIX paths nonblocking and rejects FIFOs before parsing. Level and region
+recovery results now expose post-rename directory-sync uncertainty rather than
+logging it as an ordinary durable promotion. Exact fault-injection regressions
+cover the level and region paths.
+
+| latest gate | result | scope / boundary |
+|---|---|---|
+| focused RelWithDebInfo target build | `PASS` | Current `cppfm`, item-codec, storage, and recovery targets compiled and linked after gzip, LZ4, and item component edits; a clean complete all-target build is running below. |
+| focused storage/recovery/item-codec CTest | `7/7 PASS` | `persistence_recovery`, `lz4_block`, `storage_file_ops`, `region_external`, `recovery`, `item_codec_components`, `item_block_predicate`; covers independent LZ4/gzip fixtures, recursive ItemStacks, and attribute payloads. |
+| Mineflayer full live smoke | `PASS / EXIT 0` | Verified full run against the current binary; two offline 1.21.4 clients exercised login/spawn, mining/loot, movement, inventory/container interactions, commands, block entities, player-data preservation, and restart persistence. Bounded headless evidence, not official GUI/authenticated-client or Fabric-mod registry coverage. |
+| full all-target RelWithDebInfo build | `IN PROGRESS` | `timeout --kill-after=10 1800 cmake --build build -j2`; 225 Ninja steps at start. Do not report complete until its exit status is captured. |
+| current whole-diff hostile reviews | `PENDING` | Two read-only independent reviewers are checking refactor/ownership/recovery and protocol/Anvil/item codecs. Prior scores are not current scores. |
+
+The latest new CTest targets and source edits remain local/unmerged. The
+all-target build is in progress; complete non-nightly CTest, package/Actions
+gates, current whole-diff adversarial reviews, PR submission, and exact-head
+Actions are still required. External `.mcc` *write/atomic pair recovery* and
+vanilla in-flight piston resume remain P1 storage/behavior work; Mineflayer
+passing does not close those gaps.
+
+This evidence is limited to the exercised implementation paths. Arbitrary JVM
+mods, full RNG L3 world-generation call-order parity, accepted 2h/24h soak,
+authenticated real-client/GUI coverage, and package-labeled release gates
+remain declared boundaries. The quality goal stays active until two fresh
+reviews score the complete source diff at least 6/10 and any material findings
+are fixed and reverified.
 
 ## 2. Prior plan48 and cleanup record
 

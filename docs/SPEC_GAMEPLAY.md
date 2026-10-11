@@ -2,7 +2,10 @@
 
 This document describes the current behavior surface for Minecraft Java 1.21.4,
 protocol 769, and DataVersion 4189 at runtime snapshot
-integrated `main` HEAD `335fca5` (rechecked 2026-09-19). It covers
+integrated `main` HEAD `4756a5b0` (2026-09-26). The active unmerged
+architecture-refactor worktree is tracked separately in
+[`CURRENT_STATE.md` §1E](CURRENT_STATE.md#1e-behavior-preserving-architecture-refactor)
+and is not implied by this baseline snapshot. It covers
 MISSING **#1–#70**, **#80–#90**, the Fabric-specific rows, and the world-generation
 G-10/G-11 evidence. Packet fields remain in
 [SPEC_WIRE.md](SPEC_WIRE.md); operational thresholds remain in
@@ -16,8 +19,12 @@ native-equivalent server extensions. Pinned official Loader/Knot/Mixin is covere
 separate offline probe. World-generation seed parity is self-consistent L1/L2 and
 the Java/Minecraft RNG primitive and splitter contracts are covered by
 `test_rng_parity` (25 vectors). Full vanilla world-generation call ordering and
-structure-NBT parity are not proven (remaining L3 boundary); simplified features
-are called out with `DECLARED-LIMITATION`.
+structure-NBT parity are not proven (remaining L3 boundary). The current
+`/place feature` command uses a small fixed-pattern subset rather than resolving
+and executing vanilla's configured-feature registry; its live tests establish
+placement safety and command-path behavior only, not configured-feature
+compatibility. Other simplified features are called out with
+`DECLARED-LIMITATION`.
 
 ## 1. Feature overview
 

@@ -45,6 +45,7 @@ void test_enchantment_menu() {
     menu.type = MenuType::Enchantment;
     menu.container = menu.extraSlots;
     menu.containerCount = 2;
+    menu.blockKey = posKey(0, 64, 0);
     menu.extraSlots[0] = ItemStack::of(id("minecraft:diamond_sword"));
     menu.extraSlots[1] = ItemStack::of(id("minecraft:lapis_lazuli"), 3);
 
@@ -148,7 +149,7 @@ void test_crafter_redstone() {
     menu.type = MenuType::Crafter;
     menu.container = menu.extraSlots;
     menu.containerCount = 9;
-    menu.blockKey = posKey(4, 64, -2);
+    menu.blockKey = posKey(-1, -1, -1);
     menu.extraSlots[0] = ItemStack::of(id("minecraft:oak_log"));
 
     CrafterMenuLogic logic;
@@ -160,7 +161,8 @@ void test_crafter_redstone() {
           "crafter transfers the complete recipe output");
     check(menu.extraSlots[0].empty(),
           "crafter consumes one item from each occupied slot");
-    check(io.dirtyCount == 1, "crafter marks its block entity as changed");
+    check(menu.blockKey == -1 && io.dirtyCount == 1,
+          "a valid packed block position equal to the former sentinel is still marked dirty");
 
     menu.extraSlots[0] = ItemStack::of(id("minecraft:oak_log"), 2);
     ItemStack blockedOutput = ItemStack::of(id("minecraft:oak_planks"), 61);
@@ -185,11 +187,46 @@ void test_crafter_redstone() {
     check(invalid.extraSlots[0].count == 1 && untouched.empty(),
           "non-crafter rejection has no side effects");
 }
+
+void test_right_click_split_preserves_item_data() {
+    auto itemNbt = nbt::Value::makeCompound();
+    itemNbt.set("id", nbt::Value::makeString("minecraft:diamond"));
+    itemNbt.set("count", nbt::Value::makeInt(2));
+    auto components = nbt::Value::makeCompound();
+    components.set("example:opaque_component",
+                   nbt::Value::makeString("keep through split"));
+    itemNbt.set("components", std::move(components));
+    const auto loaded = ItemStack::fromNbt(itemNbt);
+
+    Menu menu;
+    menu.type = MenuType::Brewing;
+    menu.container = menu.extraSlots;
+    menu.containerCount = 5;
+    Player player;
+    ItemStack cursor = loaded.value_or(ItemStack::air());
+    BrewingMenuLogic logic;
+    TestIo io;
+    RecipeManager recipes;
+    const bool changed = logic.onSlotClick(menu, player, 0, 1, 0, cursor,
+                                           io, recipes);
+    const auto& placed = menu.extraSlots[0];
+    const auto saved = placed.empty() ? nbt::Value::makeCompound()
+                                      : placed.toNbt(0);
+    const auto* savedComponents = saved.get("components");
+    const auto* savedOpaque = savedComponents
+        ? savedComponents->get("example:opaque_component") : nullptr;
+    check(loaded && changed && cursor.count == 1 && placed.count == 1 &&
+              placed.sameItemData(cursor) && placed.persistedNbt &&
+              savedOpaque && savedOpaque->tag == nbt::String &&
+              savedOpaque->str == "keep through split",
+          "right-click splitting copies known and opaque item data to both stacks");
+}
 } // namespace
 
 int main() {
     test_enchantment_menu();
     test_crafter_redstone();
+    test_right_click_split_preserves_item_data();
     std::printf("MENU_LOGIC: %d PASS %d FAIL\n", passed, failed);
     return failed == 0 ? 0 : 1;
 }

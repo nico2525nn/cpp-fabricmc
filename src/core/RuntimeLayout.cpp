@@ -338,6 +338,8 @@ bool ensureDefaultProperties(const std::filesystem::path& root, std::string& err
         "view-distance=10\n"
         "simulation-distance=10\n"
         "level-type=minecraft:normal\n"
+        "gamemode=survival\n"
+        "force-gamemode=false\n"
         "difficulty=easy\n"
         "motd=A Minecraft Server\n"
         "level-seed=\n"

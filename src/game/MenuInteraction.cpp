@@ -11,10 +11,10 @@ namespace cppfm {
 namespace {
 
 bool sameItemLocal(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId;
+    return !a.empty() && !b.empty() && a.sameItemData(b);
 }
 bool sameItem(const ItemStack& a, const ItemStack& b) {
-    return !a.empty() && !b.empty() && a.itemId == b.itemId &&
+    return !a.empty() && !b.empty() && a.sameItemData(b) &&
            a.components.empty() && b.components.empty() &&
            a.removedComponents.empty() && b.removedComponents.empty();
 }
@@ -28,7 +28,9 @@ static int containerSlotCount(const Menu& m) {
 }
 static ItemStack* playerInvSlot(const Menu& m, int slot, Player& p) {
     if (m.playerInventory) {
-        if (slot >= 5 && slot < 46) return &p.inv[slot];
+        if (slot >= 5 &&
+            slot < static_cast<int>(kPlayerInventorySlotCount))
+            return &p.inv[slot];
         return nullptr;
     }
     int cont = containerSlotCount(m);
@@ -194,7 +196,7 @@ bool ClickLogic::pickupPlace(Menu& m, Player&, int slot, int button,
             changed = mergeInto(cursor, *target, 1);
         }
     }
-    if (changed && m.blockKey != -1 && m.type != MenuType::Crafting)
+    if (changed && m.blockKey && m.type != MenuType::Crafting)
         io.blockEntityChanged(m.blockKey);
     return changed;
 }
@@ -220,11 +222,13 @@ bool ClickLogic::quickMove(Menu& m, Player& p, const RecipeManager& recipes,
             const int gridIndex = m.craftGridIndex(slot);
             if (slot >= 1 && slot < 5 && gridIndex >= 0)
                 src = &m.craftGrid[gridIndex];
-            else if (slot >= 5 && slot < 46)
+            else if (slot >= 5 &&
+                     slot < static_cast<int>(kPlayerInventorySlotCount))
                 src = playerInvSlot(m, slot, p), fromPlayer = true;
         } else {
             if (slot >= 1 && slot < 10) src = &m.craftGrid[slot - 1];
-            else if (slot >= 10 && slot < 46)
+            else if (slot >= 10 &&
+                     slot < static_cast<int>(kPlayerInventorySlotCount))
                 src = playerInvSlot(m, slot, p), fromPlayer = true;
         }
     } else {
@@ -353,7 +357,9 @@ bool ClickLogic::swapWithHotbar(Menu& m, Player& p, int slot, int button,
     ItemStack* hotbar = &p.inv[36 + button];
     ItemStack* target = nullptr;
     if (m.playerInventory) {
-        if (slot < 1 || slot >= 46) return false; // result is take-only
+        if (slot < 1 ||
+            slot >= static_cast<int>(kPlayerInventorySlotCount))
+            return false; // result is take-only
         target = m.slotAt(slot, p.inv.data());
         if (!target) return false;
         if (target == hotbar) return true;
@@ -416,7 +422,7 @@ bool ClickLogic::throwSlot(Menu& m, Player& p, int slot, int button,
             dropped.count = 1;
             if (--src->count <= 0) *src = ItemStack::air();
         }
-        if (m.blockKey != -1) io.blockEntityChanged(m.blockKey);
+        if (m.blockKey) io.blockEntityChanged(m.blockKey);
     }
     io.dropFromPlayer(p, dropped, true);
     return !dropped.empty();
@@ -447,7 +453,7 @@ bool ClickLogic::pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
             }
         }
     }
-    if (collected && m.blockKey != -1) io.blockEntityChanged(m.blockKey);
+    if (collected && m.blockKey) io.blockEntityChanged(m.blockKey);
     return collected > 0;
 }
 

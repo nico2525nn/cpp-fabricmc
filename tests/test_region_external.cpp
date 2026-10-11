@@ -1,0 +1,333 @@
+#include "game/RegionFile.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <iterator>
+#include <string>
+#include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
+namespace fs = std::filesystem;
+
+namespace {
+
+int failures = 0;
+
+void check(bool condition, const char* message) {
+    std::cout << (condition ? "PASS: " : "FAIL: ") << message << '\n';
+    if (!condition) ++failures;
+}
+
+void writeBytes(const fs::path& path,
+                const std::vector<std::uint8_t>& bytes) {
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(reinterpret_cast<const char*>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    if (!file) throw std::runtime_error("cannot write region fixture");
+}
+
+void writeRegion(const fs::path& path, std::uint8_t compression,
+                 const std::vector<std::uint8_t>& payload, bool external,
+                 std::int32_t localX = 0, std::int32_t localZ = 0) {
+    if (localX < 0 || localX >= 32 || localZ < 0 || localZ >= 32)
+        throw std::runtime_error("invalid local chunk fixture coordinates");
+    const std::size_t sectors = external
+        ? 1
+        : (5 + payload.size() + 4095) / 4096;
+    if (sectors == 0 || sectors > 255)
+        throw std::runtime_error("invalid region fixture sector count");
+    std::vector<std::uint8_t> region((2 + sectors) * 4096, 0);
+    const auto index = static_cast<std::size_t>(localX) +
+                       static_cast<std::size_t>(localZ) * 32;
+    region[index * 4 + 2] = 2; // fixture chunk begins at sector two
+    region[index * 4 + 3] = static_cast<std::uint8_t>(sectors);
+    const auto recordLength = static_cast<std::uint32_t>(
+        external ? 1 : payload.size() + 1);
+    const auto dataOffset = 2U * 4096U;
+    region[dataOffset] = static_cast<std::uint8_t>(recordLength >> 24);
+    region[dataOffset + 1] = static_cast<std::uint8_t>(recordLength >> 16);
+    region[dataOffset + 2] = static_cast<std::uint8_t>(recordLength >> 8);
+    region[dataOffset + 3] = static_cast<std::uint8_t>(recordLength);
+    region[dataOffset + 4] = static_cast<std::uint8_t>(
+        compression | (external ? 0x80U : 0U));
+    if (!external)
+        std::copy(payload.begin(), payload.end(),
+                  region.begin() + static_cast<std::ptrdiff_t>(dataOffset + 5));
+    writeBytes(path, region);
+}
+
+} // namespace
+
+int main() {
+#ifdef _WIN32
+    const auto processId = static_cast<unsigned long long>(GetCurrentProcessId());
+#else
+    const auto processId = static_cast<unsigned long long>(::getpid());
+#endif
+    auto directory = fs::temp_directory_path() /
+        ("cppfm-region-external-" + std::to_string(processId));
+    std::error_code error;
+    bool created = false;
+    for (unsigned suffix = 0; suffix < 100; ++suffix) {
+        auto candidate = directory;
+        if (suffix != 0) candidate += "-" + std::to_string(suffix);
+        error.clear();
+        if (fs::create_directory(candidate, error)) {
+            directory = std::move(candidate);
+            created = true;
+            break;
+        }
+        if (error && error != std::errc::file_exists) break;
+    }
+    if (!created) {
+        std::cerr << "FAIL: create unique test directory: " << error.message()
+                  << '\n';
+        return 1;
+    }
+
+    const auto regionPath = directory / "r.0.0.mca";
+    const auto sidecarPath = directory / "c.0.0.mcc";
+    const std::vector<std::uint8_t> rawPayload{
+        'e', 'x', 't', 'e', 'r', 'n', 'a', 'l'
+    };
+    // Golden sidecar bytes emitted by lz4-java 1.8.0's default
+    // LZ4BlockOutputStream constructor for the payload "external".
+    const std::vector<std::uint8_t> compressedPayload{
+        0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b,
+        0x16, 0x08, 0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00,
+        0x2e, 0xdf, 0x16, 0x05,
+        0x65, 0x78, 0x74, 0x65, 0x72, 0x6e, 0x61, 0x6c,
+        0x4c, 0x5a, 0x34, 0x42, 0x6c, 0x6f, 0x63, 0x6b,
+        0x16, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00
+    };
+    // RFC 1952 fixture from `gzip -n -c` over "external" (mtime omitted).
+    const std::vector<std::uint8_t> gzipPayload{
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+        0x4b, 0xad, 0x28, 0x49, 0x2d, 0xca, 0x4b, 0xcc, 0x01, 0x00,
+        0xb8, 0xa1, 0x52, 0x58, 0x08, 0x00, 0x00, 0x00
+    };
+    try {
+        writeRegion(regionPath, 3, rawPayload, true);
+        writeBytes(sidecarPath, rawPayload);
+        check(cppfm::RegionFile(regionPath.string()).load(0, 0) == rawPayload,
+              "external raw codec reads coordinate-named .mcc payload");
+
+        writeRegion(regionPath, 4, compressedPayload, true);
+        writeBytes(sidecarPath, compressedPayload);
+        check(cppfm::RegionFile(regionPath.string()).load(0, 0) == rawPayload,
+              "external LZ4Block codec reads independent lz4-java 1.8.0 sidecar bytes");
+
+        writeRegion(regionPath, 4, compressedPayload, false);
+        check(cppfm::RegionFile(regionPath.string()).load(0, 0) == rawPayload,
+              "inline LZ4Block codec reads the same stream format");
+
+        writeRegion(regionPath, 1, gzipPayload, false);
+        check(cppfm::RegionFile(regionPath.string()).load(0, 0) == rawPayload,
+              "Anvil gzip codec reads an independent RFC 1952 fixture");
+
+        auto concatenatedGzip = gzipPayload;
+        concatenatedGzip.insert(concatenatedGzip.end(), gzipPayload.begin(),
+                                gzipPayload.end());
+        std::vector<std::uint8_t> concatenatedOutput;
+        cppfm::decompressGzipUnknown(concatenatedGzip.data(),
+                                     concatenatedGzip.size(),
+                                     concatenatedOutput, 64);
+        const std::vector<std::uint8_t> twiceExternal{
+            'e', 'x', 't', 'e', 'r', 'n', 'a', 'l',
+            'e', 'x', 't', 'e', 'r', 'n', 'a', 'l'
+        };
+        check(concatenatedOutput == twiceExternal,
+              "gzip decoder accepts concatenated Java-compatible members");
+
+        auto gzipWithTrailingByte = gzipPayload;
+        gzipWithTrailingByte.push_back(0);
+        bool trailingGzipRejected = false;
+        try {
+            cppfm::decompressGzipUnknown(gzipWithTrailingByte.data(),
+                                         gzipWithTrailingByte.size(),
+                                         concatenatedOutput, 64);
+        } catch (const std::exception&) {
+            trailingGzipRejected = true;
+        }
+        check(trailingGzipRejected,
+              "gzip decoder rejects trailing non-member bytes");
+        auto gzipWithBadCrc = gzipPayload;
+        gzipWithBadCrc[20] ^= 1;
+        bool badGzipCrcRejected = false;
+        try {
+            cppfm::decompressGzipUnknown(gzipWithBadCrc.data(),
+                                         gzipWithBadCrc.size(),
+                                         concatenatedOutput, 64);
+        } catch (const std::exception&) {
+            badGzipCrcRejected = true;
+        }
+        check(badGzipCrcRejected,
+              "gzip decoder validates the RFC 1952 CRC trailer");
+        bool truncatedGzipRejected = false;
+        try {
+            cppfm::decompressGzipUnknown(gzipPayload.data(),
+                                         gzipPayload.size() - 1,
+                                         concatenatedOutput, 64);
+        } catch (const std::exception&) {
+            truncatedGzipRejected = true;
+        }
+        check(truncatedGzipRejected,
+              "gzip decoder rejects a truncated trailer");
+        bool gzipOutputCapEnforced = false;
+        try {
+            cppfm::decompressGzipUnknown(gzipPayload.data(), gzipPayload.size(),
+                                         concatenatedOutput, 7);
+        } catch (const std::length_error&) {
+            gzipOutputCapEnforced = true;
+        }
+        check(gzipOutputCapEnforced,
+              "gzip decoder enforces the aggregate output limit");
+
+        writeRegion(regionPath, 4, compressedPayload, true);
+        const auto stagedPath = fs::path(regionPath.string() + ".new");
+        fs::copy_file(regionPath, stagedPath,
+                      fs::copy_options::overwrite_existing);
+        const auto stagedSidecarPath = fs::path(sidecarPath.string() + ".new");
+        writeBytes(stagedSidecarPath, compressedPayload);
+        const auto stagedExternalFailsClosed = [&] {
+            try {
+                (void)cppfm::RegionFile(stagedPath.string()).load(0, 0);
+            } catch (const cppfm::RegionLoadError& failure) {
+                return failure.kind() ==
+                    cppfm::RegionLoadFailureKind::Unsupported;
+            }
+            return false;
+        };
+        check(stagedExternalFailsClosed(),
+              "staged external MCA is not accepted without a coordinated sidecar transaction");
+        fs::remove(stagedSidecarPath);
+        check(stagedExternalFailsClosed(),
+              "staged external MCA does not fall back to a different sidecar generation");
+
+        const auto savedMca = [&] {
+            std::ifstream file(regionPath, std::ios::binary);
+            return std::vector<std::uint8_t>(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+        }();
+        const auto savedMcc = [&] {
+            std::ifstream file(sidecarPath, std::ios::binary);
+            return std::vector<std::uint8_t>(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+        }();
+        fs::remove(sidecarPath);
+        bool preservedFailure = false;
+        try {
+            (void)cppfm::RegionFile(regionPath.string()).load(0, 0);
+        } catch (const cppfm::RegionLoadError& failure) {
+            preservedFailure = failure.kind() ==
+                cppfm::RegionLoadFailureKind::Unsupported;
+        }
+        check(preservedFailure,
+              "missing external sidecar fails closed instead of treating it as an absent chunk");
+        check([&] {
+                  std::ifstream file(regionPath, std::ios::binary);
+                  return std::vector<std::uint8_t>(
+                             std::istreambuf_iterator<char>(file),
+                             std::istreambuf_iterator<char>()) == savedMca;
+              }(),
+              "failed external load leaves the MCA source unchanged");
+        writeBytes(sidecarPath, savedMcc);
+
+        const auto malformed = directory / "r.1.0.mca";
+        writeRegion(malformed, 4, compressedPayload, true);
+        bool missingCoordinatesFailClosed = false;
+        try {
+            (void)cppfm::RegionFile(malformed.string()).load(0, 0);
+        } catch (const cppfm::RegionLoadError& failure) {
+            missingCoordinatesFailClosed = failure.kind() ==
+                cppfm::RegionLoadFailureKind::Unsupported;
+        }
+        check(missingCoordinatesFailClosed,
+              "external sidecar lookup uses region and local chunk coordinates");
+
+        const auto negativeRegion = directory / "r.-1.0.mca";
+        const auto negativeSidecar = directory / "c.-1.0.mcc";
+        writeRegion(negativeRegion, 3, rawPayload, true, 31, 0);
+        writeBytes(negativeSidecar, rawPayload);
+        check(cppfm::RegionFile(negativeRegion.string()).load(31, 0) ==
+                  rawPayload,
+              "negative region coordinates map local chunk 31 to world chunk -1");
+
+        const auto shortHighOffset = directory / "r.2.0.mca";
+        std::vector<std::uint8_t> damagedHeader(8192, 0);
+        damagedHeader[0] = 0xff;
+        damagedHeader[1] = 0xff;
+        damagedHeader[2] = 0x00;
+        damagedHeader[3] = 1; // sector 0xffff00, absent from the short file
+        writeBytes(shortHighOffset, damagedHeader);
+        cppfm::RegionFile(shortHighOffset.string()).store(0, 0, rawPayload);
+        std::ifstream repairedHeader(shortHighOffset, std::ios::binary);
+        std::array<std::uint8_t, 4> repairedLocation{};
+        repairedHeader.read(reinterpret_cast<char*>(repairedLocation.data()),
+                            static_cast<std::streamsize>(
+                                repairedLocation.size()));
+        check(fs::file_size(shortHighOffset) == 3 * 4096 &&
+                  repairedLocation[0] == 0 && repairedLocation[1] == 0 &&
+                  repairedLocation[2] == 2 && repairedLocation[3] == 1 &&
+                  cppfm::RegionFile(shortHighOffset.string()).load(0, 0) ==
+                      rawPayload,
+              "store ignores a high sector pointer beyond physical EOF instead of creating a huge sparse region");
+
+#ifndef _WIN32
+        const auto linkedRegion = directory / "r.3.0.mca";
+        fs::create_symlink(shortHighOffset, linkedRegion);
+        const auto targetBefore = [&] {
+            std::ifstream file(shortHighOffset, std::ios::binary);
+            return std::vector<std::uint8_t>(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+        }();
+        bool symlinkStoreRejected = false;
+        try {
+            cppfm::RegionFile(linkedRegion.string()).store(0, 0, rawPayload);
+        } catch (const std::exception&) {
+            symlinkStoreRejected = true;
+        }
+        bool symlinkLoadRejected = false;
+        try {
+            (void)cppfm::RegionFile(linkedRegion.string()).load(0, 0);
+        } catch (const cppfm::RegionLoadError&) {
+            symlinkLoadRejected = true;
+        }
+        const auto targetAfter = [&] {
+            std::ifstream file(shortHighOffset, std::ios::binary);
+            return std::vector<std::uint8_t>(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>());
+        }();
+        check(symlinkStoreRejected && symlinkLoadRejected &&
+                  fs::is_symlink(fs::symlink_status(linkedRegion)) &&
+                  targetBefore == targetAfter,
+              "region read/write handles reject symlinks and never follow them to the target");
+#endif
+    } catch (const std::exception& exception) {
+        std::cerr << "FAIL: unexpected region fixture error: "
+                  << exception.what() << '\n';
+        ++failures;
+    }
+
+    fs::remove_all(directory, error);
+    if (error) {
+        std::cerr << "FAIL: clean test directory: " << error.message() << '\n';
+        ++failures;
+    }
+    std::cout << (failures == 0 ? "ALL PASS" : "FAILURES") << ": "
+              << failures << '\n';
+    return failures == 0 ? 0 : 1;
+}

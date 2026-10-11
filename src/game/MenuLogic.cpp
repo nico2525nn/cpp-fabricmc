@@ -95,7 +95,8 @@ static bool clickInputSlot(ItemStack& target, ItemStack& cursor, int button,
         return true;
     }
     if (!cursor.empty() && target.empty()) {
-        target = ItemStack::of(cursor.itemId, 1);
+        target = cursor;
+        target.count = 1;
         if (--cursor.count <= 0) cursor = ItemStack::air();
         return true;
     }
@@ -170,20 +171,29 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         const std::string& rename = menu.anvilRename;
         int cost = CostCalculator::anvilCost(*left, *right, rename);
         if (cost < 0) return false;
+        // Validate that the result fits before changing XP or any menu state.
+        // `mergeStack` is mutating, so run it against a trial copy and commit
+        // only after every rejection condition has passed.
+        ItemStack nextCursor = cursor;
+        ItemStack remainingResult = *result;
+        if (nextCursor.empty()) {
+            nextCursor = remainingResult;
+            remainingResult = ItemStack::air();
+        } else if (!mergeStack(remainingResult, nextCursor)) {
+            return false;
+        }
         // check XP level (player.xp.level) — require cost
         if (player.gamemode==0 && player.xp.level < cost) {
             // also allow if creative
             return false;
         }
+        cursor = std::move(nextCursor);
         // deduct XP
         if (player.gamemode==0 && cost>0) {
             player.xp.level = std::max(0, player.xp.level - cost);
             // need to sync XP bar
             if (player.conn) GameServer::sendSetExperience(player);
         }
-        // move result to cursor or inventory
-        if (cursor.empty()) cursor = *result;
-        else if (!mergeStack(*result, cursor)) return false;
         // consume inputs
         if (!left->empty()) { left->count -= 1; if (left->count<=0) *left=ItemStack::air(); }
         if (!right->empty()) { right->count -= 1; if (right->count<=0) *right=ItemStack::air(); }
@@ -201,7 +211,8 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
         if (button==0) {
             if (cursor.empty() && !target->empty()) { cursor=*target; *target=ItemStack::air(); changed=true; }
             else if (!cursor.empty() && target->empty()) { *target=cursor; cursor=ItemStack::air(); changed=true; }
-            else if (!cursor.empty() && !target->empty() && cursor.itemId==target->itemId) {
+            else if (!cursor.empty() && !target->empty() &&
+                     cursor.sameItemData(*target)) {
                 // merge
                 int limit=64;
                 int take = std::min<int>(cursor.count, limit - target->count);
@@ -218,8 +229,14 @@ bool AnvilMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, int but
                 takeHalf(*target, cursor);
                 changed=true;
             } else if (!cursor.empty()) {
-                if (target->empty()) { *target=ItemStack::of(cursor.itemId,1); cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
-                else if (target->itemId==cursor.itemId && target->count<64) { target->count++; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
+                if (target->empty()) {
+                    *target = cursor;
+                    target->count = 1;
+                    cursor.count--;
+                    if (cursor.count <= 0) cursor = ItemStack::air();
+                    changed = true;
+                }
+                else if (target->sameItemData(cursor) && target->count<64) { target->count++; cursor.count--; if(cursor.count<=0) cursor=ItemStack::air(); changed=true; }
             }
         }
         if (changed) recomputeResult(menu);
@@ -451,7 +468,7 @@ bool StonecutterMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         ItemStack* result = menuSlot(menu, 1);
         if (result->empty()) return false;
         if (cursor.empty()) cursor=*result;
-        else if (cursor.itemId==result->itemId && cursor.count<64) {
+        else if (cursor.sameItemData(*result) && cursor.count<64) {
             int take = std::min<int>(result->count, 64-cursor.count);
             setItemCount(cursor, static_cast<int>(cursor.count) + take);
             setItemCount(*result, static_cast<int>(result->count) - take);
@@ -609,7 +626,7 @@ bool CartographyMenuLogic::onSlotClick(Menu& menu, Player& player, int slotId, i
         ItemStack* result = menuSlot(menu, 2);
         if (result->empty()) return false;
         if (cursor.empty()) cursor = *result;
-        else if (cursor.itemId == result->itemId && cursor.count < 64) {
+        else if (cursor.sameItemData(*result) && cursor.count < 64) {
             int take = std::min<int>(result->count, 64 - cursor.count);
             cursor.count = static_cast<std::int16_t>(cursor.count + take);
             result->count = static_cast<std::int16_t>(result->count - take);
