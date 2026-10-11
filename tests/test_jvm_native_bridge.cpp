@@ -42,8 +42,20 @@ int main() {
     check(std::string(OnEntityDamageDescriptor) ==
               "(JJFLjava/lang/String;)Z",
           "damage descriptor");
-    check(std::string(OnMobSpawnDescriptor) == "(JDDD)Z",
+    check(std::string(OnEntityAllowDeathName) == "onEntityAllowDeath" &&
+              std::string(OnEntityAllowDeathDescriptor) ==
+                  "(JJFLjava/lang/String;)Z",
+          "allow-death callback descriptor");
+    check(std::string(OnEntityDamageAppliedName) == "onEntityDamageApplied" &&
+              std::string(OnEntityDamageAppliedDescriptor) ==
+                  "(JJFFZZLjava/lang/String;)V",
+          "after-damage callback descriptor");
+    check(std::string(OnMobSpawnDescriptor) == "(JDDDI)Z",
           "mob spawn descriptor");
+    check(std::string(OnMobLoadDescriptor) == "(JI)V",
+          "mob load descriptor");
+    check(std::string(OnMobUnloadDescriptor) == "(JI)V",
+          "mob unload descriptor");
 
     int object = 0;
     NativeHandleTable handles;

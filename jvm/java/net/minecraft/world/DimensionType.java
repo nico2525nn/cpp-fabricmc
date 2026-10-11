@@ -3,8 +3,8 @@ package net.minecraft.world;
 /** @deprecated use {@link net.minecraft.world.dimension.DimensionType}. */
 @Deprecated
 public class DimensionType {
-    public static final DimensionType OVERWORLD = new DimensionType(0, 256, true);
-    public static final DimensionType THE_NETHER = new DimensionType(-64, 384, false);
+    public static final DimensionType OVERWORLD = new DimensionType(-64, 384, true);
+    public static final DimensionType THE_NETHER = new DimensionType(0, 256, false);
     public static final DimensionType THE_END = new DimensionType(0, 256, false);
     private final int minY, height;
     private final boolean skylight;

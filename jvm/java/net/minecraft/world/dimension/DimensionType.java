@@ -2,7 +2,7 @@ package net.minecraft.world.dimension;
 
 /** Canonical 1.21.4 dimension descriptor view. */
 public class DimensionType extends net.minecraft.world.DimensionType {
-    public static final DimensionType OVERWORLD = new DimensionType(0, 384, true);
+    public static final DimensionType OVERWORLD = new DimensionType(-64, 384, true);
     public static final DimensionType THE_NETHER = new DimensionType(0, 256, false);
     public static final DimensionType THE_END = new DimensionType(0, 256, false);
 

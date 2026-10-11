@@ -1,5 +1,6 @@
 // Worldgen v3: density-function shaped terrain, MultiNoise per-cell biomes,
 #include "World.hpp"
+#include "Heightmaps.hpp"
 #include "../worldgen/ChunkGenerator.hpp"
 #include "../worldgen/StructureManager.hpp"
 #include "../worldgen/DensityFunction.hpp"
@@ -54,6 +55,70 @@ std::uint64_t rng64(std::uint64_t& s) {
 
 World::~World() = default;
 
+std::shared_ptr<World::PendingLoadedChunk> World::findPendingLoadedChunk(
+    std::int64_t key) const {
+    std::lock_guard lock(pendingLoadedMtx_);
+    const auto it = pendingLoadedChunks_.find(key);
+    return it == pendingLoadedChunks_.end() ? nullptr : it->second;
+}
+
+bool World::retainPendingLoadedChunk(
+    std::int64_t key, std::unique_ptr<Chunk>& chunk,
+    std::function<void()>& publishCallback) const {
+    auto pending = std::make_shared<PendingLoadedChunk>();
+    std::lock_guard lock(pendingLoadedMtx_);
+    const auto [it, inserted] = pendingLoadedChunks_.emplace(key, pending);
+    (void)it;
+    if (!inserted) return false;
+    pending->chunk = std::move(chunk);
+    pending->publishCallback = std::move(publishCallback);
+    return true;
+}
+
+void World::discardPendingLoadedChunk(
+    std::int64_t key,
+    const std::shared_ptr<PendingLoadedChunk>& pending) const {
+    std::lock_guard lock(pendingLoadedMtx_);
+    const auto it = pendingLoadedChunks_.find(key);
+    if (it != pendingLoadedChunks_.end() && it->second == pending)
+        pendingLoadedChunks_.erase(it);
+}
+
+void World::discardPendingLoadedChunkIfAny(std::int64_t key) const {
+    const auto pending = findPendingLoadedChunk(key);
+    if (pending) discardPendingLoadedChunk(key, pending);
+}
+
+World::PendingLoadedChunkResult World::publishPendingLoadedChunkLocked(
+    std::int64_t key) const {
+    // Caller holds mutation order, then this key's build stripe. The pending
+    // map mutex is only taken for lookup/removal and never spans callbacks.
+    auto pending = findPendingLoadedChunk(key);
+    if (!pending) return PendingLoadedChunkResult::NotFound;
+
+    {
+        std::shared_lock lock(mutex_);
+        if (chunks_.count(key) != 0) {
+            lock.unlock();
+            discardPendingLoadedChunk(key, pending);
+            return PendingLoadedChunkResult::Resident;
+        }
+    }
+
+    try {
+        if (!publishChunkCandidateLocked(
+                key, pending->chunk, pending->publishCallback)) {
+            discardPendingLoadedChunk(key, pending);
+            return PendingLoadedChunkResult::Resident;
+        }
+    } catch (const StaleChunkPublishError&) {
+        discardPendingLoadedChunk(key, pending);
+        return PendingLoadedChunkResult::Stale;
+    }
+    discardPendingLoadedChunk(key, pending);
+    return PendingLoadedChunkResult::Published;
+}
+
 void World::initWorldgen() {
     biomeSource_ = std::make_shared<worldgen::MultiNoiseBiomeSource>(srv_seed);
     structureManager_ = std::make_unique<worldgen::StructureManager>(srv_seed, biomeSource_);
@@ -76,35 +141,212 @@ void World::initWorldgen() {
     }
 }
 
-void World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
-    {
-        std::shared_lock lock(mutex_);
-        if (chunks_.count(chunkKey(cx, cz))) return;
+bool World::generateChunkIfMissing(std::int32_t cx, std::int32_t cz) const {
+    rejectChunkMutationFromReadCallback();
+    const auto key = chunkKey(cx, cz);
+    for (;;) {
+        {
+            std::shared_lock lock(mutex_);
+            if (chunks_.count(key)) return true;
+        }
+
+        // Coordinate all construction routes for this key before consulting
+        // persistence. A successful detached load may be left pending while
+        // its owner changes to mutation-order -> build-stripe lock order.
+        auto buildLock = lockChunkBuild(key);
+        {
+            std::shared_lock lock(mutex_);
+            if (chunks_.count(key)) return true;
+        }
+
+        // Seal the seed before starting persistence I/O or worldgen. A load
+        // in progress is already authoritative work even though its detached
+        // chunk is not resident in chunks_ yet.
+        {
+            std::lock_guard generationLock(generationMtx_);
+            chunkLoadStarted_ = true;
+        }
+
+        if (findPendingLoadedChunk(key)) {
+            // A re-entrant mutation can arrive while another loaded candidate
+            // is waiting for callback order. It must adopt that persisted
+            // candidate, not call the loader again and publish a fallback.
+            buildLock.unlock();
+            auto mutationOrder = lockMutationOrder();
+            buildLock = lockChunkBuild(key);
+            {
+                std::shared_lock lock(mutex_);
+                if (chunks_.count(key)) {
+                    lock.unlock();
+                    discardPendingLoadedChunkIfAny(key);
+                    return true;
+                }
+            }
+            try {
+                const auto result = publishPendingLoadedChunkLocked(key);
+                if (result == PendingLoadedChunkResult::Stale) return false;
+                if (result != PendingLoadedChunkResult::NotFound) return true;
+            } catch (const ChunkPublishError& error) {
+                std::fprintf(stderr,
+                             "[World] persisted chunk extras %d,%d could not be published: %s; retaining source for retry\n",
+                             cx, cz, error.what());
+                return false;
+            }
+            continue;
+        }
+
+        // Acquire detached storage under the generation/pool lock, but never
+        // call the persistence loader while holding it. The loader can do disk
+        // I/O, while this per-key stripe prevents duplicate same-key reads.
+        std::unique_ptr<Chunk> chunk;
+        {
+            std::lock_guard generationLock(generationMtx_);
+            chunk = acquireChunk();
+        }
+
+        std::function<ChunkLoadStatus(std::int32_t, std::int32_t,
+                                      ChunkBuildWriter&)> loader;
+        {
+            std::lock_guard lock(hooksMtx_);
+            loader = loader_;
+        }
+        ChunkLoadStatus loadStatus = ChunkLoadStatus::Missing;
+        std::function<void()> publishCallback;
+        {
+            ChunkBuildWriter writer(*chunk);
+            if (loader) loadStatus = loader(cx, cz, writer);
+            if (loadStatus == ChunkLoadStatus::Loaded)
+                publishCallback = writer.takePublishCallback();
+        }
+
+        if (loadStatus == ChunkLoadStatus::Failed) {
+            std::lock_guard generationLock(generationMtx_);
+            recycleChunk(std::move(chunk));
+            return false;
+        }
+
+        if (loadStatus == ChunkLoadStatus::Loaded) {
+            // Keep the decoded candidate available before releasing the build
+            // stripe. A same-key re-entrant request can then publish it while
+            // holding the recursive mutation-order gate, without inversion.
+            const bool retained =
+                retainPendingLoadedChunk(key, chunk, publishCallback);
+            if (!retained) {
+                std::lock_guard generationLock(generationMtx_);
+                recycleChunk(std::move(chunk));
+            }
+            buildLock.unlock();
+            auto mutationOrder = lockMutationOrder();
+            buildLock = lockChunkBuild(key);
+            {
+                std::shared_lock lock(mutex_);
+                if (chunks_.count(key)) {
+                    lock.unlock();
+                    discardPendingLoadedChunkIfAny(key);
+                    std::lock_guard generationLock(generationMtx_);
+                    recycleChunk(std::move(chunk));
+                    return true;
+                }
+            }
+            try {
+                const auto result = publishPendingLoadedChunkLocked(key);
+                if (result == PendingLoadedChunkResult::Stale) {
+                    std::lock_guard generationLock(generationMtx_);
+                    recycleChunk(std::move(chunk));
+                    return false;
+                }
+                if (result != PendingLoadedChunkResult::NotFound) return true;
+            } catch (const ChunkPublishError& error) {
+                std::fprintf(stderr,
+                             "[World] persisted chunk extras %d,%d could not be published: %s; retaining source for retry\n",
+                             cx, cz, error.what());
+                std::lock_guard generationLock(generationMtx_);
+                recycleChunk(std::move(chunk));
+                return false;
+            }
+            // A loaded result must never silently degrade into generated data.
+            std::lock_guard generationLock(generationMtx_);
+            recycleChunk(std::move(chunk));
+            return false;
+        }
+
+        {
+            std::lock_guard generationLock(generationMtx_);
+            // An asynchronous completion may have published while the
+            // detached loader ran. Prefer that complete chunk.
+            {
+                std::shared_lock lock(mutex_);
+                if (chunks_.count(key)) {
+                    lock.unlock();
+                    recycleChunk(std::move(chunk));
+                    return true;
+                }
+            }
+            ChunkBuildWriter writer(*chunk);
+            if (generator_) generator_->fillChunk(writer, cx, cz);
+            else generateChunkFallback(writer, cx, cz);
+            publishCallback = writer.takePublishCallback();
+        }
+
+        // Publish only with mutation order before the key stripe. A loaded
+        // candidate may have arrived while this generated fallback waited;
+        // if so it wins and the fallback allocation is recycled.
+        buildLock.unlock();
+        auto mutationOrder = lockMutationOrder();
+        buildLock = lockChunkBuild(key);
+        {
+            std::shared_lock readLock(mutex_);
+            if (chunks_.count(key)) {
+                readLock.unlock();
+                discardPendingLoadedChunkIfAny(key);
+                std::lock_guard generationLock(generationMtx_);
+                recycleChunk(std::move(chunk));
+                return true;
+            }
+        }
+        try {
+            const auto pendingResult = publishPendingLoadedChunkLocked(key);
+            if (pendingResult == PendingLoadedChunkResult::Stale) {
+                std::lock_guard generationLock(generationMtx_);
+                recycleChunk(std::move(chunk));
+                return false;
+            }
+            if (pendingResult != PendingLoadedChunkResult::NotFound) {
+                std::lock_guard generationLock(generationMtx_);
+                recycleChunk(std::move(chunk));
+                return true;
+            }
+        } catch (const ChunkPublishError& error) {
+            std::fprintf(stderr,
+                         "[World] persisted chunk extras %d,%d could not be published: %s; retaining source for retry\n",
+                         cx, cz, error.what());
+            std::lock_guard generationLock(generationMtx_);
+            recycleChunk(std::move(chunk));
+            return false;
+        }
+        try {
+            // Generation-only side effects are staged on the detached writer.
+            // The publication helper prepares the node and map capacity before
+            // committing them, then exposes the completed chunk without a
+            // post-callback allocation failure window.
+            (void)publishChunkCandidateLocked(key, chunk, publishCallback);
+        } catch (const ChunkPublishError& error) {
+            std::fprintf(stderr,
+                         "[World] generated chunk extras %d,%d could not be published: %s; discarding candidate\n",
+                         cx, cz, error.what());
+            std::lock_guard generationLock(generationMtx_);
+            recycleChunk(std::move(chunk));
+            return false;
+        }
+        if (chunk) {
+            std::lock_guard generationLock(generationMtx_);
+            recycleChunk(std::move(chunk));
+        }
+        return true;
     }
-    // Double-check after taking the generation gate.  The first check avoids
-    // locking the gate on the hot path; the second prevents duplicate full
-    // chunk allocations when multiple session threads cross the same border.
-    std::lock_guard generationLock(generationMtx_);
-    {
-        std::shared_lock lock(mutex_);
-        if (chunks_.count(chunkKey(cx, cz))) return;
-    }
-    auto c = acquireChunk();
-    std::function<bool(std::int32_t, std::int32_t, Chunk&)> loader;
-    {
-        std::lock_guard lock(hooksMtx_);
-        loader = loader_;
-    }
-    const bool loaded = loader && loader(cx, cz, *c);
-    if (!loaded) {
-        if (generator_) generator_->fillChunk(*c, cx, cz);
-        else generateChunkFallback(*c, cx, cz);
-    }
-    std::unique_lock lock(mutex_);
-    chunks_.try_emplace(chunkKey(cx, cz), std::move(c));
 }
 
-void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+void World::fillTerrainV3(ChunkBuildWriter& c, std::int32_t cx, std::int32_t cz) const {
     if (dimensionId_ == -1) { fillNether(c, cx, cz); return; }
     if (dimensionId_ == 1)  { fillEnd(c, cx, cz);   return; }
     const auto& table = gen::blockNameToState();
@@ -132,9 +374,9 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     const std::string& key =
                         biomeSource_->sample(wx, wy, wz);
                     const std::int32_t idx = biomeIndexOf(key);
-                    c.biomes[Chunk::biomeIndex(sec, cy, cz2, cx2)] =
+                    c.biomes.set(Chunk::biomeIndex(sec, cy, cz2, cx2),
                         static_cast<std::uint16_t>(idx < 0 ? defaultBiomeIndex_
-                                                           : idx);
+                                                           : idx));
                 }
 
     // ------------------------------------------------------- surface shaping
@@ -156,10 +398,11 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         if (ccx != cx || ccz != cz) return;
         if (wy < kMinY || wy >= kMaxY) return;
         const int wyR = wy - kMinY;
-        auto& slot = c.blocks[Chunk::index(wyR >> 4, wyR & 15, wz & 15, wx & 15)];
+        const int index = Chunk::index(wyR >> 4, wyR & 15, wz & 15, wx & 15);
+        const auto slot = c.blocks.get(index);
         if (!overwriteSolid && slot != 0 && slot != WATER) return;
         if (overwriteSolid && slot == 0) return;
-        slot = st;
+        c.blocks.set(index, st);
     };
 
     for (int lz = 0; lz < 16; ++lz)
@@ -198,13 +441,17 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     }
                 }
                 const int wy = y - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
+                c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), st);
             }
             for (int y = surf; y < kSea; ++y) {              // oceans/rivers
                 const int wy = y - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = WATER;
+                c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), WATER);
             }
         }
+
+    // Preserve terrain-stage maps before normal-world ores, trees,
+    // pale-garden features, and structures are placed.
+    captureWorldgenHeightmaps(c, verticalGeometry());
 
     // ------------------------------------------------------------- ores v3
     std::uint64_t oreRng = srv_seed
@@ -262,11 +509,12 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         // allow blobs to cross chunk borders by clamping here
                         const int bx = baseX + dx, bz2 = baseZ + dz;
                         if (bx < 0 || bx > 15 || bz2 < 0 || bz2 > 15) continue;
-                        auto& slot =
-                            c.blocks[Chunk::index(wy >> 4, wy & 15, bz2, bx)];
+                        const int index = Chunk::index(wy >> 4, wy & 15, bz2, bx);
+                        const auto slot = c.blocks.get(index);
                         if (!isStoneLike(slot)) continue;
-                        slot = (kMinY + wy) < deepslateStartY + 8 ? deepVariant
-                                                                  : oreState;
+                        c.blocks.set(index,
+                            (kMinY + wy) < deepslateStartY + 8 ? deepVariant
+                                                              : oreState);
                     }
         }
     }
@@ -286,7 +534,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     >= chance) continue;
                 if (col.ocean || col.surf <= kSea + 1) continue;
                 const int gyR = col.surf - 1 - kMinY;
-                if (c.blocks[Chunk::index(gyR >> 4, gyR & 15, wz & 15, wx & 15)]
+                if (c.blocks.get(Chunk::index(gyR >> 4, gyR & 15, wz & 15, wx & 15))
                     != GRASS) continue;
                 const int trunkH = 4 + static_cast<int>(
                     TerrainGenerator::posHash(srv_seed, wx, 555, wz) * 3);
@@ -329,7 +577,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 if (h < 0.52) continue; // ~48% attempt per cell -> 2-4 trees per chunk
                 const int gyR = col.surf -1 - kMinY;
                 if (gyR<0 || gyR>=kSectionsPerChunk*16) continue;
-                if (c.blocks[Chunk::index(gyR>>4, gyR&15, wz&15, wx&15)] != GRASS) continue;
+                if (c.blocks.get(Chunk::index(gyR>>4, gyR&15, wz&15, wx&15)) != GRASS) continue;
                 const int trunkH = 5 + static_cast<int>(TerrainGenerator::posHash(srv_seed, wx, 557, wz)*3);
                 bool hasHeart = TerrainGenerator::posHash(srv_seed ^ 0xC14E, wx, wz, 77) < 0.20;
                 for (int t=0; t<trunkH; ++t){
@@ -350,7 +598,7 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                                 int hy = col.surf+dy - hl;
                                 if (hy < kMinY) break;
                                 // check leaf adjacency: place hanging moss only below leaves
-                                if (c.blocks[Chunk::index((hy+1 -kMinY)>>4,(hy+1 -kMinY)&15,(wz+dzl)&15,(wx+dxl)&15)]==0) break;
+                                if (c.blocks.get(Chunk::index((hy+1 -kMinY)>>4,(hy+1 -kMinY)&15,(wz+dzl)&15,(wx+dxl)&15))==0) break;
                                 setIfIn(wx+dxl, hy, wz+dzl, HANGING_MOSS);
                             }
                         }
@@ -406,7 +654,10 @@ void World::fillTerrainV3(Chunk& c, std::int32_t cx, std::int32_t cz) const {
 
 // ------------------------------------------------------- nether / end gen
 
-void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+void World::fillNether(ChunkBuildWriter& c, std::int32_t cx, std::int32_t cz) const {
+    const auto geometry = verticalGeometry();
+    constexpr int kNetherBuildBottomY = 0;
+    constexpr int kNetherBuildTopY = 128;
     const auto& table = gen::blockNameToState();
     auto id2 = [&](const char* n) -> std::uint16_t {
         auto it = table.find(n);
@@ -454,9 +705,11 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         else if (surf < -0.55 && dep > 0.3) biomeIdx = idxWarped;
                         else if (surf > 0.35 && flt > 0.4) biomeIdx = idxCrimson;
                         else if (surf < -0.3 && dep < -0.2) biomeIdx = idxSoul;
-                        c.biomes[Chunk::biomeIndex(sec, cy, cz2, cx2)] = static_cast<std::uint16_t>(biomeIdx);
-                    }
+                        c.biomes.set(Chunk::biomeIndex(sec, cy, cz2, cx2), static_cast<std::uint16_t>(biomeIdx));
+        }
     }
+    Chunk::HeightmapValues worldSurfaceWg{};
+    Chunk::HeightmapValues oceanFloorWg{};
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
@@ -472,24 +725,21 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             else if (surf < -0.55 && dep > 0.3) biome = 2; // warped forest
             else if (surf > 0.35 && flt > 0.4) biome = 3; // crimson forest
             else if (surf < -0.3 && dep < -0.2) biome = 4; // soul sand valley
-            for (int y = kMinY; y < kMaxY; ++y) {
+            for (int y = kNetherBuildBottomY; y < kNetherBuildTopY; ++y) {
                 std::uint16_t st = 0;
-                // Nether bedrock roof/floor: Y 0-4 and 123-127 (vanilla) plus outer bounds
+                // The Nether dimension spans Y=0..255, while terrain and its
+                // bedrock ceiling occupy Y=0..127; the upper half of the
+                // dimension remains air in this generator.
                 if (y==0 || y==127) st = BEDROCK;
                 else if ((y>=1 && y<=4) || (y>=124 && y<=126)) {
                     if (TerrainGenerator::posHash(srv_seed, wx, y, wz) < 0.5) st = BEDROCK;
                 }
                 if (st==BEDROCK) {
                     const int wy = y - kMinY;
-                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
+                    c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), st);
                     continue;
                 }
-                if (y == kMinY || y == kMaxY - 1) st = BEDROCK;
-                else if (y > kMaxY - 5 &&
-                         TerrainGenerator::posHash(srv_seed, wx, y, wz) < .7)
-                    st = BEDROCK;
-                else {
-                    const double d = terrain_.netherDensity_.octaves(
+                const double d = terrain_.netherDensity_.octaves(
                         wx * 0.012, y * 0.02, wz * 0.012, 3);
                     // basalt deltas have more solid at mid heights with basalt pillars
                     double thresh = 0.02;
@@ -541,17 +791,20 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     } else if (y <= 31) {
                         st = LAVA;
                     }
-                }
                 const int wy = y - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = st;
+                c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), st);
             }
+            // Save the terrain-stage column before the vegetation, glowstone,
+            // and ore decorations below alter the generated surface.
+            captureWorldgenHeightmapColumn(c, worldSurfaceWg, oceanFloorWg,
+                                           lx, lz, verticalGeometry());
             // ceiling glowstone speckles + basalt pillar caps
             for (int k2 = 0; k2 < 3; ++k2) {
-                const int gy = kMaxY - 3 -
+                const int gy = kNetherBuildTopY - 3 -
                     static_cast<int>(TerrainGenerator::posHash(srv_seed, wx, k2, wz) * 4);
                 if (TerrainGenerator::posHash(srv_seed ^ 7, wx, gy, wz) < .12) {
                     const int wy = gy - kMinY;
-                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = GLOWSTONE;
+                    c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), GLOWSTONE);
                 }
             }
             // basalt delta pillars (occasional tall basalt columns) - also soul valley 3%
@@ -560,11 +813,13 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 int h = 10 + (int)(TerrainGenerator::posHash(srv_seed, wx, 3, wz)*14);
                 for (int dy=0; dy<h; ++dy) {
                     int py = 32 + dy;
-                    if (py < kMinY || py >= kMaxY) continue;
+                    if (py < kNetherBuildBottomY ||
+                        py >= kNetherBuildTopY) continue;
                     const int wy = py - kMinY;
-                    if (c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)]==0) continue;
+                    const int index = Chunk::index(wy>>4, wy&15, lz, lx);
+                    if (c.blocks.get(index)==0) continue;
                     // overwrite with basalt for pillar
-                    c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = BASALT;
+                    c.blocks.set(index, BASALT);
                 }
             }
             // glowstone blobs at ceiling Y100-125 2% per column
@@ -574,11 +829,14 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     if (std::abs(dx)+std::abs(dz)+std::abs(dy) > 3) continue;
                     int py = gy + dy, px = wx + dx, pz = wz + dz;
                     if ((px>>4)!=cx || (pz>>4)!=cz) continue;
-                    if (py<kMinY || py>=kMaxY) continue;
+                    if (py<kNetherBuildBottomY ||
+                        py>=kNetherBuildTopY) continue;
                     const int wy = py - kMinY;
-                    auto &slot = c.blocks[Chunk::index(wy>>4, wy&15, pz&15, px&15)];
-                    if (slot==0) slot = GLOWSTONE;
-                    else if (TerrainGenerator::posHash(srv_seed ^ 0x7713, px, py, pz) < 0.3) slot = GLOWSTONE;
+                    const int index = Chunk::index(wy>>4, wy&15, pz&15, px&15);
+                    const auto slot = c.blocks.get(index);
+                    if (slot==0) c.blocks.set(index, GLOWSTONE);
+                    else if (TerrainGenerator::posHash(srv_seed ^ 0x7713, px, py, pz) < 0.3)
+                        c.blocks.set(index, GLOWSTONE);
                 }
             }
             // nether gold / magma per column low chance (augment quartz)
@@ -588,8 +846,9 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     for (int y=10; y<50; ++y) {
                         if (TerrainGenerator::posHash(srv_seed ^ 0xA11D, wx, y, wz) < 0.004) {
                             const int wy = y - kMinY;
-                            auto &slot = c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)];
-                            if (slot==NETHERRACK) slot = NETHER_GOLD;
+                            const int index = Chunk::index(wy>>4, wy&15, lz, lx);
+                            if (c.blocks.get(index)==NETHERRACK)
+                                c.blocks.set(index, NETHER_GOLD);
                         }
                     }
                 }
@@ -597,16 +856,19 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     for (int y=30; y<85; ++y) {
                         if (TerrainGenerator::posHash(srv_seed ^ 0xDEAD, wx, y, wz) < 0.006) {
                             const int wy = y - kMinY;
-                            auto &slot = c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)];
+                            const int index = Chunk::index(wy>>4, wy&15, lz, lx);
+                            const auto slot = c.blocks.get(index);
                             if (slot==0 || slot==NETHERRACK) { /* keep air lava */ }
                             else if (slot==BASALT || slot==BLACKSTONE || slot==NETHERRACK) {
-                                if (TerrainGenerator::posHash(srv_seed ^ 0xBEEF, wx, y, wz) < 0.02) slot = MAGMA;
+                                if (TerrainGenerator::posHash(srv_seed ^ 0xBEEF, wx, y, wz) < 0.02)
+                                    c.blocks.set(index, MAGMA);
                             }
                         }
                     }
                 }
             }
         }
+    c.setWorldgenHeightmaps(worldSurfaceWg, oceanFloorWg);
     // chunk-level ancient debris (Y 8-119, 2 veins per chunk)
     {
         std::uint64_t rng = srv_seed ^ (static_cast<std::uint64_t>(static_cast<std::uint32_t>(cx)) * 0x9E3779B97F4A7C15ULL)
@@ -623,11 +885,12 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 int wz2 = cz*16 + az + dz;
                 int wy2 = ay + dy;
                 if ((wx2>>4)!=cx || (wz2>>4)!=cz) continue;
-                if (wy2<kMinY || wy2>=kMaxY) continue;
+                if (!geometry.containsY(wy2)) continue;
                 int wyR = wy2 - kMinY;
-                auto &slot = c.blocks[Chunk::index(wyR>>4, wyR&15, wz2&15, wx2&15)];
+                const int index = Chunk::index(wyR>>4, wyR&15, wz2&15, wx2&15);
+                const auto slot = c.blocks.get(index);
                 if (slot==NETHERRACK || slot==BASALT || slot==BLACKSTONE) {
-                    if ((rng64l() % 100) < 60) slot = ANCIENT_DEB;
+                    if ((rng64l() % 100) < 60) c.blocks.set(index, ANCIENT_DEB);
                 }
             }
         }
@@ -638,17 +901,19 @@ void World::fillNether(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             int ay = 10 + int(rng64l() % 100);
             int wx2 = cx*16+ax, wz2=cz*16+az;
             const int wyR = ay - kMinY;
-            if (wyR<0 || wyR>=kSectionsPerChunk*16) continue;
-            auto &slot = c.blocks[Chunk::index(wyR>>4, wyR&15, wz2&15, wx2&15)];
+            if (!geometry.containsY(ay)) continue;
+            const int index = Chunk::index(wyR>>4, wyR&15, wz2&15, wx2&15);
+            const auto slot = c.blocks.get(index);
             if (slot==NETHERRACK || slot==BASALT) {
-                if ((rng64l() % 100) < 70) slot = QUARTZ_ORE;
+                if ((rng64l() % 100) < 70) c.blocks.set(index, QUARTZ_ORE);
             }
         }
     }
-    // light engine seeds glowstone automatically via emission on first tick.
+    // Light engine seeds glowstone automatically via emission on first tick.
 }
 
-void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
+void World::fillEnd(ChunkBuildWriter& c, std::int32_t cx, std::int32_t cz) const {
+    const auto geometry = verticalGeometry();
     const auto& table = gen::blockNameToState();
     auto id2 = [&](const char* n) -> std::uint16_t {
         auto it = table.find(n);
@@ -689,7 +954,7 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                                 else bIdx = idxSmall;
                             } else bIdx = idxBarr;
                         }
-                        c.biomes[Chunk::biomeIndex(sec, cy, cz2, cx2)] = static_cast<std::uint16_t>(bIdx);
+                        c.biomes.set(Chunk::biomeIndex(sec, cy, cz2, cx2), static_cast<std::uint16_t>(bIdx));
                     }
     }
     // central island ~ radius 60 at y=64 surface + outer islands beyond 1000 (chunk-level hemisphere for guarantee)
@@ -725,17 +990,24 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         double n2 = terrain_.endIsland_.octaves(wx*0.01, 0, wz*0.01, 3);
         return n2 > 0.4;
     };
+    Chunk::HeightmapValues worldSurfaceWg{};
+    Chunk::HeightmapValues oceanFloorWg{};
     for (int lz = 0; lz < 16; ++lz)
         for (int lx = 0; lx < 16; ++lx) {
             const std::int32_t wx = cx * 16 + lx, wz = cz * 16 + lz;
             const double r = std::sqrt(double(wx) * wx + double(wz) * wz);
+            bool capturedColumn = false;
             if (r < 58 + TerrainGenerator::posHash(srv_seed, wx, 1, wz) * 10) {
                 const int depth = 20 + static_cast<int>(
                     TerrainGenerator::posHash(srv_seed, wx, 2, wz) * 14);
                 for (int y = 64 - depth; y <= 64; ++y) {
                     const int wy = y - kMinY;
-                    c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                    c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), END_STONE);
                 }
+                captureWorldgenHeightmapColumn(c, worldSurfaceWg,
+                                               oceanFloorWg, lx, lz,
+                                               verticalGeometry());
+                capturedColumn = true;
             } else if (isOuterRegion && hasOuterIslandChunk) {
                 double dx = double(wx) - centerCX;
                 double dz = double(wz) - centerCZ;
@@ -746,20 +1018,24 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     int bottom = top - int(hf * (outerRadius*0.75)) - 3;
                     if (bottom < 55) bottom = 55;
                     for (int y = bottom; y <= top; ++y) {
-                        if (y < kMinY || y >= kMaxY) continue;
+                        if (!geometry.containsY(y)) continue;
                         const int wy = y - kMinY;
-                        c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                        c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), END_STONE);
                     }
+                    captureWorldgenHeightmapColumn(c, worldSurfaceWg,
+                                                   oceanFloorWg, lx, lz,
+                                                   verticalGeometry());
+                    capturedColumn = true;
                     if (isHighlandColumn(wx,wz) && TerrainGenerator::posHash(srv_seed ^ 0xC011, wx, wz, 3) < 0.015) {
                         int ch = top + 1;
                         int h = 3 + int(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*3);
                         for (int dy=0; dy<h; ++dy) {
                             int py = ch + dy;
-                            if (py>=kMaxY) break;
+                            if (py >= geometry.maxY()) break;
                             const int wy = py - kMinY;
                             std::uint16_t mat = (dy==h-1) ? id2("minecraft:chorus_flower") ? id2("minecraft:chorus_flower") : CHORUS : CHORUS;
                             if (mat==0) mat = CHORUS;
-                            c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = mat;
+                            c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), mat);
                         }
                     }
                 } else if (r > 1000) {
@@ -773,20 +1049,24 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                         int depth = 8 + (int)(hash * 12);
                         if (n > 0.6) depth += 8;
                         for (int y = islandH - depth; y <= islandH; ++y) {
-                            if (y < kMinY || y >= kMaxY) continue;
+                            if (!geometry.containsY(y)) continue;
                             const int wy = y - kMinY;
-                            c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                            c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), END_STONE);
                         }
+                        captureWorldgenHeightmapColumn(c, worldSurfaceWg,
+                                                       oceanFloorWg, lx, lz,
+                                                       verticalGeometry());
+                        capturedColumn = true;
                         if (hash < 0.008 && terrain_.endIsland_.sample(
                                 wx*0.05, 0, wz*0.05) > 0.3) {
                             int pillarH = 4 + (int)(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*5);
                             for (int dy = 1; dy <= pillarH; ++dy) {
                                 int py = islandH + dy;
-                                if (py < kMinY || py >= kMaxY) continue;
+                                if (!geometry.containsY(py)) continue;
                                 const int wy = py - kMinY;
                                 std::uint16_t mat = (dy==pillarH) ? CHORUS : END_STONE;
                                 if (dy > pillarH-2 && hash < 0.003) mat = OBSIDIAN;
-                                c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = mat;
+                                c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), mat);
                             }
                         }
                     }
@@ -802,25 +1082,36 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     int depth = 8 + (int)(hash * 12);
                     if (n > 0.6) depth += 8;
                     for (int y = islandH - depth; y <= islandH; ++y) {
-                        if (y < kMinY || y >= kMaxY) continue;
+                        if (!geometry.containsY(y)) continue;
                         const int wy = y - kMinY;
-                        c.blocks[Chunk::index(wy >> 4, wy & 15, lz, lx)] = END_STONE;
+                        c.blocks.set(Chunk::index(wy >> 4, wy & 15, lz, lx), END_STONE);
                     }
+                    captureWorldgenHeightmapColumn(c, worldSurfaceWg,
+                                                   oceanFloorWg, lx, lz,
+                                                   verticalGeometry());
+                    capturedColumn = true;
                     if (hash < 0.008 && terrain_.endIsland_.sample(
                             wx*0.05, 0, wz*0.05) > 0.3) {
                         int pillarH = 4 + (int)(TerrainGenerator::posHash(srv_seed, wx, 9, wz)*5);
                         for (int dy = 1; dy <= pillarH; ++dy) {
                             int py = islandH + dy;
-                            if (py < kMinY || py >= kMaxY) continue;
+                            if (!geometry.containsY(py)) continue;
                             const int wy = py - kMinY;
                             std::uint16_t mat = (dy==pillarH) ? CHORUS : END_STONE;
                             if (dy > pillarH-2 && hash < 0.003) mat = OBSIDIAN;
-                            c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = mat;
+                            c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), mat);
                         }
                     }
                 }
             }
+            if (!capturedColumn)
+                captureWorldgenHeightmapColumn(c, worldSurfaceWg,
+                                               oceanFloorWg, lx, lz,
+                                               verticalGeometry());
         }
+    // Snapshot the generated landmass before cities, portal structures, and
+    // gateways modify the final surface map.
+    c.setWorldgenHeightmaps(worldSurfaceWg, oceanFloorWg);
     {
         int cellX = (cx % 20 + 20) % 20;
         int cellZ = (cz % 20 + 20) % 20;
@@ -844,18 +1135,18 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     if ((wx>>4)!=cx || (wz>>4)!=cz) continue;
                     // floor
                     int wy = baseY - kMinY;
-                    if (wy>=0 && wy < kSectionsPerChunk*16)
-                        c.blocks[Chunk::index(wy>>4, wy&15, wz&15, wx&15)] = END_BRICKS;
+                    if (geometry.containsY(baseY))
+                        c.blocks.set(Chunk::index(wy>>4, wy&15, wz&15, wx&15), END_BRICKS);
                     // walls height 12
                     for (int dy=1; dy<=12; ++dy) {
                         bool wall = dx==0||dx==8||dz==0||dz==8;
                         if (!wall) continue;
                         int py = baseY + dy;
-                        if (py<kMinY||py>=kMaxY) continue;
+                        if (!geometry.containsY(py)) continue;
                         std::uint16_t mat = (dy%4==0) ? PURPUR_PILLAR : PURPUR;
                         if (dx==0||dx==8||dz==0||dz==8) {
                             int wy2 = py - kMinY;
-                            c.blocks[Chunk::index(wy2>>4, wy2&15, wz&15, wx&15)] = mat;
+                            c.blocks.set(Chunk::index(wy2>>4, wy2&15, wz&15, wx&15), mat);
                         }
                     }
                 }
@@ -865,14 +1156,15 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                     if ((wx>>4)==cx && (wz>>4)==cz) {
                         int py = baseY+1;
                         int wy = py - kMinY;
-                        if (wy>=0 && wy < kSectionsPerChunk*16)
-                            c.blocks[Chunk::index(wy>>4, wy&15, wz&15, wx&15)] = CHEST;
+                        if (geometry.containsY(py))
+                            c.blocks.set(Chunk::index(wy>>4, wy&15, wz&15, wx&15), CHEST);
                         // end rods on corners
                         for (int dy=5; dy<=8; ++dy) {
                             int py2 = baseY+dy;
+                            if (!geometry.containsY(py2)) continue;
                             int wy2 = py2 - kMinY;
-                            c.blocks[Chunk::index(wy2>>4, wy2&15, (baseZ&15), (baseX&15))] = END_ROD;
-                            c.blocks[Chunk::index(wy2>>4, wy2&15, ((baseZ+8)&15), ((baseX+8)&15))] = END_ROD;
+                            c.blocks.set(Chunk::index(wy2>>4, wy2&15, (baseZ&15), (baseX&15)), END_ROD);
+                            c.blocks.set(Chunk::index(wy2>>4, wy2&15, ((baseZ+8)&15), ((baseX+8)&15)), END_ROD);
                         }
                     }
                 }
@@ -885,11 +1177,11 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             for (int dz = -2; dz <= 2; ++dz) {
                 if (std::abs(dx) == 2 && std::abs(dz) == 2) continue;
                 const int wy = 65 - kMinY;
-                c.blocks[Chunk::index(wy >> 4, wy & 15, dz & 15, dx & 15)] =
-                    BEDROCK;
+                c.blocks.set(Chunk::index(wy >> 4, wy & 15, dz & 15, dx & 15),
+                    BEDROCK);
                 if (dx == 0 && dz == 0) {
-                    c.blocks[Chunk::index((66 - kMinY) >> 4, (66 - kMinY) & 15,
-                                          0, 0)] = BEDROCK;
+                    c.blocks.set(Chunk::index((66 - kMinY) >> 4, (66 - kMinY) & 15,
+                                              0, 0), BEDROCK);
                 }
             }
     }
@@ -902,7 +1194,7 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
             if (r > 70 && r < 90 && TerrainGenerator::posHash(srv_seed ^ 0x5050, wx, wz, 3) < 0.005) {
                 for (int y=64; y<80; ++y) {
                     const int wy = y - kMinY;
-                    c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = OBSIDIAN;
+                    c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), OBSIDIAN);
                 }
             }
         }
@@ -924,12 +1216,12 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
                 if ((wx>>4)!=cx || (wz>>4)!=cz) continue;
                 int lxx = wx &15, lzz = wz &15;
                 int wy0 = (gy-1) - kMinY;
-                if (wy0>=0 && wy0 < kSectionsPerChunk*16)
-                    c.blocks[Chunk::index(wy0>>4, wy0&15, lzz, lxx)] = BEDROCK;
+                if (geometry.containsY(gy - 1))
+                    c.blocks.set(Chunk::index(wy0>>4, wy0&15, lzz, lxx), BEDROCK);
             }
             int wy = gy - kMinY;
-            if (wy>=0 && wy < kSectionsPerChunk*16)
-                c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = GATEWAY;
+            if (geometry.containsY(gy))
+                c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), GATEWAY);
         }
     }
     // Outer return gateways: on outer islands hasOuterIslandChunk place a gateway at top+2 for return
@@ -938,15 +1230,17 @@ void World::fillEnd(Chunk& c, std::int32_t cx, std::int32_t cz) const {
         int gx = int(centerCX);
         int gz = int(centerCZ);
         int gy = outerIsleH + 3;
-        if ((gx>>4)==cx && (gz>>4)==cz && gy < kMaxY -2) {
+        if ((gx>>4)==cx && (gz>>4)==cz && gy < geometry.maxY() - 2 &&
+            geometry.containsY(gy)) {
             // small 1-block gateway
             int lx = gx &15, lz = gz &15;
             int wy = gy - kMinY;
-            if (wy>=0 && wy < kSectionsPerChunk*16) {
+            if (geometry.containsY(gy)) {
                 // ensure bedrock below
                 int wy0 = (gy-1)-kMinY;
-                if (wy0>=0) c.blocks[Chunk::index(wy0>>4, wy0&15, lz, lx)] = BEDROCK;
-                c.blocks[Chunk::index(wy>>4, wy&15, lz, lx)] = GATEWAY;
+                if (geometry.containsY(gy - 1))
+                    c.blocks.set(Chunk::index(wy0>>4, wy0&15, lz, lx), BEDROCK);
+                c.blocks.set(Chunk::index(wy>>4, wy&15, lz, lx), GATEWAY);
             }
         }
     }

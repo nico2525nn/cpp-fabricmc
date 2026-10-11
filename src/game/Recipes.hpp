@@ -13,6 +13,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -45,10 +46,24 @@ struct Ingredient {
 class Recipe {
 public:
     enum class Kind { Shaped, Shapeless, Smelting, Stonecutting, Smithing, Special };
-    Kind kind;
+    enum class CookingStation { Furnace, BlastFurnace, Smoker, Campfire };
+    struct BookDisplay {
+        Kind kind = Kind::Special;
+        int width = 0;
+        int height = 0;
+        std::vector<Ingredient> cells;
+        std::vector<Ingredient> ingredients;
+        int cookingTicks = 200;
+        float experience = 0.f;
+        CookingStation cookingStation = CookingStation::Furnace;
+        ItemStack result;
+        bool smithingTrimResult = false;
+    };
+
+    Kind kind = Kind::Special;
     std::string id;                              // e.g. minecraft:oak_planks
     std::string group;                           // recipe group (wire varint, 0=none)
-    int category = 3;                            // wire category: 3 crafting / 6 furnace / 10 stonecutter
+    int category = 3;                            // RecipeBookCategory registry ID (0..12)
     // shaped
     int width = 0, height = 0;
     std::vector<Ingredient> cells;               // width*height, row-major
@@ -57,8 +72,15 @@ public:
     // cooking
     int cookingTicks = 200;
     float experience = 0.f;
+    CookingStation cookingStation = CookingStation::Furnace;
 
     ItemStack result;
+    // Smithing trim displays synthesize their result from the three input
+    // slots rather than carrying a fixed result stack.
+    bool smithingTrimResult = false;
+    // A single recipe may contribute multiple independent recipe-book
+    // displays. The legacy fields above remain the primary display's data.
+    std::vector<BookDisplay> additionalDisplays;
 
     // Match a crafting grid (2x2 or 3x3) of stacks; returns true + result.
     bool matches(const std::vector<ItemStack>& grid, int gw, int gh) const {
@@ -131,10 +153,19 @@ public:
     void clear() {
         recipes_.clear();
         tags_.clear();
+        builtInTags_.clear();
         tagPlanks_.clear();
     }
     void loadDefaults();                         // built-in table (see Recipes.cpp)
-    void loadDirectory(const std::string& dir);  // assets/data/recipes/*.json
+    void loadDirectory(const std::filesystem::path& dir);  // data/recipes/*.json
+    void loadDatapackDirectory(const std::filesystem::path& dataRoot);
+    void swap(RecipeManager& other) noexcept {
+        using std::swap;
+        swap(recipes_, other.recipes_);
+        swap(builtInTags_, other.builtInTags_);
+        swap(tags_, other.tags_);
+        swap(tagPlanks_, other.tagPlanks_);
+    }
 
     // Find first crafting recipe matching the grid (gw/gh: 2 or 3).
     const Recipe* findCrafting(const std::vector<ItemStack>& grid, int gw, int gh) const;
@@ -153,17 +184,24 @@ public:
 private:
     void addShaped(const std::string& id, const std::string& outName, int count,
                    const std::vector<std::string>& rows,
-                   const std::unordered_map<char, std::string>& keys);
+                   const std::unordered_map<char, Ingredient>& keys);
     void addShapeless(const std::string& id, const std::string& outName, int count,
-                      const std::vector<std::string>& inputs);
-    void addSmelting(const std::string& inName, const std::string& outName,
+                      const std::vector<Ingredient>& inputs);
+    void addSmelting(const Ingredient& input, const std::string& outName,
                      float xp, int ticks, Recipe::Kind kind);
-    void addStonecutting(const std::string& inName, const std::string& outName, int count);
+    void addStonecutting(const Ingredient& input, const std::string& outName,
+                         int count);
 
     Ingredient makeIngredient(const json::Value& v) const;
     Ingredient fromName(const std::string& n) const;
+    void loadRecipeFiles(const std::filesystem::path& directory,
+                         const std::string& nameSpace);
 
     std::vector<Recipe> recipes_;
+    // Stable clean-room defaults are the baseline; resource/datapack tags
+    // are rebuilt from their current source instead of accumulating into it.
+    std::unordered_map<std::string, std::unordered_set<std::uint32_t>>
+        builtInTags_;
 
 protected:
     std::uint32_t itemIdOr0(const std::string& name) const {

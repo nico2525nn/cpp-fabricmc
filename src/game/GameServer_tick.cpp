@@ -1,5 +1,9 @@
 #include "GameServer.hpp"
+#include "Session.hpp"
 #include "BlockEvent.hpp"
+#include "BlockEntityDrops.hpp"
+#include "BlockEntityKinds.hpp"
+#include "PendingStructureLoot.hpp"
 #include "MetadataTypes.hpp"
 #include "../physics/LightEngine.hpp"
 #include "../physics/Fluids.hpp"
@@ -11,6 +15,10 @@
 #include "DamageComponent.hpp"
 #include "EnchantmentHelper.hpp"
 #include "MiningCalculator.hpp"
+#include "AdventureBlockBreak.hpp"
+
+#include <optional>
+#include <limits>
 
 namespace cppfm {
 using namespace proto;
@@ -51,9 +59,18 @@ void GameServer::drainServerThreadTasks() noexcept {
         {
             std::lock_guard lock(serverThreadTasksMtx_);
             if (serverThreadId_ != std::this_thread::get_id() ||
-                !serverThreadAccepting_ ||
-                !running_.load(std::memory_order_acquire) ||
                 serverThreadTasks_.empty()) return;
+            const bool finalLifecycleOwner =
+                finalLifecycleThreadId_ == std::this_thread::get_id() &&
+                finalLifecycleCallbackDepth_ != 0;
+            const bool terminalTask =
+                shutdownStarted_.load(std::memory_order_acquire) &&
+                serverThreadTasks_.front() &&
+                serverThreadTasks_.front()->allowDuringShutdown &&
+                finalLifecycleOwner;
+            if ((!serverThreadAccepting_ && !finalLifecycleOwner) ||
+                (!running_.load(std::memory_order_acquire) && !terminalTask))
+                return;
             request = std::move(serverThreadTasks_.front());
             serverThreadTasks_.pop_front();
             auto expected = ServerThreadTask::State::Pending;
@@ -89,106 +106,354 @@ void GameServer::drainServerThreadTasks() noexcept {
 }
 
 namespace {
-void cancelMiningDig(GameServer& server, Player& player) {
-    if (player.digActive) server.broadcastDigStage(player, -1);
-    player.digActive = false;
-    player.digTotalTicks = 0;
-    player.digLastStage = 255;
+void syncBlockState(GameServer& server, std::int8_t dimension,
+                    std::int32_t x, std::int32_t y, std::int32_t z,
+                    std::uint16_t state) {
+    WriteBuffer update;
+    update.position(x, y, z);
+    update.varint(state);
+    server.broadcastPacketExceptInDimension(
+        dimension, nullptr, proto::pl::sc::BlockUpdate, update);
+}
+
+bool cancelMiningDig(GameServer& server, Player& player,
+                     std::uint64_t expectedRevision,
+                     std::int8_t dimension) {
+    std::lock_guard transitionLock(player.digTransitionMtx);
+    std::int32_t x = 0, y = 0, z = 0;
+    {
+        std::lock_guard digLock(player.digMtx);
+        if (!player.digActive ||
+            player.digRevision != expectedRevision)
+            return false;
+        x = player.digX;
+        y = player.digY;
+        z = player.digZ;
+        player.digActive = false;
+        player.digTotalTicks = 0;
+        player.digLastStage = 255;
+        ++player.digRevision;
+    }
+    server.broadcastDigStageAt(player, dimension, x, y, z, -1);
+    return true;
 }
 } // namespace
 
 void GameServer::tickDigs() {
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
-        if (!p->digActive || !p->inPlay) continue;
-        if (p->gamemode != 0) {
+        bool inPlay = false;
+        std::int8_t dimension = 0;
+        std::uint8_t gameMode = 0;
+        std::int32_t heldSlot = -1;
+        bool playerOnFire = false;
+        std::optional<InvSlot> heldStack;
+        {
+            std::lock_guard playerLock(p->stateMtx);
+            inPlay = p->inPlay;
+            dimension = canonicalDimension(p->dimension);
+            gameMode = p->gamemode;
+            heldSlot = p->heldSlot;
+            playerOnFire = p->fireTicks > 0;
+            if (heldSlot >= 0 && heldSlot < 9)
+                heldStack = p->inv[36 + heldSlot];
+        }
+        bool digActive = false;
+        std::int32_t digX = 0, digY = 0, digZ = 0;
+        std::int64_t digStartTick = 0;
+        std::int32_t digTotalTicks = 0;
+        std::uint8_t digLastStage = 255;
+        std::uint64_t digRevision = 0;
+        {
+            std::lock_guard digLock(p->digMtx);
+            digActive = p->digActive;
+            digX = p->digX;
+            digY = p->digY;
+            digZ = p->digZ;
+            digStartTick = p->digStartTick;
+            digTotalTicks = p->digTotalTicks;
+            digLastStage = p->digLastStage;
+            digRevision = p->digRevision;
+        }
+        if (!digActive || !inPlay) continue;
+
+        const auto targetState = worldFor(dimension).getBlock(
+            digX, digY, digZ);
+        std::optional<nbt::Value> targetBlockEntityNbt;
+        bool targetBlockEntityNbtLoaded = false;
+        const auto snapshotTargetBlockEntityNbt = [&]() -> const nbt::Value* {
+            if (!targetBlockEntityNbtLoaded) {
+                if (const auto expectedKind =
+                        blockEntityKindForBlockState(targetState)) {
+                    targetBlockEntityNbt = blockEntitiesFor(dimension)
+                        .snapshotNbtAt(digX, digY, digZ,
+                                       expectedKind);
+                }
+                targetBlockEntityNbtLoaded = true;
+            }
+            return targetBlockEntityNbt ? &*targetBlockEntityNbt : nullptr;
+        };
+        const bool allowedAdventureDig = gameMode == 2 && heldStack &&
+            itemCanBreakBlockInAdventure(
+                *heldStack, targetState, datapackManager_.tagManager,
+                snapshotTargetBlockEntityNbt);
+        if (gameMode != 0 && !allowedAdventureDig) {
             // A survival dig cannot outlive a gamemode change.
-            cancelMiningDig(*this, *p);
+            (void)cancelMiningDig(*this, *p, digRevision, dimension);
             continue;
         }
         const std::int64_t elapsed = tickNo_ -
-            MiningCalculator::unpackDigStartTick(p->digStartTick);
-        if (p->digTotalTicks <= 0) {
-            cancelMiningDig(*this, *p);
+            MiningCalculator::unpackDigStartTick(digStartTick);
+        if (digTotalTicks <= 0) {
+            (void)cancelMiningDig(*this, *p, digRevision, dimension);
             continue;
         }
-        const bool canHarvest = MiningCalculator::digCanHarvest(p->digLastStage);
+        const bool canHarvest = MiningCalculator::digCanHarvest(digLastStage);
         const std::uint8_t previousStage =
-            MiningCalculator::unpackDigStage(p->digLastStage);
-        const std::int64_t stage64 = elapsed * 10 / p->digTotalTicks;
+            MiningCalculator::unpackDigStage(digLastStage);
+        const std::int64_t stage64 = elapsed * 10 / digTotalTicks;
         const std::uint8_t stage = static_cast<std::uint8_t>(std::clamp<std::int64_t>(stage64, 0, 9));
         if (stage != previousStage) {
-            p->digLastStage = MiningCalculator::packDigStage(stage, canHarvest);
-            broadcastDigStage(*p, static_cast<std::int8_t>(stage));
+            std::lock_guard transitionLock(p->digTransitionMtx);
+            {
+                std::lock_guard digLock(p->digMtx);
+                if (!p->digActive || p->digRevision != digRevision) continue;
+                p->digLastStage = MiningCalculator::packDigStage(stage, canHarvest);
+            }
+            broadcastDigStageAt(*p, dimension, digX, digY, digZ,
+                                static_cast<std::int8_t>(stage));
         }
-        if (elapsed >= p->digTotalTicks) {
+        if (elapsed >= digTotalTicks) {
+            std::lock_guard transitionLock(p->digTransitionMtx);
+            {
+                std::lock_guard digLock(p->digMtx);
+                if (!p->digActive || p->digRevision != digRevision)
+                    continue;
+                p->digActive = false;
+                p->digTotalTicks = 0;
+                p->digLastStage = 255;
+                ++p->digRevision;
+            }
+            broadcastDigStageAt(*p, dimension, digX, digY, digZ, -1);
             // server-authoritative completion
-            World& world = worldFor(p->dimension);
-            const std::uint16_t oldState = world.getBlock(p->digX, p->digY, p->digZ);
+            World& world = worldFor(dimension);
+            const std::uint16_t oldState = world.getBlock(digX, digY, digZ);
             std::fprintf(stderr, "[cppfm] DIG COMPLETE at (%d,%d,%d) oldState=%u\n",
-                         p->digX, p->digY, p->digZ, oldState);
+                         digX, digY, digZ, oldState);
             const gen::BlockDef* def = gen::blockByState(oldState);
-            if (oldState != MiningCalculator::digStartingState(p->digStartTick) ||
+            if (oldState != MiningCalculator::digStartingState(digStartTick) ||
                 oldState == 0 || !def || def->hardness < 0.f) {
                 // The target changed or disappeared while mining; never turn
                 // a stale progress record into a break of another block.
                 WriteBuffer rb;
-                rb.position(p->digX, p->digY, p->digZ);
+                rb.position(digX, digY, digZ);
                 rb.varint(oldState);
-                broadcastPacketExceptInDimension(p->dimension, nullptr,
+                broadcastPacketExceptInDimension(dimension, nullptr,
                                                  proto::pl::sc::BlockUpdate, rb);
-                cancelMiningDig(*this, *p);
                 continue;
             }
 
             api::BlockBreakEvent ev;
             ev.player = p;
-            ev.x = p->digX; ev.y = p->digY; ev.z = p->digZ;
+            ev.x = digX; ev.y = digY; ev.z = digZ;
             ev.oldState = oldState;
             if (!events().blockBreak.fire(ev)) {
-                // cancelled: restore + stop animating
-                WriteBuffer rb;
-                rb.position(p->digX, p->digY, p->digZ);
-                rb.varint(oldState);
-                broadcastPacketExceptInDimension(p->dimension, nullptr,
-                                                 proto::pl::sc::BlockUpdate, rb);
-                cancelMiningDig(*this, *p);
+                // Cancellation can follow a synchronous mutation. Always
+                // resync the actual server state, not the event's old state.
+                syncBlockState(*this, dimension, digX, digY, digZ,
+                               world.getBlock(digX, digY, digZ));
                 continue;
             }
-            if (jvmRuntime_ && !jvmRuntime_->onBlockBreak(*p, p->digX, p->digY,
-                                                          p->digZ, oldState)) {
-                WriteBuffer rb;
-                rb.position(p->digX, p->digY, p->digZ);
-                rb.varint(oldState);
-                broadcastPacketExceptInDimension(p->dimension, nullptr,
-                                                 proto::pl::sc::BlockUpdate, rb);
-                cancelMiningDig(*this, *p);
+            if (jvmRuntime_ && !jvmRuntime_->onBlockBreak(
+                    *p, digX, digY, digZ, oldState)) {
+                syncBlockState(*this, dimension, digX, digY, digZ,
+                               world.getBlock(digX, digY, digZ));
                 continue;
             }
-            if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
+            if (world.getBlock(digX, digY, digZ) != oldState) {
                 // Event listeners may synchronously replace the target.
                 // Revalidate before mutating, durability, or drops.
-                WriteBuffer rb;
-                rb.position(p->digX, p->digY, p->digZ);
-                rb.varint(world.getBlock(p->digX, p->digY, p->digZ));
-                broadcastPacketExcept(nullptr, proto::pl::sc::BlockUpdate, rb);
-                cancelMiningDig(*this, *p);
+                syncBlockState(*this, dimension, digX, digY, digZ,
+                               world.getBlock(digX, digY, digZ));
                 continue;
             }
-            if (!blockEventDispatcher().onBlockBreak(p->digX, p->digY, p->digZ,
-                                                     oldState, p)) {
-                cancelMiningDig(*this, *p);
+            if (!blockEventDispatcher().onBlockBreak(
+                    digX, digY, digZ, oldState, p)) {
+                syncBlockState(*this, dimension, digX, digY, digZ,
+                               world.getBlock(digX, digY, digZ));
                 continue;
             }
-            if (world.getBlock(p->digX, p->digY, p->digZ) != oldState) {
-                cancelMiningDig(*this, *p);
+            if (world.getBlock(digX, digY, digZ) != oldState) {
+                // The legacy/Fabric-style dispatcher can mutate the target
+                // synchronously just like the earlier break callbacks.
+                syncBlockState(*this, dimension, digX, digY, digZ,
+                               world.getBlock(digX, digY, digZ));
                 continue;
             }
-            world.setBlock(p->digX, p->digY, p->digZ, 0);
-            broadcastBlockChangeFor(p->dimension, p->digX, p->digY, p->digZ, 0);
+            MutationGateLease mutationGate;
+            const auto refuseUnsafeBlockEntityBreak = [&] {
+                mutationGate.unlock();
+                WriteBuffer update;
+                update.position(digX, digY, digZ);
+                update.varint(world.getBlock(digX, digY, digZ));
+                broadcastPacketExceptInDimension(
+                    dimension, nullptr, proto::pl::sc::BlockUpdate, update);
+            };
+            // A container's saved contents and the world replacement are one
+            // transaction. Menu clicks take this same gate before touching
+            // their block entity, so either the click is included in the
+            // drops or the block is removed before that click can commit.
+            mutationGate = world.lockMutationGate();
+            const auto stateUnderMutationGate =
+                world.getBlock(digX, digY, digZ);
+            if (stateUnderMutationGate != oldState) {
+                refuseUnsafeBlockEntityBreak();
+                continue;
+            }
+            LootContext playerLootContext;
+            playerLootContext.hasEntityContext = true;
+            playerLootContext.entityOnFire = playerOnFire;
+            std::vector<ItemStack> containerContentsDrops;
+            std::optional<ItemStack> shulkerContentsDrop;
+            auto& blockEntities = blockEntitiesFor(dimension);
+            const auto blockEntityKey = posKey(digX, digY, digZ);
+            if (blockEntities.containsAt(digX, digY, digZ)) {
+                const auto owner = blockEntities.getShared(blockEntityKey);
+                if (!owner) {
+                    refuseUnsafeBlockEntityBreak();
+                    continue;
+                }
+                BlockEntity::Kind kind;
+                {
+                    std::lock_guard entityLock(*owner->stateMtx);
+                    kind = owner->kind;
+                }
+                if (kind == BlockEntity::Kind::MovingPiston) {
+                    refuseUnsafeBlockEntityBreak();
+                    continue;
+                }
+                if (ev.dropItems) {
+                    // Serialize before acquiring the owner lock; the store's
+                    // snapshot path acquires that lock itself. This captures
+                    // the item NBT that will otherwise be removed by setBlock.
+                    const auto savedEntity = serializedBlockEntityAt(
+                        blockEntities, digX, digY, digZ);
+                    if (!savedEntity) {
+                        refuseUnsafeBlockEntityBreak();
+                        continue;
+                    }
+                    const auto* savedItems = savedEntity->get("Items");
+                    const auto* savedLootTable = savedEntity->get("LootTable");
+                    const auto* savedLootSeed =
+                        savedEntity->get("LootTableSeed");
+                    const bool hasPendingLoot = savedLootTable != nullptr;
+                    if (savedItems && savedItems->tag != nbt::List &&
+                        !hasPendingLoot) {
+                        refuseUnsafeBlockEntityBreak();
+                        continue;
+                    }
+                    std::optional<std::int64_t> lootSeed;
+                    if (hasPendingLoot &&
+                        (savedLootTable->tag != nbt::String ||
+                         !item_component_nbt::isResourceIdentifier(
+                             savedLootTable->str) ||
+                         (savedLootSeed && savedLootSeed->tag != nbt::Long))) {
+                        refuseUnsafeBlockEntityBreak();
+                        continue;
+                    }
+                    if (hasPendingLoot && savedLootSeed &&
+                        savedLootSeed->l != 0)
+                        lootSeed = savedLootSeed->l;
+                    if (hasPendingLoot &&
+                        !pendingLootBlockEntityMatchesKind(
+                            *savedEntity, kind)) {
+                        refuseUnsafeBlockEntityBreak();
+                        continue;
+                    }
+                    const bool hasSavedContents =
+                        savedItems && !savedItems->list.empty();
+                    const bool hasShulkerCustomName =
+                        kind == BlockEntity::Kind::ShulkerBox &&
+                        savedEntity->get("CustomName") != nullptr;
+                    if (hasPendingLoot || hasSavedContents ||
+                        hasShulkerCustomName) {
+                        if (!hasPendingLoot &&
+                            (!savedItems || savedItems->tag != nbt::List ||
+                            (!savedItems->list.empty() &&
+                             savedItems->listElement != nbt::Compound))) {
+                            refuseUnsafeBlockEntityBreak();
+                            continue;
+                        }
+                        if (kind == BlockEntity::Kind::ShulkerBox) {
+                            if (!canHarvest) {
+                                refuseUnsafeBlockEntityBreak();
+                                continue;
+                            }
+                            const auto* brokenBlock = gen::blockByState(oldState);
+                            const auto packed = brokenBlock
+                                ? makeShulkerBoxDropItem(
+                                      brokenBlock->name, *savedEntity)
+                                : std::nullopt;
+                            if (!packed) {
+                                refuseUnsafeBlockEntityBreak();
+                                continue;
+                            }
+                            shulkerContentsDrop = *packed;
+                        } else if (hasPendingLoot) {
+                            auto generated = datapackManager_.lootTables.evaluateRegisteredTable(
+                                savedLootTable->str, ItemStack{},
+                                &playerLootContext, lootSeed);
+                            if (!generated) {
+                                refuseUnsafeBlockEntityBreak();
+                                continue;
+                            }
+                            bool contentsAreRepresentable = true;
+                            for (auto& stack : *generated) {
+                                if (stack.empty()) continue;
+                                if (!stack.canWriteToProtocol()) {
+                                    contentsAreRepresentable = false;
+                                    break;
+                                }
+                                containerContentsDrops.push_back(
+                                    std::move(stack));
+                            }
+                            if (!contentsAreRepresentable) {
+                                refuseUnsafeBlockEntityBreak();
+                                continue;
+                            }
+                        } else {
+                            bool contentsAreRepresentable = true;
+                            for (const auto& savedStack : savedItems->list) {
+                                if (savedStack.tag != nbt::Compound) {
+                                    contentsAreRepresentable = false;
+                                    break;
+                                }
+                                auto stack = ItemStack::fromNbt(savedStack);
+                                if (!stack || stack->empty() ||
+                                    !stack->canWriteToProtocol()) {
+                                    contentsAreRepresentable = false;
+                                    break;
+                                }
+                                containerContentsDrops.push_back(
+                                    std::move(*stack));
+                            }
+                            if (!contentsAreRepresentable) {
+                                refuseUnsafeBlockEntityBreak();
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!world.setBlock(digX, digY, digZ, 0)) {
+                refuseUnsafeBlockEntityBreak();
+                continue;
+            }
+            mutationGate.unlock();
+            broadcastBlockChangeFor(dimension, digX, digY, digZ, 0);
             if (const auto* broken = gen::blockByState(oldState);
                 broken && std::string(broken->name).find("_bed") != std::string::npos) {
-                invalidateRespawnPointsAt(p->dimension, p->digX, p->digY, p->digZ);
+                invalidateRespawnPointsAt(dimension, digX, digY, digZ);
             }
             HungerManager::onBlockBreak(*p, *this);
             onBlockMined(*p, oldState);
@@ -197,67 +462,100 @@ void GameServer::tickDigs() {
                 if (_bn == "minecraft:tnt") {
                     std::string unstableVal;
                     for (auto& [k,v] : gen::propsOf(oldState)) if (k=="unstable") unstableVal = std::string(v);
-                    const bool isUnstable = (unstableVal == "true");
-                    const bool isCreative = (p->gamemode == 1);
-                    bool hasFlint = false;
-                    if (p->heldSlot >=0 && p->heldSlot <9) {
-                        const auto& _held = p->inv[36 + p->heldSlot];
-                        if (!_held.empty() && _held.name() == "minecraft:flint_and_steel") hasFlint = true;
+                    std::uint8_t tntGameMode = 0;
+                    std::int32_t tntHeldSlot = -1;
+                    std::optional<InvSlot> tntHeldStack;
+                    {
+                        // Native and Fabric listeners may update the selected
+                        // item inline. Sample after every break callback, then
+                        // use this same slot for ignition and tool wear.
+                        std::lock_guard playerLock(p->stateMtx);
+                        tntGameMode = p->gamemode;
+                        tntHeldSlot = p->heldSlot;
+                        if (tntHeldSlot >= 0 && tntHeldSlot < 9)
+                            tntHeldStack = p->inv[36 + tntHeldSlot];
                     }
+                    const bool isUnstable = unstableVal == "true";
+                    const bool isCreative = tntGameMode == 1;
+                    const bool hasFlint = tntHeldStack &&
+                        !tntHeldStack->empty() &&
+                        tntHeldStack->name() == "minecraft:flint_and_steel";
                     if (hasFlint) {
-                        spawnPrimedTntFor(p->dimension, p->digX + 0.5,
-                                          p->digY + 0.5, p->digZ + 0.5,
+                        spawnPrimedTntFor(dimension, digX + 0.5,
+                                          digY + 0.5, digZ + 0.5,
                                           0, 0.2, 0, 80);
-                        broadcastSoundFor(p->dimension,
+                        broadcastSoundFor(dimension,
                                           "minecraft:entity.tnt.primed",
-                                          p->digX + 0.5, p->digY + 0.5,
-                                          p->digZ + 0.5, 1.f, 1.f, "block");
-                        if (!isCreative && p->heldSlot>=0 && p->heldSlot<9) {
-                            auto& _h = p->inv[36 + p->heldSlot];
-                            if (_h.applyDamage(1)) _h = ItemStack::air();
-                            resendInventory(*p);
+                                          digX + 0.5, digY + 0.5,
+                                          digZ + 0.5, 1.f, 1.f, "block");
+                        bool inventoryChanged = false;
+                        if (!isCreative && tntHeldSlot >= 0 &&
+                            tntHeldSlot < 9) {
+                            {
+                                std::lock_guard playerLock(p->stateMtx);
+                                if (p->heldSlot == tntHeldSlot) {
+                                    auto& liveHeld = p->inv[36 + tntHeldSlot];
+                                    if (!liveHeld.empty() &&
+                                        liveHeld.name() == "minecraft:flint_and_steel") {
+                                        if (liveHeld.applyDamage(1))
+                                            liveHeld = ItemStack::air();
+                                        inventoryChanged = true;
+                                    }
+                                }
+                            }
                         }
-                        cancelMiningDig(*this, *p);
+                        if (inventoryChanged)
+                            resendInventory(*p);
                         continue;
                     } else if (isUnstable && !isCreative) {
-                        spawnPrimedTntFor(p->dimension, p->digX + 0.5,
-                                          p->digY + 0.5, p->digZ + 0.5,
+                        spawnPrimedTntFor(dimension, digX + 0.5,
+                                          digY + 0.5, digZ + 0.5,
                                           0, 0.2, 0, 80);
-                        broadcastSoundFor(p->dimension,
+                        broadcastSoundFor(dimension,
                                           "minecraft:entity.tnt.primed",
-                                          p->digX + 0.5, p->digY + 0.5,
-                                          p->digZ + 0.5, 1.f, 1.f, "block");
-                        cancelMiningDig(*this, *p);
+                                          digX + 0.5, digY + 0.5,
+                                          digZ + 0.5, 1.f, 1.f, "block");
                         continue;
                     }
                 }
             }
-            if (p->heldSlot >=0 && p->heldSlot <9) {
-                auto &held = p->inv[36 + p->heldSlot];
-                if (!held.empty() && ItemStack::maxDamageFor(held.itemId) > 0) {
-                    if (DamageComponent::applyDamage(held, 1)) held = ItemStack::air();
-                    resendInventory(*p);
+            bool inventoryChanged = false;
+            ItemStack heldStackForDrops;
+            {
+                std::lock_guard playerLock(p->stateMtx);
+                const std::int32_t completionHeldSlot = p->heldSlot;
+                if (completionHeldSlot >= 0 && completionHeldSlot < 9) {
+                    auto& held = p->inv[36 + completionHeldSlot];
+                    if (!held.empty() &&
+                        ItemStack::maxDamageFor(held.itemId) > 0) {
+                        if (DamageComponent::applyDamage(held, 1))
+                            held = ItemStack::air();
+                        inventoryChanged = true;
+                    }
+                    heldStackForDrops = held;
                 }
             }
+            if (inventoryChanged) resendInventory(*p);
             if (!ev.dropItems) {
-                cancelMiningDig(*this, *p);
                 continue;
             }
 
             const std::string bn = blockNameByState(oldState);
             if (canHarvest) {
-                ItemStack heldStack;
-                if (p->heldSlot >= 0 && p->heldSlot <9) heldStack = p->inv[36 + p->heldSlot];
                 std::vector<ItemStack> drops;
-                if (heldStack.hasSilkTouch()) {
+                if (shulkerContentsDrop) {
+                    drops.push_back(*shulkerContentsDrop);
+                } else if (heldStackForDrops.hasSilkTouch()) {
                     if (bn != "minecraft:air") {
                         auto ii = gen::itemIdByName().find(bn);
                         if (ii != gen::itemIdByName().end())
                             drops.push_back(ItemStack::of(ii->second, 1));
                     }
                 } else if (bn != "minecraft:glass") {
-                    drops = lootTables_.evaluate(bn, heldStack);
-                    if (drops.empty()) {
+                    if (datapackManager_.lootTables.findBlockTable(bn)) {
+                        drops = datapackManager_.lootTables.evaluateWithContext(
+                            bn, heldStackForDrops, &playerLootContext);
+                    } else {
                         static const std::unordered_map<std::string,std::string> kOv{
                             {"minecraft:grass_block","minecraft:dirt"},
                             {"minecraft:stone","minecraft:cobblestone"}};
@@ -270,17 +568,47 @@ void GameServer::tickDigs() {
                 }
                 for (auto &st : drops) {
                     if (st.empty()) continue;
-                    spawnItemDropFor(p->dimension, p->digX + .5,
-                                     p->digY + .25, p->digZ + .5, st,
+                    spawnItemDropFor(dimension, digX + .5,
+                                     digY + .25, digZ + .5, st,
                                      (nextRandom()/(double)RAND_MAX-.5)*.15,
                                      .12,
                                      (nextRandom()/(double)RAND_MAX-.5)*.15);
                 }
             }
-            cancelMiningDig(*this, *p);
+            for (const auto& stack : containerContentsDrops)
+                spawnItemDropFor(dimension, digX + .5,
+                                 digY + .25, digZ + .5, stack,
+                                 (nextRandom() / static_cast<double>(RAND_MAX) - .5) * .15,
+                                 .12,
+                                 (nextRandom() / static_cast<double>(RAND_MAX) - .5) * .15);
         }
     }
 }
+void GameServer::drainLightUpdatesFor(const std::int8_t dimension) {
+    World& world = worldFor(dimension);
+    LightEngine& light = lightsFor(dimension);
+    // Keep the drain and matching chunk-light snapshots in one World mutation
+    // epoch.  Tick broadcasts enqueue frames asynchronously, so this gate is
+    // not held across socket I/O and a later block edit cannot overtake them.
+    auto mutationGate = world.lockMutationGate();
+    const LightUpdateBatch batch = light.drain();
+    for (const auto key : batch.dirtyChunks) {
+        const auto [cx, cz] = chunkKeyDecode(key);
+        // LevelChunkWithLight bodies contain the chunk's current light arrays.
+        // Updating current viewers with UpdateLight is not enough: a later
+        // viewer may receive this cached body without that update.
+        invalidateChunkCacheFor(dimension, cx, cz);
+        const auto geometry = world.verticalGeometry();
+        world.withChunk(cx, cz, [&](const Chunk& chunk) {
+            WriteBuffer body;
+            serializeUpdateLightBody(body, cx, cz, chunk,
+                                     geometry);
+            broadcastPacketExceptInDimension(dimension, nullptr,
+                                             pl::sc::UpdateLight, body);
+        });
+    }
+}
+
 void GameServer::tickOnce() {
     SimulationDispatchGuard simulationLock(simulationDispatchMtx_);
     // JVM-created workers can only mutate game state through this queue.  Run
@@ -304,6 +632,9 @@ void GameServer::tickOnce() {
     }
     craftersTick();
     tickDigs();
+    for (Session* session : activeSessions_) {
+        if (session) session->tickConsumableUse();
+    }
     survivalTick();
     furnacesTick();
     brewingTick();
@@ -337,26 +668,11 @@ void GameServer::tickOnce() {
         }
     }
 
-    // Each dimension owns a light queue.  Draining them independently keeps
-    // an UpdateLight packet from describing a same-coordinate chunk in the
-    // wrong world.
-    auto drainLight = [this](std::int8_t dimension, LightEngine& light,
-                             World& world) {
-        const LightUpdateBatch batch = light.drain();
-        for (auto k : batch.dirtyChunks) {
-            auto [cx, cz] = chunkKeyDecode(k);
-            world.withChunk(cx, cz, [&](const Chunk& c) {
-                WriteBuffer b;
-                serializeUpdateLightBody(b, cx, cz, c);
-                broadcastPacketExceptInDimension(dimension, nullptr,
-                                                 pl::sc::UpdateLight, b);
-            });
-        }
-    };
-    drainLight(0, lightsFor(0), worldFor(0));
-    for (int i = 0; i < 2; ++i)
-        drainLight(i == 0 ? -1 : 1, lightsFor(i == 0 ? -1 : 1),
-                   worldFor(i == 0 ? -1 : 1));
+    // Drain each dimension's queue separately so an UpdateLight packet never
+    // describes the same coordinates in a different world.
+    drainLightUpdatesFor(0);
+    drainLightUpdatesFor(-1);
+    drainLightUpdatesFor(1);
 
     // periodic progress save every 20 s (play_time accrual + crash safety)
     if (tickNo_ % 400 == 0) {
@@ -388,21 +704,17 @@ void GameServer::tickOnce() {
             std::fprintf(stderr, "[cppfm] periodic level.dat save failed\n");
         }
     }
-    // WorldBorder lerp tick interpolation — Yarn WorldBorder.tick()
-    {
-        bool changed = tickWorldBorder();
-        if (auto* persistence = persistenceFor(0))
-            changed |= persistence->tickWorldBorder();
-        if (changed && tickNo_ % 20 == 0) {
-            // periodically broadcast interpolated size to keep client in sync (lerp packet)
+    // Persistence owns the single authoritative world-border interpolation
+    // state; ticking it here also keeps the next level.dat snapshot current.
+    if (auto* persistence = persistenceFor(0)) {
+        if (persistence->tickWorldBorder() && tickNo_ % 20 == 0)
             broadcastWorldBorder();
-        }
     }
     // WanderingTrader scheduling — vanilla 24000 delay + chance (doTraderSpawning)
     tickWanderingTrader();
     // B-12 thunder lightning + weather cycle (doWeatherCycle gate inside weatherTick)
     weatherTick();
-    tickScheduledFunctions();
+    tickScheduledFunctions(simulationLock);
     for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateTickAdvancements(*pp);
     if (tickNo_ % 20 == 0) {
         for (auto& pp : playersSnapshot()) if (pp->inPlay) evaluateLocationTrigger(*pp);
@@ -431,41 +743,12 @@ void GameServer::drainPendingStructureQueues() {
         auto& blockEntities = blockEntitiesFor(dimension);
         auto* sm = w.structureManager();
         if(!sm) return;
-        std::vector<worldgen::StructureManager::PendingLoot> loots;
-        sm->drainPendingLoot(loots);
-        for(auto &pl : loots){
-            auto drops = lootTables_.evaluate(pl.lootTable);
-            int x=pl.pos[0], y=pl.pos[1], z=pl.pos[2];
-            auto beOwner = blockEntities.getShared(posKey(x, y, z));
-            if (!beOwner)
-                beOwner = blockEntities.createShared(
-                    posKey(x, y, z), BlockEntity::Kind::Chest);
-            std::lock_guard entityLock(*beOwner->stateMtx);
-            auto* be = beOwner.get();
-            if(be->kind != BlockEntity::Kind::Chest){
-                be->kind = BlockEntity::Kind::Chest;
-                for(int i=0;i<ChestData::kSlots;++i) be->chest.slots[i]=ItemStack::air();
-            }
-            for(int i=0;i<ChestData::kSlots;++i) be->chest.slots[i]=ItemStack::air();
-            if(drops.empty()){
-                std::fprintf(stderr,"[cppfm] pending loot %s at %d %d %d => 0 drops\n", pl.lootTable.c_str(), x,y,z);
-            }
-            std::unordered_set<int> used;
-            for(auto &st : drops){
-                if(st.empty()) continue;
-                int slot=-1;
-                for(int attempt=0; attempt<10; ++attempt){
-                    int cand = nextRandom() % ChestData::kSlots;
-                    if(!used.count(cand)){ slot=cand; break; }
-                }
-                if(slot==-1) slot = nextRandom()%ChestData::kSlots;
-                used.insert(slot);
-                be->chest.slots[slot]=st;
-            }
-            blockEntities.markDirty(posKey(x,y,z));
-            if(!drops.empty())
-                std::fprintf(stderr,"[cppfm] pending loot %s at %d %d %d => %zu stacks\n", pl.lootTable.c_str(), x,y,z, drops.size());
-        }
+        const auto lootResult = drainPendingStructureLoot(
+            w, blockEntities, *sm, tickNo_);
+        if (lootResult.deferred != 0)
+            std::fprintf(stderr,
+                         "[cppfm] deferred %zu generated loot record(s) in dimension %d\n",
+                         lootResult.deferred, static_cast<int>(dimension));
         std::vector<worldgen::StructureManager::PendingMob> mobs;
         sm->drainPendingMobs(mobs);
         for(auto &pm : mobs){
@@ -488,10 +771,7 @@ void GameServer::drainPendingStructureQueues() {
                 mob->lastSeenMs = nowMs();
                 if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, mob->x, mob->y, mob->z))
                     continue;
-                {
-                    std::lock_guard<std::mutex> lk(entsMtx_);
-                    mobs_.push_back(mob);
-                }
+                addMob(mob);
                 broadcastMobSpawn(*mob);
                 std::fprintf(stderr,"[cppfm] pending mob %s at %d %d %d id %d\n", pm.mob.c_str(), pm.pos[0], pm.pos[1], pm.pos[2], mob->entityId);
             }
@@ -501,6 +781,67 @@ void GameServer::drainPendingStructureQueues() {
     process(worldFor(-1), -1);
     process(worldFor(1), 1);
 }
+
+bool GameServer::flushPendingStructureLootForShutdown() noexcept {
+    constexpr std::size_t kMaxDrainPasses = 64;
+    const auto drainDimension = [this](std::int8_t dimension) {
+        auto& world = worldFor(dimension);
+        auto* structures = world.structureManager();
+        if (!structures) return PendingStructureLootDrainResult{};
+
+        if (!loadChunksForPendingStructureLoot(world, *structures))
+            std::fprintf(stderr,
+                         "[Persistence] shutdown could not load every pending-loot chunk in dimension %d\n",
+                         static_cast<int>(dimension));
+        return drainPendingStructureLoot(
+            world, blockEntitiesFor(dimension), *structures,
+            std::numeric_limits<std::int64_t>::max());
+    };
+
+    try {
+        for (std::size_t pass = 0; pass < kMaxDrainPasses; ++pass) {
+            std::size_t pending = 0;
+            for (const std::int8_t dimension : {
+                     std::int8_t{0}, std::int8_t{-1}, std::int8_t{1}}) {
+                if (const auto* structures =
+                        worldFor(dimension).structureManager())
+                    pending += structures->pendingLootCount();
+            }
+            if (pending == 0) return true;
+
+            std::size_t progress = 0;
+            for (const std::int8_t dimension : {
+                     std::int8_t{0}, std::int8_t{-1}, std::int8_t{1}}) {
+                const auto result = drainDimension(dimension);
+                progress += result.persisted + result.discarded;
+            }
+            if (progress == 0) break;
+        }
+
+        std::size_t remaining = 0;
+        for (const std::int8_t dimension : {
+                 std::int8_t{0}, std::int8_t{-1}, std::int8_t{1}}) {
+            if (const auto* structures = worldFor(dimension).structureManager())
+                remaining += structures->pendingLootCount();
+        }
+        if (remaining != 0) {
+            std::fprintf(stderr,
+                         "[Persistence] shutdown could not transfer %zu pending structure-loot record(s) to Block Entity NBT; affected chunks remain save-blocked\n",
+                         remaining);
+            return false;
+        }
+        return true;
+    } catch (const std::exception& error) {
+        std::fprintf(stderr,
+                     "[Persistence] shutdown structure-loot drain failed: %s\n",
+                     error.what());
+    } catch (...) {
+        std::fprintf(stderr,
+                     "[Persistence] shutdown structure-loot drain failed\n");
+    }
+    return false;
+}
+
 bool GameServer::isChunkInSimulationDistanceFor(std::int8_t dimension,
                                                 std::int32_t cx,
                                                 std::int32_t cz) const {
@@ -537,6 +878,7 @@ void GameServer::chunksUnloadTick() {
     // live 384-high chunks even though only the configured radius was active.
     const int unloadDist = std::max(sim, view) * 16;
     auto doWorld = [&](World &w, Persistence *pp, std::int8_t dim) {
+        const auto* structures = w.structureManager();
         auto keys = w.allChunkKeys();
         std::vector<std::int64_t> toErase;
         toErase.reserve(keys.size());
@@ -545,6 +887,8 @@ void GameServer::chunksUnloadTick() {
             auto [cx, cz] = chunkKeyDecode(k);
             // W17/W19: keep both FORCED and SPAWN (level 31) tickets from unloading
             if (w.isForcedKey(k) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn) continue;
+            if (structures && structures->hasPendingLootInChunk(cx, cz))
+                continue;
             bool near = false;
             for (auto &pl : players) {
                 if (!pl->inPlay) continue;
@@ -560,8 +904,14 @@ void GameServer::chunksUnloadTick() {
             for (auto &pl : players) if (pl->inPlay && pl->dimension == dim) { anyInDim = true; break; }
             if (!anyInDim && (w.isForced(cx, cz) || w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)) continue;
             if (pp && pp->isDirty(cx, cz)) {
-                saveChunkAsyncFor(dim, cx, cz);
-                pp->markClean(cx, cz);
+                const auto key = dimensionChunkKey(dim, cx, cz);
+                if (!chunkSaveCoordinator_->hasPendingWrite(key) &&
+                    pp->isDirty(cx, cz))
+                    saveChunkAsyncFor(dim, cx, cz);
+                // Keep the in-memory chunk until a write is confirmed durable.
+                // On failure the dirty version remains and the next unload tick
+                // retries instead of discarding the only current copy.
+                continue;
             }
             toErase.push_back(k);
             invalidateChunkCacheFor(dim, cx, cz);
@@ -588,6 +938,8 @@ void GameServer::chunksUnloadTick() {
                         if (already.count(k)) continue;
                         auto [cx, cz] = chunkKeyDecode(k);
                         if (w.isForcedKey(k) || w.ticketLevel(cx,cz) <= constants::kTicketLevelSpawn) continue;
+                        if (structures && structures->hasPendingLootInChunk(cx, cz))
+                            continue;
                         candidates.push_back(k);
                     }
                     auto distToNearest = [&](std::int32_t cx, std::int32_t cz) -> double {
@@ -615,7 +967,13 @@ void GameServer::chunksUnloadTick() {
                     if (need > kMaxUnloadPerTick) need = kMaxUnloadPerTick;
                     for (size_t i=0;i<need;++i) {
                         auto [cx, cz] = chunkKeyDecode(candidates[i]);
-                        if (pp && pp->isDirty(cx, cz)) pp->flushChunk(cx, cz);
+                        if (pp && pp->isDirty(cx, cz)) {
+                            const auto key = dimensionChunkKey(dim, cx, cz);
+                            if (!chunkSaveCoordinator_->hasPendingWrite(key) &&
+                                pp->isDirty(cx, cz))
+                                saveChunkAsyncFor(dim, cx, cz);
+                            continue;
+                        }
                         toErase.push_back(candidates[i]);
                         invalidateChunkCacheFor(dim, cx, cz);
                     }
@@ -624,10 +982,47 @@ void GameServer::chunksUnloadTick() {
         }
         for (auto k : toErase) {
             auto [cx, cz] = chunkKeyDecode(k);
-            if (w.eraseChunk(cx, cz)) {
-                std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
-                             (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
+            bool becameDirty = false;
+            std::unique_lock<std::mutex> cleanChunkGuard;
+            // Keep the World publication gate across both chunk removal and
+            // sidecar eviction. eraseChunkIf takes this gate recursively, but
+            // its local guard ends on return; without this outer lease a
+            // streaming/load thread can republish the chunk and its block
+            // entities before the stale sidecars are forgotten below.
+            auto chunkEvictionGate = w.lockMutationGate();
+            const bool erased = w.eraseChunkIf(cx, cz, [&] {
+                // Candidate selection happens earlier and can race a new
+                // force/spawn ticket. Recheck every non-evictable condition
+                // while World serializes this predicate with ticket updates.
+                if (w.isForcedKey(k) ||
+                    w.ticketLevel(cx, cz) <= constants::kTicketLevelSpawn)
+                    return false;
+                if (structures && structures->hasPendingLootInChunk(cx, cz))
+                    return false;
+                if (!pp) return true;
+                cleanChunkGuard =
+                    pp->lockChunkIfCleanForEviction(cx, cz);
+                if (cleanChunkGuard.owns_lock()) return true;
+                becameDirty = true;
+                return false;
+            });
+            if (!erased) {
+                if (becameDirty) {
+                    const auto key = dimensionChunkKey(dim, cx, cz);
+                    if (!chunkSaveCoordinator_->hasPendingWrite(key))
+                        saveChunkAsyncFor(dim, cx, cz);
+                }
+                continue;
             }
+            if (pp) pp->forgetOpaqueChunkRootNbt(cx, cz);
+            // The chunk has been persisted and removed from World while the
+            // simulation and dirty-state eviction gates are still held. Drop
+            // its separately-owned block-entity cache now as well; otherwise
+            // every visited chunk remains resident in BlockEntityStore.
+            blockEntitiesFor(dim).forgetChunk(cx, cz);
+            if (cleanChunkGuard.owns_lock()) cleanChunkGuard.unlock();
+            std::fprintf(stderr, "[cppfm] unload chunk dim=%d %d,%d (dist>%d) remaining=%zu\n",
+                         (int)dim, cx, cz, unloadDist, w.loadedChunkCount());
         }
     };
     doWorld(worldFor(0), persistenceFor(0), 0);
@@ -669,6 +1064,7 @@ void GameServer::flushBlockBatches() {
     lastBlockBatchFlushMs_ = now;
 }
 void GameServer::survivalTick() {
+    const auto worldBorder = worldBorderSnapshot();
     for (auto& pp : playersSnapshot()) {
         auto* p = pp.get();
         if (!p->inPlay || !p->spawned || p->dead) continue;
@@ -687,7 +1083,8 @@ void GameServer::survivalTick() {
         // natural regeneration / starvation (modular: HungerManager)
         HungerManager::tickRegenAndStarve(*p, tickNo_, *this);
         // void damage
-        if (p->y < kMinY - 16) applyDamage(*p, 4.f, "fell out of the world");
+        if (p->y < worldFor(p->dimension).minY() - 16)
+            applyDamage(*p, 4.f, "fell out of the world");
 
         {
             bool hasWaterBreathing = false;
@@ -810,9 +1207,9 @@ void GameServer::survivalTick() {
             }
         }
         {
-            double half = worldBorderDiameter_ * 0.5;
-            double dx = std::abs(p->x - worldBorderCenterX_);
-            double dz = std::abs(p->z - worldBorderCenterZ_);
+            double half = worldBorder.diameter * 0.5;
+            double dx = std::abs(p->x - worldBorder.centerX);
+            double dz = std::abs(p->z - worldBorder.centerZ);
             double furthest = std::max(dx, dz);
             double outside = furthest - half;
             if (outside > 0) {
@@ -915,6 +1312,7 @@ void GameServer::trySpawnMobs() {
                 mobs_.push_back(mob);
                 ++cnts[group];
             }
+            if (jvmRuntime_) jvmRuntime_->onMobLoad(*mob);
             broadcastMobSpawn(*mob);
             return true;
         };
@@ -924,12 +1322,22 @@ void GameServer::trySpawnMobs() {
             const std::int32_t wx = static_cast<std::int32_t>(player.x + std::cos(ang)*dist);
             const std::int32_t wz = static_cast<std::int32_t>(player.z + std::sin(ang)*dist);
             world.generateChunkIfMissing(wx>>4, wz>>4);
-            int feet=4; bool ok=false;
+            const auto geometry = world.verticalGeometry();
+            int groundY = geometry.minY + 4;
+            bool ok=false;
             world.withChunk(wx>>4, wz>>4, [&](const Chunk& c){
-                for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry) if(c.blocks[Chunk::index(ry>>4, ry&15, wz&15, wx&15)]!=0){ feet=ry+1; ok=true; break; }
+                for (int y = geometry.maxY() - 1; y >= geometry.minY; --y) {
+                    const int storageY = geometry.storageY(y);
+                    if (c.blockAt(Chunk::index(storageY >> 4,
+                                               storageY & 15,
+                                               wz & 15, wx & 15)) != 0) {
+                        groundY = y + 1;
+                        ok = true;
+                        break;
+                    }
+                }
             });
             if(!ok) continue;
-            const int groundY = kMinY + feet;
             light.ensureSkyLight(wx>>4, wz>>4);
             const uint8_t sky = world.getSkyLight(wx,groundY,wz);
             const uint8_t blk = world.getBlockLight(wx,groundY,wz);
@@ -1076,6 +1484,10 @@ void GameServer::mobsTick() {
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
+        std::int32_t lastPlayerHurtByEntityId = -1;
+        std::int64_t lastPlayerHurtTick = -1000;
+        std::int32_t lastPlayerLootingLevel = 0;
+        bool entityOnFire = false;
         std::array<ItemStack, 6> equipment{};
         std::array<float, 2> handDropChances{};
         std::array<float, 4> armorDropChances{};
@@ -1089,11 +1501,17 @@ void GameServer::mobsTick() {
     std::unordered_set<const MobEntity*> removedPtrs;
     std::vector<std::int32_t> aiToErase;
     auto queueRemoval = [&](const std::shared_ptr<MobEntity>& mob,
-                            bool death) {
+                            bool death,
+                            const std::shared_ptr<MobAiEntry>& ai,
+                            bool deathAlreadyClaimed) {
         // queueRemoval is called with the current mob's state lock held.
         // Only copy state here; AI-map removal is deliberately deferred until
         // after the entity lock has been released.
-        if (!mob || !removedIds.insert(mob->entityId).second) return;
+        if (!mob || removedIds.contains(mob->entityId)) return;
+        if (death && !deathAlreadyClaimed &&
+            !mob->tryClaimDeathHandling())
+            return;
+        if (!removedIds.insert(mob->entityId).second) return;
         removedPtrs.insert(mob.get());
         const auto dimension = canonicalDimension(mob->dimension);
         if (death) {
@@ -1104,6 +1522,17 @@ void GameServer::mobsTick() {
             drop.x = mob->x;
             drop.y = mob->y;
             drop.z = mob->z;
+            drop.entityOnFire = mob->onFireTicks > 0;
+            if (ai && ai->ctx) {
+                drop.lastPlayerHurtByEntityId =
+                    ai->ctx->lastPlayerHurtByEntityId.load(
+                        std::memory_order_acquire);
+                drop.lastPlayerHurtTick = ai->ctx->lastPlayerHurtTick.load(
+                    std::memory_order_acquire);
+                drop.lastPlayerLootingLevel =
+                    ai->ctx->lastPlayerHurtLootingLevel.load(
+                        std::memory_order_acquire);
+            }
             drop.equipment = mob->equipment;
             drop.handDropChances = mob->handDropChances;
             drop.armorDropChances = mob->armorDropChances;
@@ -1147,10 +1576,96 @@ void GameServer::mobsTick() {
                 }
                 entityStateLock.lock();
             };
+            const auto handleDeath = [&] {
+                if (!m->tryClaimDeathHandling()) return false;
+                if (MobEntity::isBoss(m->kind) && bossAI_)
+                    withoutEntityStateLock([&] { bossAI_->onDeath(*m); });
+                withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
+                queueRemoval(m, true, ai, true);
+                return true;
+            };
             MobDimensionGuard dimensionGuard(*this, m.get());
             const auto dimension = canonicalDimension(m->dimension);
             World& world = worldFor(dimension);
             LightEngine& light = lightsFor(dimension);
+
+            // Java/Fabric discard requests are committed by this authoritative
+            // tick pass, after the request callback has unwound. Do not let a
+            // pending discard execute another AI goal before unload dispatch.
+            if (m->removalRequest == MobEntity::RemovalRequest::Discarded) {
+                queueRemoval(m, false, ai, false);
+                continue;
+            }
+
+            // Vanilla HorseBondWithPlayerGoal samples one taming attempt in
+            // 50 ticks while an untamed adult horse-like mob carries a
+            // player.  A failed roll raises temper by five and bucks the
+            // rider; a successful temper roll tames it without dismounting.
+            const auto riderEntityId = m->riderEntityId;
+            const auto riderView = std::find_if(
+                players.begin(), players.end(), [&](const PlayerTickView& p) {
+                    return p.entityId == riderEntityId && p.owner && p.inPlay &&
+                           p.spawned && !p.dead && p.dimension == dimension;
+                });
+            if (MobEntity::usesHorseTemper(m->kind) && !m->isTamed &&
+                !MobEntity::isBaby(*m) && riderEntityId != -1 &&
+                riderView != players.end() && nextRandom() % 50 == 0) {
+                const auto rider = riderView->owner;
+                const auto entityId = m->entityId;
+                const auto mountedRider = riderEntityId;
+                std::int8_t tameDimension = dimension;
+                MobEntity::HorseTamingAttempt tamingAttempt =
+                    MobEntity::HorseTamingAttempt::NotApplicable;
+                bool buckedRider = false;
+                withoutEntityStateLock([&] {
+                    std::scoped_lock stateLock(rider->stateMtx,
+                                               *m->stateMtx);
+                    if (m->dead || m->entityId != entityId || m->isTamed ||
+                        MobEntity::isBaby(*m) ||
+                        !MobEntity::usesHorseTemper(m->kind) ||
+                        m->riderEntityId != mountedRider || !rider->inPlay ||
+                        rider->dead || rider->vehicleId != entityId ||
+                        canonicalDimension(rider->dimension) != tameDimension)
+                        return;
+                    tamingAttempt = m->attemptHorseTaming(
+                        static_cast<std::int32_t>(nextRandom() %
+                            MobEntity::kMaxHorseTemper));
+                    if (tamingAttempt ==
+                        MobEntity::HorseTamingAttempt::Failed) {
+                        m->riderEntityId = -1;
+                        rider->vehicleId = -1;
+                        buckedRider = true;
+                    }
+                });
+                if (tamingAttempt !=
+                    MobEntity::HorseTamingAttempt::NotApplicable) {
+                    // Publish only after releasing the live mob lock. In
+                    // particular broadcastSetPassengers snapshots that same
+                    // mob and would recursively lock its non-recursive mutex.
+                    withoutEntityStateLock([&] {
+                        WriteBuffer status;
+                        status.i32(entityId);
+                        status.i8(tamingAttempt ==
+                                          MobEntity::HorseTamingAttempt::Tamed
+                                      ? 7 : 6);
+                        broadcastPacketExceptInDimension(
+                            tameDimension, nullptr, pl::sc::EntityEvent,
+                            status);
+                        if (tamingAttempt ==
+                            MobEntity::HorseTamingAttempt::Tamed) {
+                            WriteBuffer metadata;
+                            metadata.varint(entityId);
+                            meta::writeMetaByte(metadata, 17, 2);
+                            metadata.u8(255);
+                            broadcastPacketExceptInDimension(
+                                tameDimension, nullptr,
+                                pl::sc::SetEntityMetadata, metadata);
+                        } else if (buckedRider) {
+                            broadcastSetPassengers(entityId);
+                        }
+                    });
+                }
+            }
             bool nearPlayer = false;
             for (const auto& pp : players) {
                 if (!pp.inPlay || !pp.spawned || pp.dead || pp.dimension != dimension)
@@ -1158,10 +1673,12 @@ void GameServer::mobsTick() {
                 double dx = pp.x - m->x, dz = pp.z - m->z;
                 if (dx*dx + dz*dz < 60*60) { nearPlayer = true; break; }
             }
+            if (m->dead) {
+                handleDeath();
+                continue;
+            }
             if (!nearPlayer) {
-                if (MobEntity::isBoss(m->kind) && bossAI_)
-                    withoutEntityStateLock([&] { bossAI_->onDeath(*m); });
-                queueRemoval(m, false);
+                queueRemoval(m, false, ai, false);
                 continue;
             }
 
@@ -1181,17 +1698,13 @@ void GameServer::mobsTick() {
                     if (inWater) m->onFireTicks = 0;
                 }
                 if (m->dead) {
-                    queueRemoval(m, true);
+                    handleDeath();
                     continue;
                 }
             }
             // dead check (generic, includes combat/arrow etc) with slime split
             if (m->dead) {
-                if (MobEntity::isBoss(m->kind) && bossAI_)
-                    withoutEntityStateLock([&] { bossAI_->onDeath(*m); });
-                // slime / magma cube split
-                withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
-                queueRemoval(m, true);
+                handleDeath();
                 continue;
             }
             // aging: babies grow up
@@ -1201,6 +1714,7 @@ void GameServer::mobsTick() {
                 md.varint(m->entityId);
                 md.u8(16); md.u8(0);                     // index16 byte = adult
                 md.u8(0);
+                md.u8(255);
                 broadcastPacketExceptInDimension(dimension, nullptr,
                                                  pl::sc::SetEntityMetadata, md);
             }
@@ -1214,8 +1728,7 @@ void GameServer::mobsTick() {
                         applyDamageToMob(*m, 1.f, "burned to death");
                     });
                     if (m->dead) {
-                        withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
-                        queueRemoval(m, true);
+                        handleDeath();
                         continue;
                     }
                 }
@@ -1223,7 +1736,7 @@ void GameServer::mobsTick() {
 
             if (m->kind == MobKind::Creaking && m->creakingTransient) {
                 if (!isNight()) {
-                    queueRemoval(m, false);
+                    queueRemoval(m, false, ai, false);
                     continue;
                 }
                 if (m->hasCreakingHeart) {
@@ -1245,7 +1758,7 @@ void GameServer::mobsTick() {
                         }
                     }
                     if (m->dead) {
-                        queueRemoval(m, true);
+                        handleDeath();
                         continue;
                     }
                     // same-block 5s respawn near heart (vanilla softlock): if within same block as player >5s, respawn near heart
@@ -1338,7 +1851,7 @@ void GameServer::mobsTick() {
                         WriteBuffer rm; rm.varint(1); rm.varint(eid);
                         broadcastPacketExceptInDimension(
                             dimension, nullptr, pl::sc::RemoveEntities, rm);
-                        queueRemoval(m, false);
+                        queueRemoval(m, false, ai, false);
                         explosions.push_back({dimension, cxp, cyp + 0.5, czp,
                                               charged ? 6.f : 3.f});
                         continue;
@@ -1373,8 +1886,7 @@ void GameServer::mobsTick() {
                         applyDamageToMob(*m, 1.f, "burned to death");
                     });
                 if (m->dead) {
-                    withoutEntityStateLock([&] { spawnSlimeSplit(*m); });
-                    queueRemoval(m, true);
+                    handleDeath();
                     continue;
                 }
             }
@@ -1413,13 +1925,14 @@ void GameServer::mobsTick() {
                 b.i16((std::int16_t)((m->x-m->sentX) * 4096));
                 b.i16((std::int16_t)((m->y-m->sentY) * 4096));
                 b.i16((std::int16_t)((m->z-m->sentZ) * 4096));
-                b.i8((std::int8_t)(m->yaw * constants::kAngleScaleNum / constants::kAngleScaleDen));
+                b.i8(constants::protocolSignedAngleByte(m->yaw));
                 b.i8(0);
                 b.boolean(true);
                 moves.push_back({dimension, m, std::move(b)});
                 m->sentX=m->x; m->sentY=m->y; m->sentZ=m->z; m->hasSent=true;
             }
     }
+    for (const auto& mob : removed) invalidateJvmMob(mob);
     {
         std::lock_guard lk(entsMtx_);
         mobs_.erase(std::remove_if(mobs_.begin(), mobs_.end(),
@@ -1436,7 +1949,6 @@ void GameServer::mobsTick() {
     for (const auto& explosion : explosions)
         explodeAtFor(explosion.dimension, explosion.x, explosion.y,
                      explosion.z, explosion.power);
-    for (const auto& mob : removed) invalidateJvmMob(mob);
     for (const auto& removal : despawn) {
         WriteBuffer b;
         b.varint(1); b.varint(removal.entityId);
@@ -1444,34 +1956,19 @@ void GameServer::mobsTick() {
                                          pl::sc::RemoveEntities, b);
     }
     for (const auto& m : drops) {
-        bool spawnedViaLoot = false;
-        {
-            std::string kindName = MobEntity::kindName(m.kind);
-            std::string base = kindName.find(':')!=std::string::npos ? kindName.substr(kindName.find(':')+1) : kindName;
-            std::string tblId = "minecraft:entities/" + base;
-            if (lootTables_.find(tblId)) {
-                LootContext ctx;
-                // try to get looting from killer's tool if available (fallback 0)
-                ctx.lootingLevel = 0;
-                ctx.fortuneLevel = 0;
-                auto loot = lootTables_.evaluateEntity(kindName, &ctx);
-                for (auto& st : loot) {
-                    if (st.empty()) continue;
-                    spawnItemDropFor(m.dimension, m.x, m.y + 0.4, m.z, st,
-                                     (nextRandom()/(double)RAND_MAX-.5)*.15,
-                                     .1, (nextRandom()/(double)RAND_MAX-.5)*.15);
-                    spawnedViaLoot = true;
-                }
-            }
-        }
-        if (!spawnedViaLoot) {
-            const auto drop = MobEntity::dropFor(m.kind);
-            if (drop.itemId)
-                spawnItemDropFor(m.dimension, m.x, m.y + 0.4, m.z,
-                                 drop.itemId, drop.count,
-                                 (nextRandom()/(double)RAND_MAX-.5)*.15, .1,
-                                 (nextRandom()/(double)RAND_MAX-.5)*.15);
-        }
+        LootContext context;
+        context.hasEntityContext = true;
+        context.entityOnFire = m.entityOnFire;
+        const bool recentPlayerDamage = m.lastPlayerHurtByEntityId >= 0 &&
+            m.lastPlayerHurtTick >= 0 &&
+            tickNo_ >= m.lastPlayerHurtTick &&
+            tickNo_ - m.lastPlayerHurtTick <= 100;
+        context.wasKilledByPlayer = recentPlayerDamage;
+        context.lootingLevel = recentPlayerDamage
+            ? m.lastPlayerLootingLevel : 0;
+
+        spawnMobLootFor(m.kind, m.dimension, m.x, m.y + 0.4, m.z,
+                        context);
         for (int es=0; es<6; ++es) {
             if (m.equipment[es].empty()) continue;
             float chance = 0.085f;

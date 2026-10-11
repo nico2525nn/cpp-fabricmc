@@ -1,13 +1,15 @@
 // test_redstone_engine_full — plan44 G-12: RedstoneEngine verification via public API.
 // Policy: every assert drives World + RedstoneEngine (onBlockChanged/tick) and
 // reads back block states. No constant-vs-constant checks.
-// Categories (7x3+ = 23 asserts): wire / comparator / repeater / lamp+door /
-// rails / dispenser-dropper-hopper / QC.
+// Coverage spans wire/comparators/repeaters/doors/rails/automation/QC,
+// plus piston transaction, save-barrier, bounds, and concurrency behavior.
 #include <cstdio>
 #include <cstdint>
+#include <algorithm>
 #include <atomic>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "core/ByteBuffer.hpp"
@@ -24,6 +26,7 @@ static int g_pass = 0;
 static int g_fail = 0;
 static int g_total = 0;
 static const char* curSection = "";
+static constexpr std::size_t kTestBlockEntityNbtBudget = 2048;
 
 static void CHECK(bool cond, const char* name) {
     ++g_total;
@@ -90,12 +93,18 @@ static void test_wire() {
 // readout wire in front (z-1)
 static void fillChest(Rig& rig, std::uint32_t item, int countPerSlot, int slots) {
     rig.world.setBlock(0, 2, 1, stateByName("minecraft:chest"));
-    BlockEntity& be = rig.bes.create(posKey(0, 2, 1), BlockEntity::Kind::Chest);
+    auto owner = rig.bes.createShared(posKey(0, 2, 1),
+                                     BlockEntity::Kind::Chest);
+    std::lock_guard entityLock(*owner->stateMtx);
+    BlockEntity& be = *owner;
     for (int i = 0; i < slots; ++i) be.chest.slots[i] = ItemStack::of(item, (std::int16_t)countPerSlot);
 }
 static void fillHopper(Rig& rig, std::uint32_t item, int countPerSlot, int slots) {
     rig.world.setBlock(0, 2, 1, stateByName("minecraft:hopper"));
-    BlockEntity& be = rig.bes.create(posKey(0, 2, 1), BlockEntity::Kind::Hopper);
+    auto owner = rig.bes.createShared(posKey(0, 2, 1),
+                                     BlockEntity::Kind::Hopper);
+    std::lock_guard entityLock(*owner->stateMtx);
+    BlockEntity& be = *owner;
     be.generic.slotCount = 5;
     for (int i = 0; i < slots; ++i) be.generic.slots[i] = ItemStack::of(item, (std::int16_t)countPerSlot);
 }
@@ -114,7 +123,7 @@ static void test_comparator() {
         Rig rig;
         rig.place(0, 2, 0, compState("compare"));
         rig.world.setBlock(0, 2, 1, stateByName("minecraft:chest"));
-        rig.bes.create(posKey(0, 2, 1), BlockEntity::Kind::Chest);
+        rig.bes.createShared(posKey(0, 2, 1), BlockEntity::Kind::Chest);
         rig.place(0, 2, -1, wireWith(0));
         rig.engine.onBlockChanged(0, 2, 0);
         rig.step(2);
@@ -338,9 +347,510 @@ static void test_qc() {
     CHECK(!rig.engine.isQuasiPowered(0, 2, 0), "piston QC off after source removal");
 }
 
+static void test_block_entity_batch_capacity() {
+    curSection = "BE BATCH CAPACITY";
+    std::printf("\n[8] block-entity batch capacity preflight\n");
+    const auto first = posKey(0, 2, 0);
+    const auto second = posKey(1, 2, 0);
+    const auto otherChunk = posKey(32, 2, 0);
+
+    {
+        BlockEntityStore store(-64, 320, 2, 1024, 2,
+                               kTestBlockEntityNbtBudget);
+        const auto duplicate = store.tryCreateSharedBatch(
+            {first, first}, BlockEntity::Kind::MovingPiston);
+        CHECK(!duplicate && store.size() == 0,
+              "duplicate keys reject the whole batch without records");
+
+        const auto accepted = store.tryCreateSharedBatch(
+            {first, second}, BlockEntity::Kind::MovingPiston);
+        CHECK(accepted && accepted->size() == 2 && store.size() == 2 &&
+                  store.getShared(first) == accepted->at(0) &&
+                  store.getShared(second) == accepted->at(1),
+              "a fitting batch publishes every owner");
+
+        const auto originalOwner = store.getShared(first);
+        const auto existing = store.tryCreateSharedBatch(
+            {first, otherChunk}, BlockEntity::Kind::MovingPiston);
+        CHECK(!existing && store.size() == 2 &&
+                  store.getShared(first) == originalOwner &&
+                  !store.getShared(otherChunk),
+              "an existing typed key rejects without replacing or partially adding");
+    }
+    {
+        BlockEntityStore store(-64, 320, 1, 1024, 2,
+                               kTestBlockEntityNbtBudget);
+        const auto overChunk = store.tryCreateSharedBatch(
+            {first, second}, BlockEntity::Kind::MovingPiston);
+        CHECK(!overChunk && store.size() == 0,
+              "aggregate per-chunk cap rejects a multi-record batch atomically");
+    }
+    {
+        BlockEntityStore store(-64, 320, 1, 1024, 1,
+                               kTestBlockEntityNbtBudget);
+        const auto overStore = store.tryCreateSharedBatch(
+            {first, otherChunk}, BlockEntity::Kind::MovingPiston);
+        CHECK(!overStore && store.size() == 0,
+              "aggregate store cap rejects records across chunks atomically");
+    }
+    {
+        nbt::Value root = nbt::Value::makeCompound();
+        nbt::Value entries = nbt::Value::makeList(nbt::Compound);
+        nbt::Value opaque = nbt::Value::makeCompound();
+        opaque.set("id", nbt::Value::makeString("example:opaque_block_entity"));
+        opaque.set("x", nbt::Value::makeInt(0));
+        opaque.set("y", nbt::Value::makeInt(2));
+        opaque.set("z", nbt::Value::makeInt(0));
+        entries.list.push_back(std::move(opaque));
+        root.set("block_entities", std::move(entries));
+
+        BlockEntityStore store(-64, 320, 2, 16 * 1024, 2,
+                               32 * 1024);
+        store.readChunkNbt(root);
+        const auto withOpaque = store.tryCreateSharedBatch(
+            {first, second}, BlockEntity::Kind::MovingPiston);
+        CHECK(!withOpaque && store.size() == 1 &&
+                  store.containsAt(0, 2, 0) && !store.getShared(second),
+              "an opaque raw key rejects the entire batch without promotion");
+    }
+}
+
+struct BoundedPistonRig {
+    World world;
+    BlockEntityStore bes;
+    RedstoneEngine engine;
+    std::int64_t tick = 0;
+
+    BoundedPistonRig(std::size_t maxChunkRecords,
+                     std::size_t maxStoreRecords)
+        : world("minecraft:plains", LevelType::Flat, 0),
+          bes(-64, 320, maxChunkRecords, 1024, maxStoreRecords,
+              kTestBlockEntityNbtBudget),
+          engine(world) {
+        engine.setTickRef(&tick);
+        engine.setBlockEntityStore(&bes);
+    }
+
+    void step(std::int64_t count) {
+        while (count-- > 0) engine.tick(++tick);
+    }
+};
+
+static void test_piston_batch_capacity_rejection() {
+    curSection = "PISTON BE CAPACITY";
+    std::printf("\n[9] piston extension/retraction BE batch budget rejection\n");
+    const auto fillerKey = posKey(100, 2, 0);
+    {
+        BoundedPistonRig rig(2, 2);
+        const auto filler = rig.bes.createShared(
+            fillerKey, BlockEntity::Kind::Chest);
+        const auto piston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston",
+                {{"facing", "east"}, {"extended", "false"}}));
+        const auto stone = stateByName("minecraft:stone");
+        rig.world.setBlock(0, 2, 0, piston);
+        rig.world.setBlock(1, 2, 0, stone);
+        rig.world.setBlock(2, 2, 0, stone);
+        rig.world.setBlock(0, 3, 0, stateByName("minecraft:stone"));
+        rig.world.setBlock(1, 3, 0, stateByName("minecraft:redstone_block"));
+        rig.engine.onBlockChanged(0, 3, 0);
+        rig.engine.onBlockChanged(1, 3, 0);
+        rig.engine.onBlockChanged(0, 2, 0);
+        CHECK(rig.engine.pendingCount() > 0,
+              "powered piston has a scheduled extension before budget preflight");
+
+        bool tickThrew = false;
+        try { rig.step(5); }
+        catch (...) { tickThrew = true; }
+        CHECK(!tickThrew,
+              "extension record-cap exhaustion does not throw from the tick");
+        CHECK(rig.world.getBlock(0, 2, 0) == piston &&
+                  rig.world.getBlock(1, 2, 0) == stone &&
+                  rig.world.getBlock(2, 2, 0) == stone,
+              "failed extension leaves piston and all pushed blocks unchanged");
+        CHECK(rig.bes.size() == 1 && rig.bes.getShared(fillerKey) == filler &&
+                  !rig.bes.getShared(posKey(1, 2, 0)) &&
+                  !rig.bes.getShared(posKey(2, 2, 0)),
+              "failed extension creates no partial moving-piston BE batch");
+        CHECK(rig.engine.pendingCount() == 0,
+              "failed extension leaves no delayed piston commit pending");
+    }
+    {
+        BoundedPistonRig rig(1, 1);
+        const auto filler = rig.bes.createShared(
+            fillerKey, BlockEntity::Kind::Chest);
+        const auto piston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston",
+                {{"facing", "east"}, {"extended", "true"}}));
+        const auto head = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston_head",
+                {{"facing", "east"}, {"type", "normal"},
+                 {"short", "false"}}));
+        rig.world.setBlock(0, 2, 0, piston);
+        rig.world.setBlock(1, 2, 0, head);
+        rig.engine.onBlockChanged(0, 2, 0);
+        CHECK(rig.engine.pendingCount() > 0,
+              "unpowered extended piston has a scheduled retraction");
+
+        bool tickThrew = false;
+        try { rig.step(5); }
+        catch (...) { tickThrew = true; }
+        CHECK(!tickThrew,
+              "retraction record-cap exhaustion does not throw from the tick");
+        CHECK(rig.world.getBlock(0, 2, 0) == piston &&
+                  rig.world.getBlock(1, 2, 0) == head,
+              "failed retraction leaves piston and head unchanged");
+        CHECK(rig.bes.size() == 1 && rig.bes.getShared(fillerKey) == filler &&
+                  !rig.bes.getShared(posKey(1, 2, 0)),
+              "failed retraction creates no moving-head BE");
+        CHECK(rig.engine.pendingCount() == 0,
+              "failed retraction leaves no delayed piston commit pending");
+    }
+}
+
+static void test_piston_push_preserves_contiguous_blocks() {
+    curSection = "PISTON MULTI-BLOCK PUSH";
+    std::printf("\n[10] piston multi-block push preserves every block\n");
+
+    BoundedPistonRig rig(8, 8);
+    constexpr std::int32_t y = 2;
+    const auto piston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "false"}}));
+    const auto extendedPiston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "true"}}));
+    const auto head = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston_head",
+            {{"facing", "east"}, {"type", "normal"},
+             {"short", "false"}}));
+    const auto stone = stateByName("minecraft:stone");
+    const auto dirt = stateByName("minecraft:dirt");
+    const auto gold = stateByName("minecraft:gold_block");
+    const auto redstone = stateByName("minecraft:redstone_block");
+
+    rig.world.setBlock(0, y, 0, piston);
+    rig.world.setBlock(1, y, 0, stone);
+    rig.world.setBlock(2, y, 0, dirt);
+    rig.world.setBlock(3, y, 0, gold);
+    rig.world.setBlock(0, y + 1, 0, redstone);
+    rig.engine.onBlockChanged(0, y + 1, 0);
+    rig.engine.onBlockChanged(0, y, 0);
+    rig.step(6);
+
+    CHECK(rig.world.getBlock(0, y, 0) == extendedPiston &&
+              rig.world.getBlock(1, y, 0) == head,
+          "multi-block extension leaves the piston and head in place");
+    CHECK(rig.world.getBlock(2, y, 0) == stone &&
+              rig.world.getBlock(3, y, 0) == dirt &&
+              rig.world.getBlock(4, y, 0) == gold &&
+              rig.world.getBlock(5, y, 0) == 0,
+          "multi-block extension shifts every source block one cell without loss");
+    CHECK(rig.engine.pendingCount() == 0,
+          "multi-block extension drains its scheduled and delayed work");
+}
+
+static void test_pending_piston_conflicts_preserve_new_edits() {
+    curSection = "PISTON CONFLICT CANCELLATION";
+    std::printf("\n[11] delayed piston edits cancel without overwriting newer blocks\n");
+
+    const auto stone = stateByName("minecraft:stone");
+    const auto sentinel = stateByName("minecraft:diamond_block");
+    const auto movingPiston = stateByName("minecraft:moving_piston");
+    const auto redstoneBlock = stateByName("minecraft:redstone_block");
+    const auto piston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "false"}}));
+    const auto extendedPiston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "true"}}));
+
+    const auto startPush = [&](Rig& rig) {
+        rig.world.setBlock(0, 2, 0, piston);
+        rig.world.setBlock(1, 2, 0, stone);
+        rig.world.setBlock(0, 3, 0, redstoneBlock);
+        rig.engine.onBlockChanged(0, 3, 0);
+        rig.engine.onBlockChanged(0, 2, 0);
+        rig.step(3);
+        return rig.engine.pendingCount() > 0 &&
+            rig.world.getBlock(0, 2, 0) == extendedPiston &&
+            rig.world.getBlock(1, 2, 0) == movingPiston &&
+            rig.bes.hasCurrentKind(posKey(1, 2, 0),
+                                   BlockEntity::Kind::MovingPiston);
+    };
+
+    {
+        Rig rig;
+        const bool animationStarted = startPush(rig);
+        CHECK(animationStarted,
+              "normal piston push stages its moving block before the delayed commit");
+        if (animationStarted) {
+            rig.world.setBlock(2, 2, 0, sentinel);
+            rig.step(3);
+            CHECK(rig.world.getBlock(2, 2, 0) == sentinel,
+                  "a new block in the piston landing cell survives delayed completion");
+            CHECK(rig.world.getBlock(1, 2, 0) == stone &&
+                      rig.world.getBlock(0, 2, 0) == piston,
+                  "cancelling a conflicted push restores only its still-owned source and piston");
+            CHECK(!rig.bes.getShared(posKey(1, 2, 0)) &&
+                      rig.engine.pendingCount() == 0,
+                  "cancelled push releases its transient owner and pending record");
+        }
+    }
+
+    {
+        Rig rig;
+        const bool animationStarted = startPush(rig);
+        CHECK(animationStarted,
+              "owner-retype fixture starts a normal piston push");
+        if (animationStarted) {
+            const auto chest = stateByName("minecraft:chest");
+            const auto diamond = gen::itemIdByName().find("minecraft:diamond");
+            const auto owner = rig.bes.getShared(posKey(1, 2, 0));
+            const auto diamondId = diamond == gen::itemIdByName().end()
+                ? std::uint16_t{0} : diamond->second;
+            bool retyped = false;
+            if (chest != 0 && diamondId != 0 && owner) {
+                // Reproduce BlockEntityStore's in-place identity-preserving
+                // type change while a delayed piston still holds that owner.
+                rig.world.setBlock(1, 2, 0, chest);
+                const auto chestOwner = rig.bes.tryCreateShared(
+                    posKey(1, 2, 0), BlockEntity::Kind::Chest);
+                if (chestOwner == owner) {
+                    std::lock_guard ownerLock(*owner->stateMtx);
+                    owner->chest.slots[0] =
+                        ItemStack::of(diamondId);
+                    retyped = owner->kind == BlockEntity::Kind::Chest;
+                }
+            }
+            CHECK(retyped,
+                  "moving-piston owner can be retyped in place with new chest data");
+            rig.step(3);
+            bool chestDataSurvived = false;
+            if (owner && diamondId != 0) {
+                std::lock_guard ownerLock(*owner->stateMtx);
+                chestDataSurvived = owner->kind == BlockEntity::Kind::Chest &&
+                    owner->chest.slots[0].itemId == diamondId &&
+                    owner->chest.slots[0].count == 1;
+            }
+            CHECK(rig.world.getBlock(1, 2, 0) == chest &&
+                      rig.bes.getShared(posKey(1, 2, 0)) == owner &&
+                      chestDataSurvived,
+                  "stale piston completion preserves an in-place retyped chest owner and its contents");
+            CHECK(rig.engine.pendingCount() == 0,
+                  "owner-retype conflict cancels the delayed piston record");
+        }
+    }
+
+    {
+        Rig rig;
+        const bool animationStarted = startPush(rig);
+        CHECK(animationStarted,
+              "placeholder-conflict fixture starts a normal piston push");
+        if (animationStarted) {
+            rig.world.setBlock(1, 2, 0, sentinel);
+            // The production block-replacement hook removes the transient
+            // owner when a moving placeholder is replaced.
+            rig.bes.remove(posKey(1, 2, 0));
+            rig.engine.flushPendingPistons(0, 0);
+            CHECK(rig.world.getBlock(1, 2, 0) == sentinel,
+                  "save-barrier cancellation preserves a replacement at the moving placeholder");
+            CHECK(rig.world.getBlock(0, 2, 0) == piston &&
+                      rig.engine.pendingCount() == 0,
+                  "save barrier drains stale work without committing or retaining the piston action");
+            CHECK(!rig.bes.getShared(posKey(1, 2, 0)),
+                  "replaced moving placeholder has no stale block-entity owner");
+        }
+    }
+
+    {
+        Rig rig;
+        const auto stickyPiston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:sticky_piston",
+                {{"facing", "east"}, {"extended", "true"}}));
+        const auto stickyHead = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston_head",
+                {{"facing", "east"}, {"type", "sticky"},
+                 {"short", "false"}}));
+        rig.world.setBlock(0, 2, 0, stickyPiston);
+        rig.world.setBlock(1, 2, 0, stickyHead);
+        rig.world.setBlock(2, 2, 0, stone);
+        rig.engine.onBlockChanged(0, 2, 0);
+        rig.step(3);
+        const bool retractionStarted = rig.engine.pendingCount() > 0 &&
+            rig.world.getBlock(1, 2, 0) == movingPiston &&
+            rig.bes.hasCurrentKind(posKey(1, 2, 0),
+                                   BlockEntity::Kind::MovingPiston);
+        CHECK(retractionStarted,
+              "sticky retraction stages a moving head while retaining the pull source");
+        if (retractionStarted) {
+            rig.world.setBlock(1, 2, 0, sentinel);
+            rig.bes.remove(posKey(1, 2, 0));
+            rig.step(3);
+            CHECK(rig.world.getBlock(1, 2, 0) == sentinel,
+                  "sticky retraction does not overwrite an edit at the pull destination");
+            CHECK(rig.world.getBlock(2, 2, 0) == stone &&
+                      rig.engine.pendingCount() == 0,
+                  "cancelled sticky pull leaves its source untouched and removes stale work");
+            CHECK(!rig.bes.getShared(posKey(1, 2, 0)),
+                  "cancelled sticky retraction retains no obsolete moving-head owner");
+        }
+    }
+}
+
+static void test_piston_build_height_and_flush_dirty_chunks() {
+    curSection = "PISTON BOUNDS / SAVE BARRIER";
+    std::printf("\n[12] piston build-height rejection and cross-chunk flush dirtiness\n");
+
+    const auto stone = stateByName("minecraft:stone");
+    const auto redstoneBlock = stateByName("minecraft:redstone_block");
+    auto rejectBoundaryPush = [&](int y, int pushedY, const char* facing,
+                                  const char* boundary) {
+        BoundedPistonRig rig(4, 4);
+        const auto piston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston",
+                {{"facing", facing}, {"extended", "false"}}));
+        rig.world.setBlock(0, y, 0, piston);
+        rig.world.setBlock(0, pushedY, 0, stone);
+        rig.world.setBlock(1, y, 0, redstoneBlock);
+        rig.engine.onBlockChanged(1, y, 0);
+        rig.engine.onBlockChanged(0, y, 0);
+        rig.step(6);
+
+        const std::string prefix = std::string(boundary) + " boundary: ";
+        CHECK(rig.world.getBlock(0, y, 0) == piston,
+              (prefix + "piston remains unextended").c_str());
+        CHECK(rig.world.getBlock(0, pushedY, 0) == stone,
+              (prefix + "source block is not lost").c_str());
+        CHECK(rig.bes.size() == 0,
+              (prefix + "no moving-piston BE is published").c_str());
+        CHECK(rig.engine.pendingCount() == 0,
+              (prefix + "no partial delayed commit remains").c_str());
+    };
+
+    // The source itself is legal, but its pushed destination would be Y=320.
+    rejectBoundaryPush(318, 319, "up", "upper build-height");
+    // The source itself is legal, but its pushed destination would be Y=-65.
+    rejectBoundaryPush(-63, -64, "down", "lower build-height");
+
+    {
+        BoundedPistonRig rig(8, 8);
+        std::vector<std::pair<std::int32_t, std::int32_t>> notifiedDirty;
+        std::vector<std::pair<std::int32_t, std::int32_t>> worldEditNotifications;
+        rig.engine.setPistonChunkDirtyFn(
+            [&](std::int32_t cx, std::int32_t cz) {
+                notifiedDirty.emplace_back(cx, cz);
+            });
+        rig.world.setOnEdit([&](std::int32_t cx, std::int32_t cz) {
+            worldEditNotifications.emplace_back(cx, cz);
+        });
+
+        const auto piston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston",
+                {{"facing", "east"}, {"extended", "false"}}));
+        const auto extendedPiston = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston",
+                {{"facing", "east"}, {"extended", "true"}}));
+        rig.world.setBlock(14, 2, 0, piston);
+        rig.world.setBlock(15, 2, 0, stone);
+        rig.world.setBlock(14, 3, 0, redstoneBlock);
+        rig.engine.onBlockChanged(14, 3, 0);
+        rig.engine.onBlockChanged(14, 2, 0);
+        rig.step(3);
+
+        CHECK(rig.engine.pendingCount() > 0,
+              "cross-chunk piston has a delayed final commit");
+        CHECK(rig.world.getBlock(14, 2, 0) == extendedPiston,
+              "cross-chunk piston enters its normal extension phase");
+        notifiedDirty.clear();
+        worldEditNotifications.clear();
+
+        // Simulate final persistence shutdown: its World edit hook has already
+        // been detached when the save barrier forces this cross-chunk commit.
+        rig.world.setOnEdit({});
+        rig.engine.flushPendingPistons(0, 0);
+
+        const auto head = static_cast<std::uint16_t>(
+            gen::stateWithPropsList("minecraft:piston_head",
+                {{"facing", "east"}, {"type", "normal"},
+                 {"short", "false"}}));
+        CHECK(rig.world.getBlock(15, 2, 0) == head &&
+                  rig.world.getBlock(16, 2, 0) == stone,
+              "save-barrier flush commits the block across the chunk edge");
+        CHECK(worldEditNotifications.empty(),
+              "test has detached World edit hook during final commit");
+        CHECK(notifiedDirty.size() == 2 &&
+                  std::find(notifiedDirty.begin(), notifiedDirty.end(),
+                            std::pair<std::int32_t, std::int32_t>{0, 0}) !=
+                      notifiedDirty.end() &&
+                  std::find(notifiedDirty.begin(), notifiedDirty.end(),
+                            std::pair<std::int32_t, std::int32_t>{1, 0}) !=
+                      notifiedDirty.end(),
+              "explicit piston dirty callback reports both mutated chunks");
+        CHECK(rig.engine.pendingCount() == 0,
+              "successful save-barrier commit is fully drained");
+    }
+}
+
+static void test_piston_flush_drains_scheduled_cross_chunk_action() {
+    curSection = "SCHEDULED PISTON SAVE BARRIER";
+    std::printf("\n[13] save barrier drains a not-yet-due cross-chunk piston action\n");
+
+    BoundedPistonRig rig(4, 4);
+    std::vector<std::pair<std::int32_t, std::int32_t>> dirtyChunks;
+    rig.engine.setPistonChunkDirtyFn(
+        [&](std::int32_t chunkX, std::int32_t chunkZ) {
+            dirtyChunks.emplace_back(chunkX, chunkZ);
+        });
+
+    constexpr std::int32_t pistonX = 14;
+    constexpr std::int32_t y = 2;
+    const auto piston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "false"}}));
+    const auto extendedPiston = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston",
+            {{"facing", "east"}, {"extended", "true"}}));
+    const auto head = static_cast<std::uint16_t>(
+        gen::stateWithPropsList("minecraft:piston_head",
+            {{"facing", "east"}, {"type", "normal"},
+             {"short", "false"}}));
+    const auto stone = stateByName("minecraft:stone");
+
+    rig.world.setBlock(pistonX, y, 0, piston);
+    rig.world.setBlock(pistonX + 1, y, 0, stone);
+    rig.world.setBlock(pistonX, y + 1, 0,
+                       stateByName("minecraft:redstone_block"));
+    rig.engine.onBlockChanged(pistonX, y + 1, 0);
+    rig.engine.onBlockChanged(pistonX, y, 0);
+
+    CHECK(rig.engine.pendingCount() > 0 &&
+              rig.world.getBlock(pistonX, y, 0) == piston &&
+              rig.world.getBlock(pistonX + 1, y, 0) == stone,
+          "action remains scheduled and unchanged before its due tick");
+
+    // Chunk (1,0) contains the pushed block's destination, while the piston
+    // itself and its scheduled event are in chunk (0,0).
+    rig.engine.flushPendingPistons(1, 0);
+
+    CHECK(rig.world.getBlock(pistonX, y, 0) == extendedPiston &&
+              rig.world.getBlock(pistonX + 1, y, 0) == head &&
+              rig.world.getBlock(pistonX + 2, y, 0) == stone,
+          "destination-chunk barrier completes the cross-chunk piston move");
+    CHECK(rig.engine.pendingCount() == 0 && rig.bes.size() == 0,
+          "no scheduled action or piston animation remains for the snapshot");
+    CHECK(std::find(dirtyChunks.begin(), dirtyChunks.end(),
+                    std::pair<std::int32_t, std::int32_t>{0, 0}) !=
+                  dirtyChunks.end() &&
+              std::find(dirtyChunks.begin(), dirtyChunks.end(),
+                        std::pair<std::int32_t, std::int32_t>{1, 0}) !=
+                  dirtyChunks.end(),
+          "cross-chunk start and destination are both reported dirty");
+}
+
 static void test_concurrent_public_notifications() {
     curSection = "CONCURRENCY";
-    std::printf("\n[8] concurrent callback notifications and redstone ticks\n");
+    std::printf("\n[14] concurrent callback notifications and redstone ticks\n");
     Rig rig;
     constexpr int notificationCount = 250;
     std::atomic<bool> go{false};
@@ -372,6 +882,12 @@ int main() {
     test_rails();
     test_dispenser_hopper();
     test_qc();
+    test_block_entity_batch_capacity();
+    test_piston_batch_capacity_rejection();
+    test_piston_push_preserves_contiguous_blocks();
+    test_pending_piston_conflicts_preserve_new_edits();
+    test_piston_build_height_and_flush_dirty_chunks();
+    test_piston_flush_drains_scheduled_cross_chunk_action();
     test_concurrent_public_notifications();
     std::printf("\n=== REDSTONE_ENGINE_FULL: %d PASS %d FAIL %d TOTAL ===\n", g_pass, g_fail, g_total);
     return g_fail == 0 ? 0 : 1;

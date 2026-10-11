@@ -30,6 +30,7 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.network.packet.CustomPayloadS2CPacket;
 import net.minecraft.registry.Registry;
+import net.minecraft.command.argument.EntityArgumentType;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
@@ -39,23 +40,74 @@ import net.minecraft.util.ActionResult;
 import net.minecraft.util.Identifier;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Box;
+import net.minecraft.util.NativeAccess;
 import net.minecraft.text.Text;
 import net.minecraft.world.GameRules;
+import cppfm.api.ModEvents;
 import cppfm.bridge.CppModRuntime;
+import cppfm.bridge.WrapperCache;
+import net.fabricmc.fabric.api.networking.v1.PlayerLookup;
 
 /** Executable compatibility fixture for Fabric API/events/commands surface. */
 public final class ApiSurfaceContractTest {
     private static int checks;
 
+    private static final class NativeLivingEntityProbe extends net.minecraft.entity.LivingEntity {
+        private float authoritativeHealth;
+        private int healthWrites;
+
+        NativeLivingEntityProbe(float health) {
+            super(0xCAFE);
+            authoritativeHealth = health;
+        }
+
+        @Override public float getHealth() { return authoritativeHealth; }
+        @Override public void setHealth(float value) {
+            healthWrites++;
+            authoritativeHealth = value;
+        }
+    }
+
+    private static final class UnboundNativeLivingEntityProbe
+            extends net.minecraft.entity.LivingEntity {
+        UnboundNativeLivingEntityProbe() { super(0xCAFF); }
+    }
+
+    private static final class LocalLivingEntityProbe extends net.minecraft.entity.LivingEntity {
+        LocalLivingEntityProbe() {
+            super(net.minecraft.entity.EntityType.UNKNOWN, null);
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         ApiSurfaceFixture fixture = new ApiSurfaceFixture();
         fixture.onInitialize();
 
-        MinecraftServer server = MinecraftServer.of(0L);
-        ServerLifecycleEvents.SERVER_STARTED.invoker().onServerStarted(server);
-        check(ApiSurfaceFixture.STARTED.get() == 1, "lifecycle invoker");
+        check(net.minecraft.entity.mob.WaterCreatureEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class) &&
+                net.minecraft.entity.mob.PathAwareEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class) &&
+                !net.minecraft.entity.passive.AnimalEntity.class
+                    .isAssignableFrom(net.minecraft.entity.passive.FishEntity.class),
+            "FishEntity preserves the Vanilla WaterCreatureEntity hierarchy");
+
+        MinecraftServer startingServer = MinecraftServer.of(NativeAccess.serverHandle());
+        ServerWorld startingWorld = ServerWorld.of(0L, startingServer);
+        check(startingServer.getPlayerManager() == null,
+            "player manager is unavailable during SERVER_STARTING");
+        check(startingWorld.getPlayers().isEmpty() && PlayerLookup.all(startingServer).isEmpty(),
+            "player lookup APIs are empty before world services load");
+        check(EntityArgumentType.players().parse(new com.mojang.brigadier.StringReader("@a"))
+                .getEntities(new net.minecraft.server.command.ServerCommandSource(null, startingServer))
+                .isEmpty(), "player selectors are safe before world services load");
 
         check(CppModRuntime.bootstrap("/tmp/cppfm-api-fixture-no-mods", "/tmp/cppfm-api-config"), "runtime bootstrap fallback");
+        // The real lifecycle reaches SERVER_STARTED only after the native
+        // world load has made the server's world and player services live.
+        CppModRuntime.onServerWorldsLoaded();
+        check(ApiSurfaceFixture.STARTED.get() == 1, "lifecycle invoker after world load");
+        MinecraftServer server = MinecraftServer.of(NativeAccess.serverHandle());
+        testLivingEntityHealthBoundary();
         CppModRuntime.onServerTick(7L);
         check(ApiSurfaceFixture.TICK_START.get() == 1, "server tick start dispatch");
         check(ApiSurfaceFixture.TICK_END.get() == 1, "server tick end dispatch");
@@ -64,10 +116,29 @@ public final class ApiSurfaceContractTest {
         CppModRuntime.onPlayerQuit(1L);
         check(ApiSurfaceFixture.PLAYER_JOIN.get() == 1, "player join dispatch");
         check(ApiSurfaceFixture.PLAYER_LEAVE.get() == 1, "player leave dispatch");
-        check(CppModRuntime.onMobSpawn(1L, 0.0, 0.0, 0.0), "spawn allowed and load dispatched");
-        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 2, "entity load dispatch includes player and spawn");
+        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 1,
+            "player entity load dispatch");
+        check(ApiSurfaceFixture.ENTITY_UNLOAD.get() == 1,
+            "player entity unload dispatch");
+        Entity unknownWrapper = Entity.of(2L);
+        check(CppModRuntime.onMobSpawn(2L, 0.0, 0.0, 0.0, 0), "spawn allowed");
+        CppModRuntime.onMobLoad(2L, 0);
+        check(ApiSurfaceFixture.ENTITY_LOAD.get() == 2,
+            "entity load dispatch includes player and inserted mob");
+        check(unknownWrapper != null &&
+                !(unknownWrapper instanceof net.minecraft.entity.LivingEntity) &&
+                ApiSurfaceFixture.MOB_WRAPPER_LOAD.get() == 0 &&
+                ApiSurfaceFixture.LOADED_MOB_WRAPPER.get() == null,
+            "unknown handles use a non-living base wrapper without JNI type data");
+        CppModRuntime.onMobUnload(2L, 0);
+        check(ApiSurfaceFixture.ENTITY_UNLOAD.get() == 2,
+            "entity unload dispatch includes the removed mob");
+        check(Entity.of(2L) != unknownWrapper,
+            "entity unload evicts the strong Java wrapper after listener dispatch");
+        testRejectedMobSpawnEvictsWrappers();
         check(!CppModRuntime.onEntityDamage(1L, 0L, 8.0f, "generic"), "damage cancellation");
         check(CppModRuntime.onEntityDamage(1L, 0L, 2.0f, "generic"), "damage allow");
+        checks += DamageEventsContractTest.run();
         check(!CppModRuntime.onBlockPlace(1L, 1, 0, 1, 1), "ActionResult consume cancellation");
         check(CppModRuntime.onChat(1L, "blocked") == null, "chat cancellation");
         check("blocked".equals(ApiSurfaceFixture.CHAT.get()), "chat callback input");
@@ -94,9 +165,21 @@ public final class ApiSurfaceContractTest {
         check(dispatcher.hasCommand("api_fixture 7"), "command tree lookup");
 
         ServerWorld world = ServerWorld.of(0L, server);
+        net.minecraft.world.World originalEntityWorld = net.minecraft.world.World.of(0L);
+        net.minecraft.entity.decoration.ArmorStandEntity unregisteredEntity =
+            new net.minecraft.entity.decoration.ArmorStandEntity(
+                net.minecraft.entity.EntityType.ARMOR_STAND, originalEntityWorld);
+        int entityLoadCountBeforeUnsupportedSpawn = ApiSurfaceFixture.ENTITY_LOAD.get();
+        check(!world.spawnEntity(unregisteredEntity),
+            "Java-only entity spawn fails until native registration exists");
+        check(unregisteredEntity.getWorld() == originalEntityWorld &&
+                ApiSurfaceFixture.ENTITY_LOAD.get() == entityLoadCountBeforeUnsupportedSpawn,
+            "failed Java-only spawn does not mutate world or emit load lifecycle");
         BlockPos pos = new BlockPos(3, -60, 4);
         check(world.setBlockState(pos, Blocks.STONE.getDefaultState()), "world write");
         check(world.getBlockState(pos).isOf(Blocks.STONE), "world read");
+        check(world.isChunkLoaded(0, 0) && !world.isChunkLoaded(2, 2),
+            "world chunk-loaded query is coordinate-specific");
         ServerPlayerEntity player = ServerPlayerEntity.of(1L);
         PlayerInventory inventory = new PlayerInventory(0L);
         inventory.setStack(0, new ItemStack(Items.DIAMOND, 4));
@@ -264,5 +347,75 @@ public final class ApiSurfaceContractTest {
     private static void check(boolean condition, String name) {
         checks++;
         if (!condition) throw new AssertionError(name);
+    }
+
+    private static void testLivingEntityHealthBoundary() throws Exception {
+        NativeLivingEntityProbe nativeEntity = new NativeLivingEntityProbe(5.0f);
+        AtomicInteger nativeDamageCallbacks = new AtomicInteger();
+        net.fabricmc.fabric.api.entity.event.v1.ServerLivingEntityEvents.ALLOW_DAMAGE
+            .register((entity, source, amount) -> {
+                if (entity == nativeEntity) nativeDamageCallbacks.incrementAndGet();
+                return true;
+            });
+
+        check(!nativeEntity.damage(
+                new net.minecraft.entity.damage.DamageSource("generic"), 2.0f),
+            "native-backed Java damage fails closed without a C++ damage entrypoint");
+        check(nativeEntity.authoritativeHealth == 5.0f && nativeEntity.healthWrites == 0,
+            "native-backed Java damage does not write shadow/authoritative health");
+        check(nativeDamageCallbacks.get() == 0,
+            "native-backed Java damage does not dispatch callbacks for unapplied damage");
+
+        nativeEntity.heal(2.0f);
+        check(nativeEntity.authoritativeHealth == 7.0f && nativeEntity.healthWrites == 1,
+            "native-backed heal bases its write on the authoritative health getter");
+
+        net.minecraft.entity.LivingEntity unboundNativeEntity =
+            new UnboundNativeLivingEntityProbe();
+        java.lang.reflect.Field shadowHealth =
+            net.minecraft.entity.LivingEntity.class.getDeclaredField("health");
+        shadowHealth.setAccessible(true);
+        float shadowBefore = shadowHealth.getFloat(unboundNativeEntity);
+        unboundNativeEntity.setHealth(9.0f);
+        check(shadowHealth.getFloat(unboundNativeEntity) == shadowBefore,
+            "native-backed setHealth never mutates the Java shadow field");
+
+        LocalLivingEntityProbe localEntity = new LocalLivingEntityProbe();
+        localEntity.setHealth(5.0f);
+        localEntity.heal(2.0f);
+        check(localEntity.getHealth() == 7.0f,
+            "Java-only heal continues to use local health");
+        check(localEntity.damage(
+                new net.minecraft.entity.damage.DamageSource("generic"), 1.0f) &&
+                localEntity.getHealth() == 6.0f,
+            "Java-only damage continues to mutate local health");
+    }
+
+    private static void testRejectedMobSpawnEvictsWrappers() {
+        final long firstHandle = 0xB000L;
+        final int rejectedSpawns = 32;
+        AtomicReference<Entity> rejectedWrapper = new AtomicReference<>();
+        ModEvents.MOB_SPAWN.register((entity, world, x, y, z) -> {
+            long handle = entity.nativeHandle();
+            if (handle >= firstHandle && handle < firstHandle + rejectedSpawns) {
+                rejectedWrapper.set(entity);
+                return false;
+            }
+            return true;
+        });
+        for (int i = 0; i < rejectedSpawns; i++) {
+            long handle = firstHandle + i;
+            check(!CppModRuntime.onMobSpawn(handle, 0.0, 0.0, 0.0, 0),
+                "mob spawn callback rejects native handle");
+            Entity rejected = rejectedWrapper.getAndSet(null);
+            check(rejected != null && rejected.nativeHandle() == handle,
+                "rejected spawn callback receives its native wrapper");
+            try {
+                check(Entity.of(handle) != rejected,
+                    "rejected spawn wrapper is evicted from the strong cache");
+            } finally {
+                WrapperCache.remove(handle);
+            }
+        }
     }
 }

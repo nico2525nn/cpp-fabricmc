@@ -1,6 +1,7 @@
 package net.minecraft.server.network;
 
 import cppfm.bridge.WrapperCache;
+import net.minecraft.entity.Entity;
 import net.minecraft.entity.EntityType;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.MinecraftServer;
@@ -21,7 +22,12 @@ public class ServerPlayerEntity extends PlayerEntity {
         super(0L, world, EntityType.PLAYER);
     }
     public static ServerPlayerEntity of(long handle) {
-        return WrapperCache.get(ServerPlayerEntity.class, handle, ServerPlayerEntity::new);
+        if (handle == 0L) return null;
+        return (ServerPlayerEntity) WrapperCache.get(
+            Entity.class, handle, ServerPlayerEntity::createNativeWrapper);
+    }
+    public static ServerPlayerEntity createNativeWrapper(long handle) {
+        return new ServerPlayerEntity(handle);
     }
     public ServerWorld getServerWorld() {
         return ServerWorld.of(NativeAccess.playerWorld(nativeHandle), getServer());

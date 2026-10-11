@@ -24,6 +24,16 @@ inline constexpr char FallbackBootstrapDescriptor[] =
     "(Ljava/lang/String;Ljava/lang/String;)Z";
 inline constexpr char ShutdownName[] = "shutdown";
 inline constexpr char ShutdownDescriptor[] = "()V";
+inline constexpr char OnServerShutdownName[] = "onServerShutdown";
+inline constexpr char OnServerShutdownDescriptor[] = "()V";
+inline constexpr char OnServerStoppingName[] = "onServerStopping";
+inline constexpr char OnServerStoppingDescriptor[] = "()V";
+inline constexpr char OnServerWorldsLoadedName[] = "onServerWorldsLoaded";
+inline constexpr char OnServerWorldsLoadedDescriptor[] = "()V";
+inline constexpr char OnWorldsUnloadingName[] = "onWorldsUnloading";
+inline constexpr char OnWorldsUnloadingDescriptor[] = "()V";
+inline constexpr char OnServerStoppedName[] = "onServerStopped";
+inline constexpr char OnServerStoppedDescriptor[] = "()V";
 
 inline constexpr char OnServerTickName[] = "onServerTick";
 inline constexpr char OnServerTickDescriptor[] = "(J)V";
@@ -46,8 +56,18 @@ inline constexpr char OnCommandDescriptor[] =
 inline constexpr char OnEntityDamageName[] = "onEntityDamage";
 inline constexpr char OnEntityDamageDescriptor[] =
     "(JJFLjava/lang/String;)Z";
+inline constexpr char OnEntityAllowDeathName[] = "onEntityAllowDeath";
+inline constexpr char OnEntityAllowDeathDescriptor[] =
+    "(JJFLjava/lang/String;)Z";
+inline constexpr char OnEntityDamageAppliedName[] = "onEntityDamageApplied";
+inline constexpr char OnEntityDamageAppliedDescriptor[] =
+    "(JJFFZZLjava/lang/String;)V";
 inline constexpr char OnMobSpawnName[] = "onMobSpawn";
-inline constexpr char OnMobSpawnDescriptor[] = "(JDDD)Z";
+inline constexpr char OnMobSpawnDescriptor[] = "(JDDDI)Z";
+inline constexpr char OnMobLoadName[] = "onMobLoad";
+inline constexpr char OnMobLoadDescriptor[] = "(JI)V";
+inline constexpr char OnMobUnloadName[] = "onMobUnload";
+inline constexpr char OnMobUnloadDescriptor[] = "(JI)V";
 
 inline constexpr char NativePluginMessageDescriptor[] =
     "(JILjava/lang/String;[B)V";

@@ -11,9 +11,12 @@ Usage:
 Exit 0 on PASS, 1 on FAIL. Cleans up server subprocess.
 """
 import argparse, os, sys, time, subprocess, socket, threading, random, signal, struct, io, tempfile, shutil
+REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, REPOSITORY_ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mcproto
 from mcproto import Conn, read_varint
+from tools.soak_bot import _owned_process_group_kwargs, stop_process
 
 def get_rss_kb(pid):
     try:
@@ -57,71 +60,6 @@ def wait_for_server(proc, host, port, timeout=15):
     raise TimeoutError(f"server readiness probe timed out on {host}:{port}{detail}")
 
 
-def _signal_owned_process_group(proc, sig, hard=False):
-    """Signal the session/process group created for the owned server."""
-    try:
-        if os.name == "posix":
-            os.killpg(proc.pid, sig)
-        elif hard:
-            proc.kill()
-        else:
-            try:
-                proc.send_signal(getattr(signal, "CTRL_BREAK_EVENT", sig))
-            except (AttributeError, OSError, ValueError):
-                proc.terminate()
-    except ProcessLookupError:
-        # The group may have exited between poll and signalling; that is a
-        # successful cleanup state, not an orphan.
-        return True
-    except OSError:
-        return False
-    return True
-
-
-def _wait_for_process_exit(proc, deadline):
-    """Wait until the owned leader is reaped, using one monotonic deadline."""
-    while proc.poll() is None:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return False
-        try:
-            proc.wait(timeout=remaining)
-        except subprocess.TimeoutExpired:
-            return False
-        except OSError:
-            return proc.poll() is not None
-    return True
-
-
-def stop_process(proc, timeout=10, kill_timeout=5):
-    """Terminate the owned process group, escalate, and reap its leader."""
-    if proc is None:
-        return True
-    try:
-        timeout = max(0.0, float(timeout))
-        kill_timeout = max(0.0, float(kill_timeout))
-    except (TypeError, ValueError):
-        return False
-
-    # Signal even when the leader already exited: a forked child can keep the
-    # session alive after its parent has been reaped.
-    term_ok = _signal_owned_process_group(proc, signal.SIGTERM)
-    _wait_for_process_exit(proc, time.monotonic() + timeout)
-
-    # Always issue the hard escalation after the grace period (including
-    # after an early leader exit) so descendants cannot survive cleanup.
-    kill_ok = _signal_owned_process_group(
-        proc, getattr(signal, "SIGKILL", signal.SIGTERM), hard=True
-    )
-    killed_exit = _wait_for_process_exit(proc, time.monotonic() + kill_timeout)
-    return term_ok and kill_ok and killed_exit
-
-
-def _owned_process_group_kwargs():
-    if os.name == "posix":
-        return {}
-    return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
-
 class Bot(threading.Thread):
     def __init__(self, idx, host, port, duration, movement_range=None, stop_event=None):
         super().__init__(daemon=False)
@@ -140,15 +78,19 @@ class Bot(threading.Thread):
     def run(self):
         c = None
         try:
-            c=Conn(self.host, self.port, timeout=1)
+            # Login/configuration can legitimately take longer than the
+            # 1-second in-play poll interval when several bots join together.
+            # Keep the handshake deadline separate; the play loop switches
+            # back to its bounded one-second receive cadence below.
+            c=Conn(self.host, self.port, timeout=15)
             self.connection = c
-            c.sock.settimeout(1.0)
+            c.sock.settimeout(15.0)
             if self.stop_event.is_set():
                 return
             c.login(f"Soak{self.idx}")
             if self.stop_event.is_set():
                 return
-            c.config_finish(sink=lambda p,d: None, max_seconds=15)
+            c.config_finish(sink=lambda p,d: None, max_seconds=30)
             t_end=time.monotonic()+max(0, self.duration)
             last_action=0
             # pump loop with non-blocking-like handling: use socket timeout 1s for recv
@@ -314,9 +256,7 @@ def main():
             s=socket.socket()
             try: s.bind(("127.0.0.1", port)); s.close(); break
             except OSError: s.close(); port+=1
-    world_dir=tempfile.mkdtemp(prefix=f"cppfm-soak-{os.getpid()}-")
-    cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false", "--enforce-secure-profile=false"]
-    print(f"[soak] starting server {' '.join(cmd)} for {duration}s")
+    world_dir = None
     server_log = None
     stop_event = threading.Event()
     log_path = os.environ.get("CPPFM_SOAK_SERVER_LOG")
@@ -328,22 +268,26 @@ def main():
     server_failed = False
     exit_code = 1
     environment = os.environ.copy()
-    environment["CPPFM_SERVER_DIR"] = world_dir
-    owned_proc = [None]
-    spawn_in_progress = False
+    launch_in_progress = False
     termination_requested = False
     termination_signum = signal.SIGTERM
-    previous_sigterm = signal.getsignal(signal.SIGTERM)
+    termination_signals = (signal.SIGTERM, signal.SIGINT)
+    previous_handlers = {
+        signum: signal.getsignal(signum) for signum in termination_signals
+    }
 
     def handle_termination(signum, _frame):
         nonlocal termination_requested, termination_signum
-        if spawn_in_progress:
-            # Popen has not returned a PID yet.  Let the spawn finish so the
-            # child can be registered and cleaned up instead of orphaned.
-            termination_requested = True
-            termination_signum = signum
+        if launch_in_progress:
+            # Finish world/log setup and Popen registration before acting on
+            # the signal, so cleanup never races an untracked owned resource.
+            if not termination_requested:
+                termination_requested = True
+                termination_signum = signum
             return
-        child = owned_proc[0]
+        for handled_signum in termination_signals:
+            signal.signal(handled_signum, signal.SIG_IGN)
+        child = proc
         if child is not None:
             # The outer timeout uses a five-second kill-after window.  Finish
             # the owned group cleanup inside that window while retaining the
@@ -351,12 +295,19 @@ def main():
             stop_process(child, timeout=1.0, kill_timeout=1.0)
         raise SystemExit(128 + signum)
 
-    signal.signal(signal.SIGTERM, handle_termination)
     try:
-        if log_path:
-            server_log = open(log_path, "wb")
-        spawn_in_progress = True
+        for signum in termination_signals:
+            signal.signal(signum, handle_termination)
+        launch_in_progress = True
         try:
+            world_dir = tempfile.mkdtemp(prefix=f"cppfm-soak-{os.getpid()}-")
+            cmd=[binary, f"--port={port}", f"--view-distance={args.view_distance}", f"--world-dir={world_dir}", "--level-type=flat", "--online-mode=false", "--enforce-secure-profile=false"]
+            environment["CPPFM_SERVER_DIR"] = world_dir
+            print(f"[soak] starting server {' '.join(cmd)} for {duration}s")
+            if log_path:
+                server_log = open(log_path, "wb")
+            if termination_requested:
+                raise SystemExit(128 + termination_signum)
             try:
                 proc=subprocess.Popen(cmd, stdout=server_log or subprocess.DEVNULL,
                                       stderr=server_log or subprocess.DEVNULL,
@@ -364,12 +315,13 @@ def main():
                                       env=environment,
                                       start_new_session=True,
                                       **_owned_process_group_kwargs())
-                owned_proc[0] = proc
             except OSError as error:
                 print(f"[soak] could not start server: {error}", file=sys.stderr)
+                if termination_requested:
+                    raise SystemExit(128 + termination_signum)
                 return 2
         finally:
-            spawn_in_progress = False
+            launch_in_progress = False
         if termination_requested:
             stop_process(proc, timeout=1.0, kill_timeout=1.0)
             raise SystemExit(128 + termination_signum)
@@ -494,18 +446,51 @@ def main():
         print(f"SOAK {'PASS' if ok else 'FAIL'}: keepAlives={total_keep} disconnects={total_disc} rss_growth2={rss_growth2:.1f}%")
         exit_code = 0 if ok else 1
     finally:
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        bots_cleanup_ok = stop_bots(bots, stop_event) and bots_cleanup_ok
-        process_cleanup_ok = stop_process(proc)
-        if server_log is not None:
-            try: server_log.close()
-            except (OSError, ValueError): pass
-        if process_cleanup_ok and bots_cleanup_ok:
-            world_cleanup_ok = remove_world_dir(world_dir)
-        else:
-            world_cleanup_ok = False
-            print("[soak] refusing to remove world-dir while owned cleanup is incomplete", file=sys.stderr)
-        signal.signal(signal.SIGTERM, previous_sigterm)
+        for signum in termination_signals:
+            signal.signal(signum, signal.SIG_IGN)
+        try:
+            try:
+                bots_cleanup_ok = stop_bots(bots, stop_event) and bots_cleanup_ok
+            except Exception as error:
+                bots_cleanup_ok = False
+                print(
+                    f"[soak] bot cleanup raised {type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
+
+            try:
+                process_cleanup_ok = stop_process(proc)
+            except Exception as error:
+                process_cleanup_ok = False
+                print(
+                    f"[soak] process cleanup raised {type(error).__name__}: {error}",
+                    file=sys.stderr,
+                )
+
+            if server_log is not None:
+                try:
+                    server_log.close()
+                except Exception as error:
+                    print(
+                        f"[soak] server log close raised {type(error).__name__}: {error}",
+                        file=sys.stderr,
+                    )
+
+            if process_cleanup_ok and bots_cleanup_ok:
+                try:
+                    world_cleanup_ok = remove_world_dir(world_dir)
+                except Exception as error:
+                    world_cleanup_ok = False
+                    print(
+                        f"[soak] world cleanup raised {type(error).__name__}: {error}",
+                        file=sys.stderr,
+                    )
+            else:
+                world_cleanup_ok = False
+                print("[soak] refusing to remove world-dir while owned cleanup is incomplete", file=sys.stderr)
+        finally:
+            for signum, previous_handler in previous_handlers.items():
+                signal.signal(signum, previous_handler)
 
     if not process_cleanup_ok or not bots_cleanup_ok or not world_cleanup_ok:
         exit_code = 1

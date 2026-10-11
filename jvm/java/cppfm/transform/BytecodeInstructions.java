@@ -417,6 +417,7 @@ final class BytecodeInstructions {
         }
 
         private static VerificationType verification(StackAnalyzer.Value value, ConstantPool pool) {
+            if (value.isNull()) return new VerificationType(5, -1);
             if (value.isUninitialized()) {
                 if (value.isUninitializedThis()) return new VerificationType(6, -1);
                 int offset = value.uninitializedOffset();

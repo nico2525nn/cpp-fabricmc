@@ -1,17 +1,66 @@
 #include "GameServer.hpp"
+#include "Session.hpp"
 #include "../core/Json.hpp"
 #include "GameServerHelpers.hpp"
+#include "MetadataTypes.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
 #include "BehaviorTree.hpp"
 #include "BehaviorTreeParser.hpp"
+#include "RecipeBook.hpp"
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <string_view>
+#include <vector>
 namespace cppfm {
 using namespace proto;
 
 std::atomic<bool> g_stopRequested{false};
 
 void GameServer::invalidateJvmMob(const std::shared_ptr<MobEntity>& mob) {
-    if (jvmRuntime_ && mob) jvmRuntime_->invalidateEntity(*mob);
+    if (jvmRuntime_ && mob && jvmRuntime_->onMobUnload(*mob))
+        jvmRuntime_->invalidateEntity(*mob);
+}
+
+void GameServer::addMob(const std::shared_ptr<MobEntity>& mob) {
+    if (!mob) return;
+    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+    bool inserted = false;
+    {
+        std::lock_guard lock(entsMtx_);
+        if (std::none_of(mobs_.begin(), mobs_.end(),
+                         [&](const auto& candidate) {
+                             return candidate == mob;
+                         })) {
+            mobs_.push_back(mob);
+            inserted = true;
+        }
+    }
+    if (inserted && jvmRuntime_) jvmRuntime_->onMobLoad(*mob);
+}
+
+bool GameServer::removeMob(const std::shared_ptr<MobEntity>& mob) {
+    if (!mob) return false;
+    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+    if (!containsMob(mob.get())) return false;
+
+    // Fabric entity-unload callbacks run while the mob is still in the
+    // authoritative roster. Its Java handle is invalidated afterward.
+    invalidateJvmMob(mob);
+    std::lock_guard lock(entsMtx_);
+    const auto oldSize = mobs_.size();
+    mobs_.erase(std::remove(mobs_.begin(), mobs_.end(), mob), mobs_.end());
+    return mobs_.size() != oldSize;
+}
+
+bool GameServer::requestMobRemoval(
+    const std::shared_ptr<MobEntity>& mob,
+    const MobEntity::RemovalRequest reason) {
+    if (!mob || reason == MobEntity::RemovalRequest::None) return false;
+    SimulationDispatchGuard simulation(simulationDispatchMtx_);
+    if (!containsMob(mob.get())) return false;
+    return mob->requestRemoval(reason);
 }
 
 namespace {
@@ -40,18 +89,84 @@ bool GameServer::isCurrentTickThread() const noexcept {
            tickThreadId_ == std::this_thread::get_id();
 }
 
+bool GameServer::runFinalLifecycleCallback(
+    const std::function<bool()>& callback) {
+    if (!callback) return false;
+
+    const auto currentThread = std::this_thread::get_id();
+    std::thread::id previousServerThread;
+    std::thread::id previousTickThread;
+    std::thread::id previousFinalLifecycleThread;
+    bool previousServerThreadAccepting = false;
+    bool previousServerThreadHandoff = false;
+    bool borrowedServerOwnership = false;
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        if (finalLifecycleCallbackDepth_ != 0 &&
+            finalLifecycleThreadId_ != currentThread)
+            return false;
+        if (tickLoopActive_ && tickThreadId_ != currentThread)
+            return false;
+        if (!tickLoopActive_ && serverThreadId_ != currentThread) {
+            if (inlineServerThreadTasks_ != 0) return false;
+            // With no tick loop, terminal teardown may run on a different
+            // thread. Transfer ownership only for this callback scope; no
+            // tick or queued ingress can execute concurrently here.
+            previousServerThread = serverThreadId_;
+            previousTickThread = tickThreadId_;
+            previousServerThreadAccepting = serverThreadAccepting_;
+            previousServerThreadHandoff = serverThreadHandoff_;
+            serverThreadAccepting_ = false;
+            serverThreadHandoff_ = true;
+            serverThreadId_ = currentThread;
+            tickThreadId_ = currentThread;
+            borrowedServerOwnership = true;
+        }
+        previousFinalLifecycleThread = finalLifecycleThreadId_;
+        finalLifecycleThreadId_ = currentThread;
+        ++finalLifecycleCallbackDepth_;
+    }
+
+    const auto restoreOwnership = [&] {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        if (finalLifecycleCallbackDepth_ != 0)
+            --finalLifecycleCallbackDepth_;
+        if (finalLifecycleCallbackDepth_ == 0) {
+            finalLifecycleThreadId_ = previousFinalLifecycleThread;
+            if (borrowedServerOwnership) {
+                serverThreadId_ = previousServerThread;
+                tickThreadId_ = previousTickThread;
+                serverThreadAccepting_ = previousServerThreadAccepting;
+                serverThreadHandoff_ = previousServerThreadHandoff;
+            }
+        }
+    };
+    try {
+        const bool result = callback();
+        restoreOwnership();
+        return result;
+    } catch (...) {
+        restoreOwnership();
+        throw;
+    }
+}
+
 void GameServer::claimServerThreadForBootstrap() noexcept {
     std::lock_guard lock(serverThreadTasksMtx_);
     serverThreadId_ = std::this_thread::get_id();
     serverThreadAccepting_ = true;
 }
 
-void GameServer::bindServerThread() noexcept {
-    std::lock_guard lock(serverThreadTasksMtx_);
+void GameServer::bindServerThread() {
+    std::unique_lock lock(serverThreadTasksMtx_);
+    serverThreadTaskIdleCv_.wait(lock, [this] {
+        return inlineServerThreadTasks_ == 0;
+    });
     serverThreadId_ = std::this_thread::get_id();
     tickThreadId_ = serverThreadId_;
     serverThreadAccepting_ = running_.load(std::memory_order_acquire) &&
                              !shutdownStarted_.load(std::memory_order_acquire);
+    serverThreadHandoff_ = false;
 }
 
 void GameServer::releaseServerThread() noexcept {
@@ -59,6 +174,7 @@ void GameServer::releaseServerThread() noexcept {
         std::lock_guard lock(serverThreadTasksMtx_);
         if (serverThreadId_ != std::this_thread::get_id()) return;
         serverThreadAccepting_ = false;
+        serverThreadHandoff_ = false;
         serverThreadId_ = {};
         tickThreadId_ = {};
     }
@@ -91,50 +207,103 @@ void GameServer::cancelServerThreadTasks() noexcept {
 }
 
 void GameServer::waitForServerThreadTasks() {
-    if (isCurrentServerThread()) return;
+    if (isCurrentServerThread()) {
+        bool terminalPump = false;
+        {
+            std::lock_guard lock(serverThreadTasksMtx_);
+            terminalPump = shutdownStarted_.load(std::memory_order_acquire) &&
+                finalLifecycleCallbackDepth_ != 0 &&
+                finalLifecycleThreadId_ == std::this_thread::get_id();
+        }
+        if (!terminalPump) return;
+        for (;;) {
+            drainServerThreadTasks();
+            std::unique_lock lock(serverThreadTasksMtx_);
+            const auto idle = [this] {
+                return activeServerThreadTasks_.load(std::memory_order_acquire) == 0 &&
+                       inlineServerThreadTasks_ == 0 &&
+                       serverThreadTasks_.empty() &&
+                       pendingServerThreadTaskCleanups_ == 0;
+            };
+            if (idle()) return;
+            serverThreadTaskIdleCv_.wait_for(lock, std::chrono::milliseconds(1), idle);
+        }
+    }
     std::unique_lock lock(serverThreadTasksMtx_);
     serverThreadTaskIdleCv_.wait(lock, [this] {
         return activeServerThreadTasks_.load(std::memory_order_acquire) == 0 &&
+               inlineServerThreadTasks_ == 0 &&
                serverThreadTasks_.empty() &&
                pendingServerThreadTaskCleanups_ == 0;
     });
 }
 
-bool GameServer::runOnServerThread(std::function<void()> task,
-                                   std::chrono::milliseconds timeout) {
-    if (!task) return false;
+ServerThreadTaskOutcome GameServer::runOnServerThreadDetailed(
+    std::function<void()> task, std::chrono::milliseconds timeout,
+    const ServerThreadTaskWaitPolicy waitPolicy,
+    const bool allowDuringShutdown) {
+    if (!task) return ServerThreadTaskOutcome::Rejected;
 
     std::shared_ptr<ServerThreadTask> request;
     bool runInline = false;
+    bool countedInlineTask = false;
     {
         std::lock_guard lock(serverThreadTasksMtx_);
         const bool owner = serverThreadId_ != std::thread::id{} &&
                            serverThreadId_ == std::this_thread::get_id();
-        if (owner && serverThreadAccepting_ &&
-            !shutdownStarted_.load(std::memory_order_acquire)) {
+        const bool finalLifecycleOwner =
+            finalLifecycleThreadId_ == std::this_thread::get_id() &&
+            finalLifecycleCallbackDepth_ != 0;
+        const bool terminalOwnerAvailable =
+            allowDuringShutdown &&
+            shutdownStarted_.load(std::memory_order_acquire) &&
+            finalLifecycleCallbackDepth_ != 0 &&
+            finalLifecycleThreadId_ != std::thread::id{};
+        if (owner &&
+            (finalLifecycleOwner ||
+             (!serverThreadHandoff_ && serverThreadAccepting_ &&
+              (!shutdownStarted_.load(std::memory_order_acquire) ||
+               allowDuringShutdown)))) {
             runInline = true;
-        } else if (!serverThreadAccepting_ ||
+            if (!finalLifecycleOwner) {
+                ++inlineServerThreadTasks_;
+                countedInlineTask = true;
+            }
+        } else if ((!serverThreadAccepting_ && !terminalOwnerAvailable) ||
                    serverThreadId_ == std::thread::id{} ||
-                   !running_.load(std::memory_order_acquire) ||
-                   shutdownStarted_.load(std::memory_order_acquire) ||
+                   (!running_.load(std::memory_order_acquire) &&
+                    !terminalOwnerAvailable) ||
+                   (shutdownStarted_.load(std::memory_order_acquire) &&
+                    !allowDuringShutdown) ||
                    serverThreadTasks_.size() >= kMaxServerThreadTaskQueue) {
-            return false;
+            return ServerThreadTaskOutcome::Rejected;
         } else {
             try {
-                request = std::make_shared<ServerThreadTask>(std::move(task));
+                request = std::make_shared<ServerThreadTask>(
+                    std::move(task), allowDuringShutdown);
                 serverThreadTasks_.push_back(request);
             } catch (...) {
-                return false;
+                return ServerThreadTaskOutcome::Rejected;
             }
         }
     }
 
     if (runInline) {
+        const auto releaseInlineTask = [&] {
+            if (!countedInlineTask) return;
+            {
+                std::lock_guard lock(serverThreadTasksMtx_);
+                if (inlineServerThreadTasks_ != 0) --inlineServerThreadTasks_;
+            }
+            serverThreadTaskIdleCv_.notify_all();
+        };
         try {
             task();
-            return true;
+            releaseInlineTask();
+            return ServerThreadTaskOutcome::Completed;
         } catch (...) {
-            return false;
+            releaseInlineTask();
+            return ServerThreadTaskOutcome::Rejected;
         }
     }
 
@@ -155,60 +324,130 @@ bool GameServer::runOnServerThread(std::function<void()> task,
                 std::memory_order_acq_rel, std::memory_order_acquire)) {
             request->task = {};
             request->waitCv.notify_all();
+            return ServerThreadTaskOutcome::Rejected;
         }
         // A task that won the Pending -> Running race stays owned by the
-        // server thread and may commit after this timeout. Its shared request
-        // owns the callable, so returning cannot leave dangling caller state.
-        return false;
+        // server thread and may commit after this timeout. Callers with a
+        // synchronous result contract wait for its terminal state; bounded
+        // callers retain the explicit Indeterminate result.
+        const auto state = request->state.load(std::memory_order_acquire);
+        if (state == ServerThreadTask::State::Running &&
+            waitPolicy == ServerThreadTaskWaitPolicy::WaitIfRunning) {
+            request->waitCv.wait(waitLock, [&request] {
+                const auto completed = request->state.load(
+                    std::memory_order_acquire);
+                return completed == ServerThreadTask::State::Completed ||
+                       completed == ServerThreadTask::State::Failed ||
+                       completed == ServerThreadTask::State::Cancelled;
+            });
+            return request->state.load(std::memory_order_acquire) ==
+                           ServerThreadTask::State::Completed
+                ? ServerThreadTaskOutcome::Completed
+                : ServerThreadTaskOutcome::Rejected;
+        }
+        if (state == ServerThreadTask::State::Running)
+            return ServerThreadTaskOutcome::Indeterminate;
+        return state == ServerThreadTask::State::Completed
+            ? ServerThreadTaskOutcome::Completed
+            : ServerThreadTaskOutcome::Rejected;
     }
     return request->state.load(std::memory_order_acquire) ==
-           ServerThreadTask::State::Completed;
+                   ServerThreadTask::State::Completed
+        ? ServerThreadTaskOutcome::Completed
+        : ServerThreadTaskOutcome::Rejected;
 }
 
-void GameServer::startTickLoop() {
-    if (tickThread_.joinable())
-        throw std::logic_error("tick loop is already running");
-    tickThread_ = std::thread([this] {
-        bindServerThread();
-        using clock = std::chrono::steady_clock;
-        auto next = clock::now() + std::chrono::milliseconds(50);
-        while (running_.load(std::memory_order_acquire)) {
-            std::this_thread::sleep_until(next);
-            next += std::chrono::milliseconds(50);
-            if (!running_.load(std::memory_order_acquire)) break;
-            ++tickNo_;
-            try {
-                tickOnce();
-            } catch (const std::exception& e) {
-                std::fprintf(stderr, "[cppfm] fatal tick %lld: %s\n",
-                             static_cast<long long>(tickNo_), e.what());
-                requestStop();
-                break;
-            } catch (...) {
-                std::fprintf(stderr, "[cppfm] fatal tick %lld: unknown exception\n",
-                             static_cast<long long>(tickNo_));
-                requestStop();
-                break;
-            }
-        }
+bool GameServer::runOnServerThread(std::function<void()> task,
+                                   std::chrono::milliseconds timeout) {
+    return runOnServerThreadDetailed(std::move(task), timeout) ==
+           ServerThreadTaskOutcome::Completed;
+}
+
+bool GameServer::startTickLoop() {
+    std::unique_lock startupLock(lifecycleMtx_);
+    if (shutdownStarted_.load(std::memory_order_acquire) ||
+        stopRequested_.load(std::memory_order_seq_cst) ||
+        !running_.load(std::memory_order_acquire))
+        return false;
+    {
+        std::lock_guard lock(serverThreadTasksMtx_);
+        if (tickLoopActive_)
+            throw std::logic_error("tick loop is already running");
+        tickLoopActive_ = true;
+        serverThreadHandoff_ = true;
+        serverThreadAccepting_ = false;
+    }
+    startupLock.unlock();
+    bindServerThread();
+    const auto finishTickLoop = [this] {
+        // Fabric's final lifecycle events must run while the JNI bridge is
+        // still published and while this thread remains the server owner.
+        // JvmRuntime::stop() has an idempotent fallback for paths that never
+        // create a tick loop (for example startup failure).
+        if (jvmRuntime_) (void)jvmRuntime_->onServerStopping();
         releaseServerThread();
-    });
+        {
+            std::lock_guard lock(serverThreadTasksMtx_);
+            tickLoopActive_ = false;
+        }
+        serverThreadTaskIdleCv_.notify_all();
+    };
+
+    using clock = std::chrono::steady_clock;
+    auto next = clock::now() + std::chrono::milliseconds(50);
+    while (running_.load(std::memory_order_acquire)) {
+        try {
+            // Accept work is non-blocking and shares the authoritative server
+            // thread with initialization, Fabric callbacks, and world ticks.
+            acceptPendingConnections();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[cppfm] fatal accept pass: %s\n", e.what());
+            requestStop();
+            break;
+        } catch (...) {
+            std::fprintf(stderr, "[cppfm] fatal accept pass: unknown exception\n");
+            requestStop();
+            break;
+        }
+        if (!running_.load(std::memory_order_acquire)) break;
+        std::this_thread::sleep_until(next);
+        next += std::chrono::milliseconds(50);
+        if (!running_.load(std::memory_order_acquire)) break;
+        ++tickNo_;
+        try {
+            tickOnce();
+        } catch (const std::exception& e) {
+            std::fprintf(stderr, "[cppfm] fatal tick %lld: %s\n",
+                         static_cast<long long>(tickNo_), e.what());
+            requestStop();
+            break;
+        } catch (...) {
+            std::fprintf(stderr, "[cppfm] fatal tick %lld: unknown exception\n",
+                         static_cast<long long>(tickNo_));
+            requestStop();
+            break;
+        }
+    }
+    finishTickLoop();
+    return true;
 }
 void GameServer::stopTickLoop() {
-    if (tickThread_.joinable()) {
-        if (tickThread_.get_id() == std::this_thread::get_id()) {
-            // Keep ownership in the server.  An external stop/destructor can
-            // join it after the tick callback returns; detaching here would
-            // let the callback outlive the GameServer object.
-            std::fprintf(stderr, "[cppfm] tick thread requested self-stop; deferred join\n");
-            return;
-        }
-        std::fprintf(stderr, "[cppfm] joining tick thread\n");
-        tickThread_.join();
-        std::fprintf(stderr, "[cppfm] tick thread joined\n");
-    }
+    std::unique_lock lock(serverThreadTasksMtx_);
+    if (tickThreadId_ == std::this_thread::get_id()) return;
+    if (!tickLoopActive_) return;
+    std::fprintf(stderr, "[cppfm] waiting for the server tick loop to stop\n");
+    serverThreadTaskIdleCv_.wait(lock, [this] { return !tickLoopActive_; });
 }
 void GameServer::runForever() {
+    std::unique_lock startupLock(lifecycleMtx_);
+    // stop() may have completed before a delayed runForever() call begins.
+    // Do not reopen the listener or publish a janitor after teardown.
+    if (shutdownStarted_.load(std::memory_order_acquire) ||
+        stopRequested_.load(std::memory_order_seq_cst))
+        return;
+    if (running_.load(std::memory_order_acquire) ||
+        platform::isValid(listenFd_.load(std::memory_order_acquire)))
+        throw std::logic_error("server loop is already started");
     if (!platform::initializeSockets())
         throw std::runtime_error("could not initialize the platform socket layer");
     const auto fd = platform::createTcpSocket();
@@ -237,9 +476,23 @@ void GameServer::runForever() {
         throw std::runtime_error("listen() failed: " +
                                  platform::socketErrorText(platform::lastSocketError()));
     }
+    if (!platform::setSocketNonBlocking(fd)) {
+        listenFd_.exchange(platform::invalid_socket, std::memory_order_acq_rel);
+        platform::closeSocket(fd);
+        throw std::runtime_error("could not make the listener non-blocking: " +
+                                 platform::socketErrorText(platform::lastSocketError()));
+    }
+    if (stopRequested_.load(std::memory_order_seq_cst)) {
+        const auto opened = listenFd_.exchange(platform::invalid_socket,
+                                               std::memory_order_acq_rel);
+        if (platform::isValid(opened)) platform::closeSocket(opened);
+        return;
+    }
     running_.store(true, std::memory_order_release);
+    // requestStop() is also called directly by the signal handler and cannot
+    // take lifecycleMtx_. Recheck after publication to close that narrow race.
+    if (stopRequested_.load(std::memory_order_seq_cst)) requestStop();
     try {
-        startTickLoop();
         janitorThread_ = std::thread([this] {
             try {
                 std::unique_lock lock(stopCvMtx_);
@@ -301,7 +554,11 @@ void GameServer::runForever() {
                 requestStop();
             }
         });
-        acceptLoop();
+        startupLock.unlock();
+        // The caller owns the authoritative server thread. The listener is
+        // polled non-blockingly from each loop pass, so no separate tick
+        // thread can split Fabric callbacks from initialization.
+        if (!startTickLoop()) return;
         requestStop();
     } catch (...) {
         requestStop();
@@ -315,8 +572,13 @@ void GameServer::runForever() {
         throw;
     }
 }
-void GameServer::acceptLoop() {
-    while (running_.load(std::memory_order_acquire)) {
+void GameServer::acceptPendingConnections() {
+    // Bound work per pass so a continuously full listen queue cannot starve
+    // the 20 Hz world tick.
+    constexpr std::size_t kAcceptBatchLimit = 32;
+    std::size_t acceptedCount = 0;
+    while (running_.load(std::memory_order_acquire) &&
+           acceptedCount < kAcceptBatchLimit) {
         sockaddr_in cli{};
         platform::socket_length_t cl = sizeof(cli);
         const auto listenFd = listenFd_.load(std::memory_order_acquire);
@@ -325,12 +587,16 @@ void GameServer::acceptLoop() {
             listenFd, reinterpret_cast<sockaddr*>(&cli), &cl);
         if (!platform::isValid(fd)) {
             const int error = platform::lastSocketError();
-            if (g_stopRequested || !running_.load(std::memory_order_acquire)) break;
+            if (g_stopRequested || !running_.load(std::memory_order_acquire))
+                return;
             if (platform::isInterrupted(error)) continue;
+            if (platform::isWouldBlock(error)) return;
             std::fprintf(stderr, "[cppfm] accept failed: %s\n",
                          platform::socketErrorText(error).c_str());
-            break;
+            requestStop();
+            return;
         }
+        ++acceptedCount;
         std::fprintf(stderr, "[cppfm] accepted fd=%llu\n",
                      static_cast<unsigned long long>(platform::socketNumber(fd)));
         if (!acceptGate_.allow(steadyNowMs())) {
@@ -405,17 +671,20 @@ void GameServer::acceptLoop() {
                 if (conn) conn->close();
                 else platform::closeSocket(fd);
             });
-            if (!registerSessionThread(std::move(worker), finished)) break;
+            if (!registerSessionThread(std::move(worker), finished)) {
+                requestStop();
+                return;
+            }
         } catch (const std::exception& e) {
             platform::closeSocket(fd);
             std::fprintf(stderr, "[cppfm] could not create session worker: %s\n", e.what());
             requestStop();
-            break;
+            return;
         } catch (...) {
             platform::closeSocket(fd);
             std::fprintf(stderr, "[cppfm] could not create session worker\n");
             requestStop();
-            break;
+            return;
         }
     }
 }
@@ -480,6 +749,11 @@ void GameServer::joinSessionThreads() {
     }
     for (auto& session : workers) {
         if (!session.worker.joinable()) continue;
+        while (session.finished &&
+               !session.finished->load(std::memory_order_acquire)) {
+            if (isCurrentServerThread()) drainServerThreadTasks();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         session.worker.join();
     }
     std::lock_guard lock(activeConnectionsMtx_);
@@ -519,16 +793,29 @@ void GameServer::joinJanitorThread() {
     janitorThread_.join();
 }
 void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
-    std::int32_t entityId = 0;
+    std::lock_guard transitionLock(p.digTransitionMtx);
     std::int32_t digX = 0, digY = 0, digZ = 0;
     std::int8_t dimension = 0;
     {
-        std::lock_guard playerLock(p.stateMtx);
-        entityId = p.entityId;
+        std::lock_guard digLock(p.digMtx);
         digX = p.digX;
         digY = p.digY;
         digZ = p.digZ;
+    }
+    {
+        std::lock_guard playerLock(p.stateMtx);
         dimension = p.dimension;
+    }
+    broadcastDigStageAt(p, dimension, digX, digY, digZ, stage);
+}
+void GameServer::broadcastDigStageAt(Player& p, std::int8_t dimension,
+                                     std::int32_t digX, std::int32_t digY,
+                                     std::int32_t digZ,
+                                     std::int8_t stage) {
+    std::int32_t entityId = 0;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        entityId = p.entityId;
     }
     WriteBuffer b;
     b.varint(entityId);
@@ -556,9 +843,6 @@ void GameServer::addHungerExhaustion(Player& p, float amount) {
 void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
     HungerManager::addFoodAndSaturation(p, food, sat);
     sendSetHealth(p);
-}
-void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
-    HungerManager::handleFoodConsume(p, itemName, *this);
 }
 void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
     std::array<std::uint8_t, 16> uuid{};
@@ -636,10 +920,7 @@ void GameServer::spawnMobFor(std::int8_t dimension, MobKind kind, double x,
     mob->x = x; mob->y = y; mob->z = z;
     mob->lastSeenMs = nowMs();
     if (jvmRuntime_ && !jvmRuntime_->onMobSpawn(*mob, x, y, z)) return;
-    {
-        std::lock_guard lk(entsMtx_);
-        mobs_.push_back(mob);
-    }
+    addMob(mob);
     broadcastMobSpawn(*mob);
     if (MobEntity::isBoss(kind) && bossAI_) {
         // BossAI also emits the boss-bar packet.  Give it a detached state
@@ -665,13 +946,16 @@ void GameServer::spawnMobFor(std::int8_t dimension, MobKind kind, double x,
     }
 }
 void GameServer::broadcastMobSpawn(const MobEntity& mob) {
+    SimulationDispatchGuard simulation(simulationDispatchMtx_);
     if (mobStateLockOwnedByCurrentThread()) {
         runWithoutMobStateLock([this, &mob] { broadcastMobSpawn(mob); });
         return;
     }
+    if (!containsMob(&mob)) return;
     MobEntity snapshot;
     {
         std::lock_guard entityLock(*mob.stateMtx);
+        if (mob.dead) return;
         snapshot = mob;
     }
     WriteBuffer b;
@@ -684,6 +968,14 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExceptInDimension(snapshot.dimension, nullptr,
                                      pl::sc::SpawnEntity, b);
+    if (snapshot.isTamed && MobEntity::usesHorseTemper(snapshot.kind)) {
+        WriteBuffer metadata;
+        metadata.varint(snapshot.entityId);
+        meta::writeMetaByte(metadata, 17, 2); // AbstractHorseEntity Tame flag
+        metadata.u8(255);
+        broadcastPacketExceptInDimension(
+            snapshot.dimension, nullptr, pl::sc::SetEntityMetadata, metadata);
+    }
     sendEquipment(snapshot);
     // JUMP_STRENGTH) via UpdateAttributes 0x7C so clients see 15-30 HP, not the static default.
     if (snapshot.kind == MobKind::Horse) {
@@ -755,7 +1047,8 @@ void GameServer::eraseMobAi(std::int32_t entityId) {
 }
 
 void GameServer::noteMobHurt(std::int32_t entityId,
-                             std::int32_t attackerEntityId) {
+                             std::int32_t attackerEntityId,
+                             std::int32_t lootingLevel) {
     std::shared_ptr<MobAiEntry> entry;
     {
         std::lock_guard lock(mobAiMtx_);
@@ -763,9 +1056,91 @@ void GameServer::noteMobHurt(std::int32_t entityId,
         if (it != mobAi_.end()) entry = it->second;
     }
     if (!entry || !entry->ctx) return;
-    entry->ctx->lastHurtTick.store(tickNo_, std::memory_order_release);
-    entry->ctx->lastHurtByEntityId.store(attackerEntityId,
-                                         std::memory_order_release);
+    const auto hurtTick = tickNo_.load(std::memory_order_acquire);
+    entry->ctx->lastHurtTick.store(hurtTick, std::memory_order_release);
+    // Environmental damage updates AI hurt memories but must not erase or
+    // extend the separate vanilla last-player-hit credit window.
+    if (attackerEntityId >= 0) {
+        entry->ctx->lastPlayerHurtByEntityId.store(
+            attackerEntityId, std::memory_order_release);
+        entry->ctx->lastPlayerHurtTick.store(
+            hurtTick, std::memory_order_release);
+        entry->ctx->lastPlayerHurtLootingLevel.store(
+            std::max(0, lootingLevel), std::memory_order_release);
+    }
+}
+
+LootContext GameServer::mobLootContextForDeath(
+    std::int32_t entityId, bool entityOnFire,
+    float explosionRadius) const {
+    LootContext context;
+    context.hasEntityContext = true;
+    context.entityOnFire = entityOnFire;
+    context.explosionRadius = std::max(0.f, explosionRadius);
+
+    std::shared_ptr<MobAiEntry> entry;
+    {
+        std::lock_guard lock(mobAiMtx_);
+        const auto it = mobAi_.find(entityId);
+        if (it != mobAi_.end()) entry = it->second;
+    }
+    if (!entry || !entry->ctx) return context;
+
+    const auto playerId = entry->ctx->lastPlayerHurtByEntityId.load(
+        std::memory_order_acquire);
+    const auto playerHurtTick = entry->ctx->lastPlayerHurtTick.load(
+        std::memory_order_acquire);
+    const auto currentTick = tickNo_.load(std::memory_order_acquire);
+    const bool recentPlayerDamage = playerId >= 0 && playerHurtTick >= 0 &&
+        currentTick >= playerHurtTick &&
+        currentTick - playerHurtTick <= 100;
+    context.wasKilledByPlayer = recentPlayerDamage;
+    context.lootingLevel = recentPlayerDamage
+        ? entry->ctx->lastPlayerHurtLootingLevel.load(
+              std::memory_order_acquire)
+        : 0;
+    return context;
+}
+
+void GameServer::spawnMobLootFor(MobKind kind, std::int8_t dimension,
+                                 double x, double y, double z,
+                                 const LootContext& context) {
+    const std::string kindName = MobEntity::kindName(kind);
+    const auto colon = kindName.find(':');
+    const std::string nameSpace = colon == std::string::npos
+        ? "minecraft" : kindName.substr(0, colon);
+    const std::string base = colon == std::string::npos
+        ? kindName : kindName.substr(colon + 1);
+    const std::string tableId = nameSpace + ":entities/" + base;
+
+    if (const auto* table = datapackManager_.lootTables.find(tableId)) {
+        const auto evaluated = datapackManager_.lootTables.evaluateRegisteredTableBestEffort(
+            tableId, {}, &context);
+        if (evaluated) {
+            for (const auto& stack : *evaluated) {
+                if (stack.empty()) continue;
+                spawnItemDropFor(
+                    dimension, x, y, z, stack,
+                    (nextRandom() / (double)RAND_MAX - .5) * .15, .1,
+                    (nextRandom() / (double)RAND_MAX - .5) * .15);
+            }
+            return;
+        }
+        if (table->suppressDefaultDropFallback) return;
+    }
+
+    const auto fallback = MobEntity::dropFor(kind);
+    if (!fallback.itemId) return;
+    int count = fallback.count;
+    if (context.lootingLevel > 0)
+        count = std::min(64, count +
+            static_cast<int>(nextRandom() % (context.lootingLevel + 1)));
+    if (count <= 0) return;
+    spawnItemDropFor(
+        dimension, x, y, z, fallback.itemId,
+        static_cast<std::uint8_t>(count),
+        (nextRandom() / (double)RAND_MAX - .5) * .15, .1,
+        (nextRandom() / (double)RAND_MAX - .5) * .15);
 }
 std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) {
     if (mobStateLockOwnedByCurrentThread()) {
@@ -811,16 +1186,17 @@ void GameServer::initPlayerProgress(Player& p) {
     }
     grantAdvancement(p, "cppfm:root");
 }
-void GameServer::savePlayerProgress(Player& p) {
+bool GameServer::savePlayerProgress(Player& p) {
     std::lock_guard playerLock(p.stateMtx);
-    if (!p.stats || !p.advancements) return;
+    if (!p.stats || !p.advancements) return false;
     if (p.joinTick) {
         const std::int64_t ticks = tickNo_ - p.joinTick;
         p.stats->add("minecraft:custom|minecraft:play_time", ticks);
         p.joinTick = tickNo_;
     }
-    p.stats->save(uuidToHex(p.uuid));
-    p.advancements->save();
+    const bool statsSaved = p.stats->save(uuidToHex(p.uuid));
+    const bool advancementsSaved = p.advancements->save();
+    return statsSaved && advancementsSaved;
 }
 void GameServer::sendAdvancementsTo(Player& p, bool reset) {
     const auto merged = getMergedAdvancements();
@@ -836,6 +1212,22 @@ void GameServer::sendAdvancementsTo(Player& p, bool reset) {
             });
     }
     connection->trySendPacket(pl::sc::UpdateAdvancements, b);
+}
+void GameServer::sendRecipeBookToPlayers() {
+    const auto packetBody = recipe_book::makeAddPacketBody(
+        recipes_.all(), nullptr, true);
+    for (const auto& player : playersSnapshot()) {
+        if (!player) continue;
+        std::shared_ptr<Connection> connection;
+        {
+            std::lock_guard playerLock(player->stateMtx);
+            if (!player->inPlay) continue;
+            connection = player->conn;
+        }
+        if (connection &&
+            !connection->trySendPacket(pl::sc::RecipeBookAdd, packetBody))
+            connection->close();
+    }
 }
 void GameServer::grantAdvancement(Player& p, const std::string& id) {
     bool granted = false;
@@ -1317,6 +1709,35 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
         }
     }
 }
+void GameServer::publishPlayerEffectChanges(
+    Player& player, const std::int32_t entityId, const std::int8_t dimension,
+    const std::shared_ptr<Connection>& connection,
+    const std::vector<std::uint8_t>& removed,
+    const std::vector<EffectInstance>& updated, const bool stateChanged) {
+    for (const auto effect : removed) {
+        WriteBuffer packet;
+        packet.varint(entityId);
+        packet.varint(effect);
+        if (connection)
+            connection->trySendPacket(pl::sc::RemoveMobEffect, packet);
+        broadcastPacketExceptInDimension(
+            dimension, &player, pl::sc::RemoveMobEffect, packet);
+    }
+    for (const auto& effect : updated) {
+        WriteBuffer packet;
+        packet.varint(entityId);
+        packet.varint(effect.type);
+        packet.varint(effect.amplifier);
+        packet.varint(effect.durationTicks);
+        packet.u8(static_cast<std::uint8_t>(effectFlags(effect)));
+        if (connection)
+            connection->trySendPacket(pl::sc::EntityEffect, packet);
+        broadcastPacketExceptInDimension(
+            dimension, &player, pl::sc::EntityEffect, packet);
+    }
+    if (stateChanged) onEffectsChanged(&player);
+}
+
 void GameServer::onEffectsChanged(Player* p) {
     if (!p || !hasAdvancementManager(*p)) return;
     std::vector<EffectInstance> effects;
@@ -1586,41 +2007,5 @@ bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int f
         resendInventory(p);
     }
     return true;
-}
-void GameServer::storeCookie(const std::array<std::uint8_t, 16>& uuid,
-                             const std::string& key,
-                             const std::vector<std::uint8_t>& value) {
-    try {
-        const std::string dir = cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid);
-        std::filesystem::create_directories(dir + "/../.." );
-        std::filesystem::create_directories(dir.substr(0, dir.find_last_of('/')));
-        // sanitize key into a file name
-        std::string safe = key;
-        for (auto& c : safe)
-            if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-        std::ofstream f(dir + "/" + safe, std::ios::binary);
-        f.write(reinterpret_cast<const char*>(value.data()),
-                static_cast<std::streamsize>(value.size()));
-    } catch (...) {}
-}
-void GameServer::eraseCookie(const std::array<std::uint8_t, 16>& uuid,
-                             const std::string& key) {
-    std::string safe = key;
-    for (auto& c : safe)
-        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-    std::error_code ec;
-    std::filesystem::remove(cfg_.worldDir + "/data/cookies/" +
-                            uuidToHex(uuid) + "/" + safe, ec);
-}
-std::vector<std::uint8_t> GameServer::loadCookie(
-    const std::array<std::uint8_t, 16>& uuid, const std::string& key) {
-    std::string safe = key;
-    for (auto& c : safe)
-        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-    std::ifstream f(cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid) + "/" + safe,
-                    std::ios::binary);
-    if (!f) return {};
-    return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
-                                     std::istreambuf_iterator<char>());
 }
 } // namespace cppfm

@@ -18,7 +18,8 @@ public final class ModifyConstantFixture implements DedicatedServerModInitialize
     public void onInitializeServer() {
         ServerLifecycleEvents.SERVER_STARTED.register(server -> {
             int bottom = server.getOverworld().getBottomY();
-            result(bottom == -64 && seen);
+            int chunkHeight = server.getOverworld().getChunk(0, 0).getHeight();
+            result(bottom == -64 && chunkHeight == 384 && seen);
         });
     }
 

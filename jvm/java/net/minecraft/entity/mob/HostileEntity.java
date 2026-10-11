@@ -13,6 +13,13 @@ import net.minecraft.world.WorldAccess;
 
 /** 1.21.4 hostile-mob ABI used by Carpet's spawn and despawn mixins. */
 public class HostileEntity extends MobEntity implements Monster {
+    public static HostileEntity createNativeWrapper(long handle) {
+        String typeId = net.minecraft.util.NativeAccess.entityType(handle);
+        return new HostileEntity(handle,
+            World.of(net.minecraft.util.NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
+
     protected HostileEntity(EntityType<?> type, World world) { super(type, world); }
     protected HostileEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
     protected HostileEntity() { super((EntityType<?>) null, (World) null); }
