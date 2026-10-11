@@ -37,7 +37,7 @@ compatibility manifest as well.
 | 15 | `15-redirect` | executable call Redirect | runtime; transformer required |
 | 16 | `16-overwrite` | executable Overwrite value | runtime |
 | 17 | `17-modify-arg` | executable argument modifier | runtime; transformer required |
-| 18 | `18-modify-constant` | executable constant modifier | runtime; transformer required |
+| 18 | `18-modify-constant` | executable 1.21.4 chunk-height constant modifier | runtime; transformer required |
 | 19 | `19-modify-variable` | executable local/argument modifier | runtime; transformer required |
 | 20 | `20-local-capture` | captured local value at TAIL | runtime; transformer required |
 | 21 | `21-two-mod-transform-order` + `21-two-mod-transform-order-second` | two directory-mod handlers in declared dependency order (priority 900 then 1100) | runtime |

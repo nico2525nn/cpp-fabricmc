@@ -10,6 +10,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.UUID;
 import net.minecraft.entity.Entity;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.PlayerManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.server.world.ServerWorld;
@@ -129,13 +131,13 @@ public final class EntityArgumentType implements ArgumentType<EntityArgumentType
                 if (world != null) for (Entity entity : world.getEntities()) addIfAllowed(result, entity);
                 for (ServerPlayerEntity player : onlinePlayers(source)) addIfAllowed(result, player);
             } else {
-                ServerPlayerEntity player = source.getServer() == null ? null
-                    : source.getServer().getPlayerManager().getPlayer(token);
+                MinecraftServer server = source.getServer();
+                PlayerManager playerManager = server == null ? null : server.getPlayerManager();
+                ServerPlayerEntity player = playerManager == null ? null : playerManager.getPlayer(token);
                 if (player == null) {
                     try {
                         UUID uuid = UUID.fromString(token);
-                        player = source.getServer() == null ? null
-                            : source.getServer().getPlayerManager().getPlayer(uuid);
+                        player = playerManager == null ? null : playerManager.getPlayer(uuid);
                     } catch (IllegalArgumentException ignored) { }
                 }
                 addIfAllowed(result, player);
@@ -145,7 +147,9 @@ public final class EntityArgumentType implements ArgumentType<EntityArgumentType
         }
 
         private List<ServerPlayerEntity> onlinePlayers(ServerCommandSource source) {
-            return source.getServer() == null ? List.of() : source.getServer().getPlayerManager().getPlayerList();
+            MinecraftServer server = source.getServer();
+            PlayerManager playerManager = server == null ? null : server.getPlayerManager();
+            return playerManager == null ? List.of() : playerManager.getPlayerList();
         }
 
         private void addIfAllowed(Collection<Entity> result, Entity entity) {

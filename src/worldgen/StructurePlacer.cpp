@@ -118,18 +118,23 @@ int StructurePlacer::load(const std::string& baseDir) {
             if (auto* lt2 = v.find("loot_tables"); lt2 && lt2->isObj()) {
                 for (auto& [k,val] : lt2->obj) if (val.isStr()) cf.lootByPos.emplace_back(k, val.asStr());
             }
-            configured_.emplace(cf.name, std::move(cf));
+            // Keep the key independently: reading cf.name after moving cf is
+            // valid but unspecified, and commonly produced an empty placed
+            // feature name. That silently loaded configured geometry while
+            // making it impossible for chunk generation to select it.
+            const std::string featureName = cf.name;
+            configured_.emplace(featureName, std::move(cf));
             // placed
             PlacedFeature pf;
-            pf.name = cf.name;
-            pf.featureName = cf.name;
+            pf.name = featureName;
+            pf.featureName = featureName;
             if (auto* pl = v.find("placement"); pl && pl->isObj()) {
                 if (auto* sp = pl->find("spacing")) pf.spacing = sp->asInt(pf.spacing);
                 if (auto* se = pl->find("separation")) pf.separation = se->asInt(pf.separation);
                 if (auto* sa = pl->find("salt")) pf.salt = (std::uint64_t)sa->asI64(pf.salt);
                 if (auto* fr = pl->find("frequency")) pf.frequency = fr->number;
             }
-            placed_.emplace(pf.name, std::move(pf));
+            placed_.emplace(featureName, std::move(pf));
             ++loaded;
         }
     } catch (...) {}

@@ -8,6 +8,8 @@ import java.util.Set;
 import java.util.UUID;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.block.BlockState;
+import net.minecraft.entity.mob.MobEntity;
+import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.NativeAccess;
 import net.minecraft.util.math.BlockPos;
@@ -18,7 +20,7 @@ import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.World;
 import net.minecraft.nbt.NbtCompound;
 
-/** Handle-backed base entity. A zero handle is a valid inert Java-only entity. */
+/** Handle-backed base entity. A zero handle denotes the absence of a native entity. */
 public class Entity implements net.minecraft.world.entity.EntityLike,
         net.fabricmc.fabric.api.attachment.v1.AttachmentTarget {
     protected final long nativeHandle;
@@ -46,7 +48,34 @@ public class Entity implements net.minecraft.world.entity.EntityLike,
     }
     protected Entity(EntityType<?> type, World world) { this(0L, world, type); }
 
-    public static Entity of(long handle) { return WrapperCache.get(Entity.class, handle, Entity::new); }
+    public static Entity of(long handle) {
+        if (handle == 0L) return null;
+        return WrapperCache.get(Entity.class, handle,
+                                Entity::createNativeBackedWrapper);
+    }
+    private static Entity createNativeBackedWrapper(long handle) {
+        String typeId = NativeAccess.entityType(handle);
+        if ("minecraft:player".equals(typeId))
+            return ServerPlayerEntity.createNativeWrapper(handle);
+        EntityType<?> nativeType = EntityType.byId(typeId);
+        if ("minecraft:armor_stand".equals(typeId))
+            return net.minecraft.entity.decoration.ArmorStandEntity
+                .createNativeWrapper(handle);
+        if (NativeAccess.entityIsLiving(handle)) {
+            if (NativeAccess.entityIsHostile(handle))
+                return net.minecraft.entity.mob.HostileEntity
+                    .createNativeWrapper(handle);
+            if (NativeAccess.entityIsFish(handle))
+                return net.minecraft.entity.passive.FishEntity
+                    .createNativeWrapper(handle);
+            if (NativeAccess.entityIsAnimal(handle))
+                return net.minecraft.entity.passive.AnimalEntity
+                    .createNativeWrapper(handle);
+            return MobEntity.createNativeWrapper(handle);
+        }
+        return new Entity(handle, World.of(NativeAccess.entityWorld(handle)),
+                          nativeType);
+    }
     public long nativeHandle() { return nativeHandle; }
     public int getId() { return NativeAccess.playerEntityId(nativeHandle); }
     public double getX() { return nativeHandle == 0 ? localX : NativeAccess.coordinate(nativeHandle, 0); }
@@ -129,7 +158,17 @@ public class Entity implements net.minecraft.world.entity.EntityLike,
 
     public boolean isAlive() { return !removed && (nativeHandle == 0 ? type != null : !NativeAccess.entityDead(nativeHandle)); }
     public boolean isRemoved() { return removed; }
-    public void remove(RemovalReason reason) { removed = true; }
+    public void remove(RemovalReason reason) {
+        if (removed || reason == null) return;
+        if (nativeHandle != 0L) {
+            final int nativeReason;
+            if (reason == RemovalReason.KILLED) nativeReason = 0;
+            else if (reason == RemovalReason.DISCARDED) nativeReason = 1;
+            else return;
+            if (!NativeAccess.removeEntity(nativeHandle, nativeReason)) return;
+        }
+        removed = true;
+    }
     public void discard() { remove(RemovalReason.DISCARDED); }
     public boolean isPlayer() { return this instanceof net.minecraft.entity.player.PlayerEntity; }
     public boolean isSneaking() { return false; }

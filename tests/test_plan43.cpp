@@ -7,6 +7,8 @@
 #include "ServerProcess.hpp"
 #include "Harness.hpp"
 #include "../src/core/NBT.hpp"
+#include "../src/game/Items.hpp"
+#include "../src/generated/ItemIds.hpp"
 #include "../src/proto/Ids.hpp"
 #include <sys/wait.h>
 #include <unistd.h>
@@ -18,6 +20,8 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <string>
+#include <string_view>
 
 using namespace cppfm;
 using namespace cpptest;
@@ -44,6 +48,77 @@ static bool waitChat(TestClient& c, const std::string& substr, int ms=5000){
     return false;
 }
 
+static int lastInventoryItemCount(TestClient& c, std::uint32_t itemId,
+                                  std::size_t slotIndex) {
+    const auto packets = c.recentSnapshot();
+    for (auto packet = packets.rbegin(); packet != packets.rend(); ++packet) {
+        if (packet->id != proto::pl::sc::ContainerSetContent) continue;
+        try {
+            ReadBuffer input(packet->body);
+            if (input.varint() != 0) continue;
+            (void)input.varint(); // state id
+            const auto slotCount = input.varint();
+            if (slotCount < 0 ||
+                static_cast<std::size_t>(slotCount) <= slotIndex)
+                continue;
+            for (std::int32_t index = 0; index < slotCount; ++index) {
+                const auto stack = ItemStack::read(input);
+                if (static_cast<std::size_t>(index) == slotIndex)
+                    return stack.itemId == itemId ? stack.count : 0;
+            }
+        } catch (const std::exception&) {
+        }
+    }
+    return -1;
+}
+
+static bool nbtContainsString(const nbt::Reader::Value& value,
+                              std::string_view expected) {
+    if (value.tag == nbt::String && value.str.find(expected) != std::string::npos)
+        return true;
+    for (const auto& child : value.list)
+        if (nbtContainsString(child, expected)) return true;
+    for (const auto& [name, child] : value.comp) {
+        (void)name;
+        if (nbtContainsString(child, expected)) return true;
+    }
+    return false;
+}
+
+static bool chunkContainsSignText(const Packet& packet, int x, int y, int z,
+                                  std::string_view expected) {
+    if (packet.id != proto::pl::sc::LevelChunkWithLight) return false;
+    try {
+        ReadBuffer input(packet.body);
+        const auto chunkX = input.i32();
+        const auto chunkZ = input.i32();
+        if (chunkX != (x >> 4) || chunkZ != (z >> 4)) return false;
+
+        nbt::Reader(input).skipRoot(); // heightmaps
+        const auto sectionDataLength = input.varint();
+        if (sectionDataLength < 0) return false;
+        input.bytes(static_cast<std::size_t>(sectionDataLength));
+
+        const auto blockEntityCount = input.varint();
+        if (blockEntityCount < 0) return false;
+        const auto localX = static_cast<std::uint8_t>((x % 16 + 16) % 16);
+        const auto localZ = static_cast<std::uint8_t>((z % 16 + 16) % 16);
+        for (std::int32_t index = 0; index < blockEntityCount; ++index) {
+            const auto packedXZ = input.u8();
+            const auto entityY = input.i16();
+            const auto type = input.varint();
+            auto updateTag = nbt::Reader(input).readNamedValue();
+            if (type == 7 && (packedXZ >> 4) == localX &&
+                (packedXZ & 0x0f) == localZ && entityY == y &&
+                nbtContainsString(updateTag, expected))
+                return true;
+        }
+    } catch (const std::exception&) {
+        return false;
+    }
+    return false;
+}
+
 // last sc Abilities 0x3A flags byte (-1 if none yet)
 static int lastAbilitiesFlags(TestClient& c) {
     const auto recent = c.recentSnapshot();
@@ -60,6 +135,29 @@ static bool waitAbilitiesFlags(TestClient& c, int want, int ms=5000) {
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
     return lastAbilitiesFlags(c) == want;
+}
+
+static int lastGameEventMode(TestClient& c) {
+    const auto recent = c.recentSnapshot();
+    for (auto it = recent.rbegin(); it != recent.rend(); ++it) {
+        if (it->id != proto::pl::sc::GameEvent || it->body.size() < 5)
+            continue;
+        ReadBuffer body(it->body);
+        // Protocol 769 uses event reason 3 for change_game_mode; reason 4 is
+        // the distinct game-won event.
+        if (body.u8() == 3) return static_cast<int>(std::lround(body.f32()));
+    }
+    return -1;
+}
+
+static bool waitGameEventMode(TestClient& c, int want, int ms=5000) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (lastGameEventMode(c) == want) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+    return lastGameEventMode(c) == want;
 }
 
 // --- W-03: signed command ----------------------------------------------------
@@ -183,9 +281,6 @@ static void tFallDamage(ServerProc& srv) {
 
 // --- W-02: use_entity --------------------------------------------------------
 static std::int32_t summonHorseNear(TestClient& c, const char* who) {
-    // NOTE: /summon takes NO position args (server spawns at player+(2,1,2));
-    // extra tokens fail brigadier parse, so send the bare command.
-    (void)who;
     // Snapshot the entity-id high-water mark before summoning. A newly joined
     // client's initial entity stream can still contain older horses after
     // join() returns; treating any post-snapshot horse packet as ours makes
@@ -193,7 +288,15 @@ static std::int32_t summonHorseNear(TestClient& c, const char* who) {
     std::int32_t highestSeenEntityId = 0;
     for (const auto& s : c.spawns())
         if (s.eid > highestSeenEntityId) highestSeenEntityId = s.eid;
-    c.sendChatCommand("summon minecraft:horse");
+    c.sendChatCommand("summon minecraft:horse ~1 ~ ~");
+    if (!waitChat(c, "Summoned minecraft:horse", 5000)) {
+        std::fprintf(stderr,
+                     "[plan43] %s summon command did not acknowledge (alive=%d lastError=%s)\n",
+                     who, static_cast<int>(c.alive()), c.lastError().c_str());
+        for (const auto& line : c.chatLinesSnapshot())
+            std::fprintf(stderr, "[plan43] observed chat: %s\n", line.c_str());
+        return -1;
+    }
     auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(6000);
     while (std::chrono::steady_clock::now() < deadline) {
         auto ss = c.spawns();
@@ -203,16 +306,152 @@ static std::int32_t summonHorseNear(TestClient& c, const char* who) {
         if (found >= 0) return found;
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
+    std::fprintf(stderr,
+                 "[plan43] %s summon acknowledged but no new horse spawn packet (high-water=%d, observed-spawns=%zu)\n",
+                 who, highestSeenEntityId, c.spawns().size());
     return -1;
 }
 
-static bool waitCountGrow(TestClient& c, std::uint8_t id, std::size_t before, int ms) {
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+static bool hasPassengersFor(TestClient& c, std::int32_t vehicleId) {
+    for (const auto& packet : c.recentSnapshot()) {
+        if (packet.id != proto::pl::sc::SetPassengers) continue;
+        try {
+            ReadBuffer input(packet.body);
+            if (input.varint() != vehicleId) continue;
+            const auto passengerCount = input.varint();
+            if (passengerCount > 0) return true;
+        } catch (const std::exception&) {
+            // Ignore unrelated malformed/truncated packet captures.
+        }
+    }
+    return false;
+}
+
+static bool waitPassengersFor(TestClient& c, std::int32_t vehicleId,
+                              int ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
     while (std::chrono::steady_clock::now() < deadline) {
-        if (c.count(id) > before) return true;
+        if (hasPassengersFor(c, vehicleId)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return hasPassengersFor(c, vehicleId);
+}
+
+static bool waitInventoryItemCount(TestClient& c, std::uint32_t itemId,
+                                  std::size_t slotIndex, int wanted, int ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (lastInventoryItemCount(c, itemId, slotIndex) == wanted) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return lastInventoryItemCount(c, itemId, slotIndex) == wanted;
+}
+
+static int latestPassengerCountFor(TestClient& c, std::int32_t vehicleId) {
+    const auto packets = c.recentSnapshot();
+    for (auto packet = packets.rbegin(); packet != packets.rend(); ++packet) {
+        if (packet->id != proto::pl::sc::SetPassengers) continue;
+        try {
+            ReadBuffer input(packet->body);
+            if (input.varint() == vehicleId) return input.varint();
+        } catch (const std::exception&) {
+        }
+    }
+    return -1;
+}
+
+static bool waitPassengerCount(TestClient& c, std::int32_t vehicleId,
+                              int wanted, int ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (latestPassengerCountFor(c, vehicleId) == wanted) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return latestPassengerCountFor(c, vehicleId) == wanted;
+}
+
+static std::size_t horseTamingEventCount(TestClient& c,
+                                         std::int32_t horseId) {
+    std::size_t count = 0;
+    for (const auto& packet : c.recentSnapshot()) {
+        if (packet.id != proto::pl::sc::EntityEvent) continue;
+        try {
+            ReadBuffer input(packet.body);
+            if (input.i32() != horseId) continue;
+            const auto status = input.i8();
+            if (status == 6 || status == 7) ++count;
+        } catch (const std::exception&) {
+        }
+    }
+    return count;
+}
+
+static bool waitHorseTamingOutcome(TestClient& c, std::int32_t horseId,
+                                   std::size_t previousCount,
+                                   std::int8_t& status, int ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto packets = c.recentSnapshot();
+        std::size_t count = 0;
+        for (const auto& packet : packets) {
+            if (packet.id != proto::pl::sc::EntityEvent) continue;
+            try {
+                ReadBuffer input(packet.body);
+                if (input.i32() != horseId) continue;
+                const auto event = input.i8();
+                if (event == 6 || event == 7) ++count;
+            } catch (const std::exception&) {
+            }
+        }
+        if (count > previousCount) {
+            for (auto packet = packets.rbegin(); packet != packets.rend();
+                 ++packet) {
+                if (packet->id != proto::pl::sc::EntityEvent) continue;
+                try {
+                    ReadBuffer input(packet->body);
+                    if (input.i32() != horseId) continue;
+                    const auto event = input.i8();
+                    if (event == 6 || event == 7) {
+                        status = event;
+                        return true;
+                    }
+                } catch (const std::exception&) {
+                }
+            }
+        }
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
-    return c.count(id) > before;
+    return false;
+}
+
+static bool hasHorseTameMetadata(TestClient& c, std::int32_t horseId) {
+    for (const auto& packet : c.recentSnapshot()) {
+        if (packet.id != proto::pl::sc::SetEntityMetadata) continue;
+        try {
+            ReadBuffer input(packet.body);
+            if (input.varint() != horseId || input.u8() != 17 ||
+                input.varint() != 0)
+                continue;
+            if ((input.u8() & 0x02U) != 0) return true;
+        } catch (const std::exception&) {
+        }
+    }
+    return false;
+}
+
+static bool waitHorseTameMetadata(TestClient& c, std::int32_t horseId,
+                                  int ms) {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(ms);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (hasHorseTameMetadata(c, horseId)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    return hasHorseTameMetadata(c, horseId);
 }
 // HurtAnimation 0x25 for a specific eid appeared? (fresh horse: any match is ours)
 static bool waitHurtFor(TestClient& c, std::int32_t eid, std::size_t, int ms) {
@@ -233,17 +472,16 @@ static bool waitHurtFor(TestClient& c, std::int32_t eid, std::size_t, int ms) {
 }
 
 static void tUseEntity(ServerProc& srv) {
-    SECTION("W-02 use_entity 12 combos (hand/sneaking split; window iff sneak)");
-    // NOTE: assertions hinge ONLY on the W-02 parse fix (hand varint + trailing
-    // sneak bool). Fresh client + fresh horse per combo (mount/vehicle state and
-    // long-lived-reader effects must not leak across combos). The mount branch
-    // (SetPassengers) itself is NOT asserted — out of W-02 wire-parse scope.
-    struct Combo { int mouse, hand; bool sneak; bool expectWindow; const char* label; };
+    SECTION("W-02 use_entity hand/sneak wire parse and untamed-horse interaction");
+    // A freshly summoned adult horse is untamed in this server. Vanilla does
+    // not open its inventory on secondary-use; with an empty hand, interaction
+    // falls through to mounting. Fresh client + horse isolate each combo.
+    struct Combo { int mouse, hand; bool sneak; const char* label; };
     Combo combos[] = {
-        {0,0,false,false,"m0/h0/s0"}, {0,1,false,false,"m0/h1/s0"},
-        {0,0,true,true,"m0/h0/s1"},   {0,1,true,true,"m0/h1/s1"},
-        {2,0,false,false,"m2/h0/s0"}, {2,1,false,false,"m2/h1/s0"},
-        {2,0,true,true,"m2/h0/s1"},   {2,1,true,true,"m2/h1/s1"},
+        {0,0,false,"m0/h0/s0"}, {0,1,false,"m0/h1/s0"},
+        {0,0,true,"m0/h0/s1"},  {0,1,true,"m0/h1/s1"},
+        {2,0,false,"m2/h0/s0"}, {2,1,false,"m2/h1/s0"},
+        {2,0,true,"m2/h0/s1"},  {2,1,true,"m2/h1/s1"},
     };
     for (auto& k : combos) {
         TestClient c;
@@ -260,12 +498,17 @@ static void tUseEntity(ServerProc& srv) {
         std::int32_t eid = summonHorseNear(c, k.label);
         snprintf(msg, sizeof(msg), "W-02 %s horse summoned", k.label);
         CHECK(eid >= 0, msg);
-        if (eid >= 0) {
-            std::size_t w0 = c.count(proto::pl::sc::OpenHorseWindow);
+        if (eid < 0) {
+            c.close();
+            return;
+        }
+        {
             c.sendUseEntityFull(eid, k.mouse, k.hand, k.sneak);
-            bool window = waitCountGrow(c, proto::pl::sc::OpenHorseWindow, w0, 3000);
-            snprintf(msg, sizeof(msg), "W-02 %s window %s", k.label, k.expectWindow ? "opens" : "stays shut");
-            CHECK(window == k.expectWindow, msg);
+            const bool mounted = waitPassengersFor(c, eid, 3000);
+            snprintf(msg, sizeof(msg), "W-02 %s untamed horse mounts", k.label);
+            CHECK(mounted, msg);
+            snprintf(msg, sizeof(msg), "W-02 %s untamed horse never opens inventory", k.label);
+            CHECK(c.count(proto::pl::sc::OpenHorseWindow) == 0, msg);
         }
         CHECK(c.alive(), "W-02 alive [liveness]");
         c.close();
@@ -300,6 +543,132 @@ static void tUseEntity(ServerProc& srv) {
         CHECK(c.alive(), "W-02 atk alive [liveness]");
         c.close();
     }
+
+    // Spectator interaction must be rejected before either the mount fallback
+    // or the horse-window path can mutate state or emit those packets.
+    TestClient spectator;
+    const bool spectatorJoined =
+        spectator.connect("127.0.0.1", srv.port) &&
+        spectator.join("P43SpecHorse");
+    CHECK(spectatorJoined, "W-02 spectator joins");
+    if (spectatorJoined) {
+        CHECK(waitInitialChunks(spectator),
+              "W-02 spectator initial chunk batch complete");
+        const auto eid = summonHorseNear(spectator, "spectator");
+        CHECK(eid >= 0, "W-02 spectator test horse summoned");
+        if (eid >= 0) {
+            spectator.sendChatCommand("gamemode spectator");
+            CHECK(waitGameEventMode(spectator, 3),
+                  "W-02 player changes to spectator before interaction");
+            spectator.sendUseEntityFull(eid, 0, 0, false);
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            CHECK(!hasPassengersFor(spectator, eid),
+                  "W-02 spectator cannot mount a non-player mob");
+            CHECK(spectator.count(proto::pl::sc::OpenHorseWindow) == 0,
+                  "W-02 spectator cannot open mob inventory");
+        }
+        spectator.close();
+    }
+}
+
+static void tHorseTaming(ServerProc& srv) {
+    SECTION("W-02 mounted horse taming: fail/buck, golden-carrot temper, success");
+    TestClient c;
+    const bool joined = c.connect("127.0.0.1", srv.port) &&
+                        c.join("P43HorseTame");
+    CHECK(joined, "W-02 taming client joins");
+    if (!joined) return;
+    CHECK(waitInitialChunks(c), "W-02 taming client initial chunks complete");
+
+    const auto horseId = summonHorseNear(c, "taming");
+    CHECK(horseId >= 0, "W-02 taming horse summoned");
+    if (horseId < 0) return;
+
+    // At temper zero, the first vanilla 1/50 mounted attempt must fail,
+    // publish the buck event, and clear the passenger link.
+    const auto outcomesBeforeFirstMount = horseTamingEventCount(c, horseId);
+    c.sendUseEntityFull(horseId, 0, 0, false);
+    CHECK(waitPassengersFor(c, horseId, 3000),
+          "W-02 untamed horse accepts the initial mount");
+    std::int8_t firstOutcome = -1;
+    const bool firstAttemptResolved = waitHorseTamingOutcome(
+        c, horseId, outcomesBeforeFirstMount, firstOutcome, 15000);
+    CHECK(firstAttemptResolved && firstOutcome == 6,
+          "W-02 zero-temper mount produces vanilla failed-taming status 6");
+    if (!firstAttemptResolved || firstOutcome != 6) {
+        CHECK(c.alive(), "[liveness] W-02 server remains live after initial taming attempt");
+        c.close();
+        return;
+    }
+    CHECK(waitPassengerCount(c, horseId, 0, 2000),
+          "W-02 failed taming bucks and clears the passenger list");
+
+    constexpr int goldenCarrotTemper = 5;
+    constexpr int maximumHorseTemper = 100;
+    // The failed mounted attempt above already raised temper from 0 to 5.
+    constexpr int startingHorseTemper = 5;
+    constexpr int goldenCarrotFeeds =
+        (maximumHorseTemper - startingHorseTemper) / goldenCarrotTemper;
+    const auto carrotCount = std::to_string(goldenCarrotFeeds);
+    c.sendChatCommand("give @s minecraft:golden_carrot " + carrotCount);
+    CHECK(waitChat(c, "Given " + carrotCount + " x minecraft:golden_carrot",
+                   5000),
+          "W-02 test player receives enough golden carrots to max temper");
+    const auto goldenCarrotId =
+        gen::itemIdByName().at("minecraft:golden_carrot");
+    CHECK(waitInventoryItemCount(c, goldenCarrotId, 36, goldenCarrotFeeds, 3000),
+          "W-02 golden carrots are in the selected main-hand slot");
+
+    int remainingCarrots = goldenCarrotFeeds;
+    bool allFeedsConsumed = true;
+    while (remainingCarrots > 0) {
+        c.sendUseEntityFull(horseId, 0, 0, false);
+        --remainingCarrots;
+        if (!waitInventoryItemCount(c, goldenCarrotId, 36,
+                                    remainingCarrots, 3000)) {
+            allFeedsConsumed = false;
+            break;
+        }
+    }
+    CHECK(allFeedsConsumed,
+          "W-02 all required golden-carrot feeds are accepted one at a time");
+    if (!allFeedsConsumed) {
+        CHECK(c.alive(), "[liveness] W-02 server remains live after horse feeding");
+        c.close();
+        return;
+    }
+    CHECK(lastInventoryItemCount(c, goldenCarrotId, 36) == 0,
+          "W-02 selected main-hand stack reaches zero at maximum horse temper");
+    CHECK(latestPassengerCountFor(c, horseId) == 0,
+          "W-02 feeding raises temper without mounting as a fallback");
+
+    const auto outcomesBeforeSecondMount = horseTamingEventCount(c, horseId);
+    c.sendUseEntityFull(horseId, 0, 0, false);
+    CHECK(waitPassengerCount(c, horseId, 1, 3000),
+          "W-02 player remounts after tempering the horse to its maximum");
+    std::int8_t secondOutcome = -1;
+    const bool secondAttemptResolved = waitHorseTamingOutcome(
+        c, horseId, outcomesBeforeSecondMount, secondOutcome, 15000);
+    CHECK(secondAttemptResolved && secondOutcome == 7,
+          "W-02 maximum-temper mount tames horse and publishes status 7");
+    CHECK(secondAttemptResolved && secondOutcome == 7 &&
+              waitHorseTameMetadata(c, horseId, 2000),
+          "W-02 tame flag is synchronized in horse metadata");
+
+    if (secondAttemptResolved && secondOutcome == 7) {
+        const auto windowsBefore =
+            c.count(proto::pl::sc::OpenHorseWindow);
+        c.sendUseEntityFull(horseId, 0, 0, true);
+        constexpr std::string_view interactionBarrier =
+            "p43_tamed_horse_secondary_use_processed";
+        c.sendChatCommand("say p43_tamed_horse_secondary_use_processed");
+        CHECK(waitChat(c, std::string(interactionBarrier), 3000),
+              "W-02 server processes the tamed-horse secondary-use before assertion");
+        CHECK(c.count(proto::pl::sc::OpenHorseWindow) == windowsBefore,
+              "W-02 secondary-use while riding a tamed horse does not open inventory");
+    }
+    CHECK(c.alive(), "[liveness] W-02 server remains live after failed and successful taming outcomes");
+    c.close();
 }
 
 // --- W-06: abilities ---------------------------------------------------------
@@ -307,7 +676,8 @@ static void tAbilities(ServerProc& srv) {
     SECTION("W-06 abilities 0x3A gamemode-linked + cs 0x26");
     TestClient c;
     CHECK(c.connect("127.0.0.1", srv.port) && c.join("P43Abil"), "W-06 join");
-    CHECK(waitAbilitiesFlags(c, 0x01 | 0x04 | 0x08, 5000), "W-06 creative join flags 0x0D");
+    CHECK(waitAbilitiesFlags(c, 0x00, 5000),
+          "W-06 vanilla-default survival join flags 0x00");
     c.sendChatCommand("gamemode survival");
     CHECK(waitAbilitiesFlags(c, 0x00, 5000), "W-06 survival flags 0x00 (no invuln/fly/creative)");
     c.sendChatCommand("gamemode creative");
@@ -318,6 +688,26 @@ static void tAbilities(ServerProc& srv) {
     c.sendAbilitiesFlags(0x02); // claim flying without permission
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
     CHECK(c.alive(), "W-06 abilities 0x26 received without kick [liveness]");
+
+    TestClient target;
+    const bool targetJoined = target.connect("127.0.0.1", srv.port) &&
+                              target.join("P43Target");
+    CHECK(targetJoined, "W-06 target client joins");
+    if (targetJoined) {
+        CHECK(waitInitialChunks(target), "W-06 target receives initial chunks");
+        c.sendChatCommand("gamemode creative P43Target");
+        CHECK(waitGameEventMode(target, 1),
+              "W-06 targeted creative sends change_game_mode event reason 3");
+        CHECK(waitAbilitiesFlags(target, 0x01 | 0x04 | 0x08),
+              "W-06 targeted creative sends matching Abilities flags");
+        c.sendChatCommand("gamemode survival P43Target");
+        CHECK(waitGameEventMode(target, 0),
+              "W-06 targeted survival sends change_game_mode event reason 3");
+        CHECK(waitAbilitiesFlags(target, 0x00),
+              "W-06 targeted survival clears creative Abilities flags");
+        CHECK(target.alive(), "W-06 target remains connected after mode changes [liveness]");
+        target.close();
+    }
     c.close();
 }
 
@@ -346,56 +736,64 @@ static void tSign(ServerProc& srv) {
         CHECK(raw.find("P43-L1") != std::string::npos, "W-07 0x07 carries line 1 text");
     } else CHECK(false, "W-07 0x07 carries line 1 text");
     c.close();
-    // relogin persistence: same offline uuid -> move to trigger chunk
-    // (re)stream (chunks only stream on movement), then the chunk-load 0x07
-    // resend must still carry the text
+    // Relogin must receive the persisted sign in the initial chunk's block-
+    // entity records. A separate BlockEntityData packet is not required when
+    // the entity is serialized directly into LevelChunkWithLight.
     TestClient d;
     CHECK(d.connect("127.0.0.1", srv.port) && d.join("P43Sign"), "W-07 relogin join");
-    for (int i = 0; i < 4; ++i) {
-        const auto relogPosition = d.positionSnapshot();
-        d.sendMovePlayerFlags(relogPosition.x, relogPosition.y, relogPosition.z, 0x01);
-        std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    }
+    CHECK(waitInitialChunks(d), "W-07 relogin initial chunk batch complete");
     bool persist = false;
-    {
-        auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(8000);
-        while (std::chrono::steady_clock::now() < deadline && !persist) {
-            for (const auto& q : d.recentSnapshot()) {
-                if (q.id != proto::pl::sc::BlockEntityData) continue;
-                std::string raw(reinterpret_cast<const char*>(q.body.data()), q.body.size());
-                if (raw.find("P43-L1") != std::string::npos) { persist = true; break; }
-            }
-            if (!persist) { std::this_thread::sleep_for(std::chrono::milliseconds(100)); }
+    for (const auto& packet : d.recentSnapshot()) {
+        if (chunkContainsSignText(packet, sx, sy, sz, "P43-L1")) {
+            persist = true;
+            break;
         }
     }
-    CHECK(persist, "W-07 sign text persists across relogin (4/4 via chunk resend)");
+    CHECK(persist, "W-07 relogin chunk contains persisted sign text at its position");
     d.close();
 }
 
 int main(int argc, char** argv) {
     const char* bin = argc > 1 ? argv[1] : "./build/cppfm";
+    const std::string_view testMode = argc > 2 ? argv[2] : "";
+    const bool onlyUseEntity = testMode == "--w02-only" ||
+                               testMode == "--w02-debug" ||
+                               testMode == "--w02-only-no-jvm";
     ServerProcessOptions serverOptions;
     serverOptions.portBase = 27000;
     serverOptions.portSpan = 2000;
     serverOptions.viewDistance = 4;
     serverOptions.readyTimeoutMs = 8000;
+    serverOptions.gracefulStopTimeoutMs =
+        testMode == "--w02-debug" ? 30000 : 10000;
     serverOptions.worldPrefix = "/tmp/plan43-";
+    serverOptions.jvmEnabled = testMode != "--w02-only-no-jvm";
+    // This suite creates many short-lived clients. Keep its unrelated
+    // sequential protocol cases from racing slow player-data persistence
+    // against the vanilla 20-player admission cap.
+    serverOptions.maxPlayers = 64;
     serverOptions.operatorNames = {
         "P43Fin", "P43Tab", "P43Mov", "P43Fall", "P43Abil", "P43Sig",
         "P43Sign", "P43S0", "P43S1", "P43S2", "P43A0", "P43A1",
+        "P43HorseTame", "P43SpecHorse",
         "P43U0", "P43U1", "P43U2", "P43U3", "P43U4", "P43U5",
         "P43U6", "P43U7", "P43U8", "P43U9", "P43U10", "P43U11"
     };
     ServerProc srv;
     if (!srv.start(bin, serverOptions)) { std::printf("FAIL server start\n"); return 2; }
-    tSigned(srv);
-    tTab(srv);
-    tFinish(srv);
-    tMoveFlags(srv);
-    tFallDamage(srv);
-    tUseEntity(srv);
-    tAbilities(srv);
-    tSign(srv);
+    if (onlyUseEntity) {
+        tUseEntity(srv);
+    } else {
+        tSigned(srv);
+        tTab(srv);
+        tFinish(srv);
+        tMoveFlags(srv);
+        tFallDamage(srv);
+        tUseEntity(srv);
+        tHorseTaming(srv);
+        tAbilities(srv);
+        tSign(srv);
+    }
     CHECK(srv.stop(), "owned server process and temporary world cleaned up");
     std::printf("\n=== TEST_PLAN43: %d PASS %d FAIL ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

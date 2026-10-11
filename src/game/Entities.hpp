@@ -274,7 +274,7 @@ inline const MobStats& mobStats(MobKind k) {
         {"minecraft:bee",            10.f, 0.10f, 2.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:bogged",         16.f, 0.10f, 2.f, 16.0f, true, false,"minecraft:arrow",0,2,nullptr,                           5},
         {"minecraft:breeze",         30.f, 0.09f, 6.f, 24.0f, true, false,"minecraft:breeze_rod",0,1,nullptr,                      5},
-        {"minecraft:camel",          32.f, 0.09f, 0.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
+        {"minecraft:camel",          32.f, 0.09f, 0.f, 16.0f, false,false,nullptr,0,0,"minecraft:cactus",                         0},
         {"minecraft:cat",            10.f, 0.10f, 3.f, 16.0f, false,false,nullptr,0,0,nullptr,                                     0},
         {"minecraft:cave_spider",    12.f, 0.12f, 2.f, 16.0f, true, false,"minecraft:string",0,2,nullptr,                          5},
         {"minecraft:creaking",        1.f, 0.08f, 7.f, 32.0f, true, false,"minecraft:resin_clump",0,2,nullptr,                     5},
@@ -402,6 +402,12 @@ inline float slimeWidthForSize(int sz) {
 }
 
 struct MobEntity {
+    enum class RemovalRequest : std::uint8_t {
+        None,
+        Killed,
+        Discarded,
+    };
+
     // Mob snapshots are shared between the tick loop, network sessions, and
     // JVM callbacks.  A shared mutex object keeps copies (for example boss
     // callback snapshots) compatible while giving live entities one state
@@ -415,6 +421,31 @@ struct MobEntity {
     float yaw=0, pitch=0;
     double health = 10;
     bool dead = false;
+    RemovalRequest removalRequest = RemovalRequest::None;
+    // Set under stateMtx when a subsystem takes ownership of kill side effects.
+    // Prevents concurrent tick/session/projectile/explosion paths from
+    // duplicating drops, XP, and removal packets for the same entity.
+    bool deathHandlingClaimed = false;
+    bool tryClaimDeathHandling() {
+        std::lock_guard entityLock(*stateMtx);
+        if (!dead || deathHandlingClaimed) return false;
+        deathHandlingClaimed = true;
+        return true;
+    }
+    bool requestRemoval(RemovalRequest reason) {
+        if (reason == RemovalRequest::None) return false;
+        std::lock_guard entityLock(*stateMtx);
+        if (deathHandlingClaimed) return dead;
+        if (removalRequest != RemovalRequest::None)
+            return removalRequest == reason;
+        if (reason == RemovalRequest::Discarded && dead) return false;
+        removalRequest = reason;
+        if (reason == RemovalRequest::Killed) {
+            health = 0.0;
+            dead = true;
+        }
+        return true;
+    }
     double tx=0, tz=0; bool hasTarget=false;
     std::int64_t nextWanderAt = 0;
     std::int32_t age = 0;
@@ -525,6 +556,53 @@ struct MobEntity {
     std::int32_t wolfAngerTarget = -1;
     std::int64_t wolfAngerUntil = 0;
     bool isTamed = false;
+    // AbstractHorseEntity keeps Temper and Tame as entity state.  Mob entities
+    // are not currently serialized by this server, so this value has the same
+    // runtime-only lifetime as isTamed.
+    std::int32_t horseTemper = 0;
+    static constexpr std::int32_t kMaxHorseTemper = 100;
+    static constexpr std::int32_t kHorseGoldenCarrotTemper = 5;
+    enum class HorseTamingAttempt : std::uint8_t {
+        NotApplicable,
+        Failed,
+        Tamed,
+    };
+    static constexpr bool usesHorseTemper(const MobKind mobKind) noexcept {
+        switch (mobKind) {
+        case MobKind::Horse:
+        case MobKind::Donkey:
+        case MobKind::Mule:
+        case MobKind::Llama:
+        case MobKind::TraderLlama:
+            return true;
+        default:
+            return false;
+        }
+    }
+    bool canGainHorseTemper() const noexcept {
+        return usesHorseTemper(kind) && !isTamed &&
+               std::clamp(horseTemper, 0, kMaxHorseTemper) <
+                   kMaxHorseTemper;
+    }
+    std::int32_t addHorseTemper(const std::int32_t difference) noexcept {
+        const auto oldTemper = std::clamp(horseTemper, 0, kMaxHorseTemper);
+        const auto newTemper = static_cast<std::int32_t>(std::clamp<std::int64_t>(
+            static_cast<std::int64_t>(oldTemper) + difference,
+            0, kMaxHorseTemper));
+        horseTemper = newTemper;
+        return newTemper - oldTemper;
+    }
+    HorseTamingAttempt attemptHorseTaming(
+        const std::int32_t chanceRoll) noexcept {
+        if (!usesHorseTemper(kind) || isTamed) return HorseTamingAttempt::NotApplicable;
+        (void)addHorseTemper(0); // normalize any externally staged test/state value
+        if (chanceRoll >= 0 && chanceRoll < horseTemper) {
+            isTamed = true;
+            return HorseTamingAttempt::Tamed;
+        }
+        (void)addHorseTemper(kHorseGoldenCarrotTemper);
+        return HorseTamingAttempt::Failed;
+    }
     std::int64_t drownedTridentCooldown = 0;
     std::int64_t villagerScheduleTick = 0;
     std::int64_t piglinBarterCooldown = 0;
@@ -709,11 +787,14 @@ inline int totalArmorPoints(const MobEntity& m) {
     for (int i=2;i<6;i++) if (!m.equipment[i].empty()) tot+=armorPointsForItem(m.equipment[i].itemId);
     return tot;
 }
-inline int totalArmorPoints(const std::array<ItemStack,46>& inv) {
+inline int totalArmorPoints(
+    const std::array<ItemStack, kPlayerInventorySlotCount>& inv) {
     int tot=0;
     // armor slots: 5 boots,6 leggings,7 chest,8 head? In Player inv 5..8 are armor (5 boots? Actually 5..8)
     // vanilla player inv layout: 0-8 hotbar mirrored? Our inv is 0..44? Let's assume armor slots 5,6,7,8
-    for (int i=5;i<=8;i++) if (i>=0 && i<46 && !inv[i].empty()) tot+=armorPointsForItem(inv[i].itemId);
+    for (int i = 5; i <= 8; ++i) {
+        if (!inv[i].empty()) tot += armorPointsForItem(inv[i].itemId);
+    }
     return tot;
 }
 

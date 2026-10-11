@@ -224,16 +224,33 @@ def main():
         # Stay outside the default 16-block spawn-protection radius so this
         # checks the broadcast path rather than an intentionally rejected dig.
         dig_x, dig_y, dig_z = 32, -61, 32
-        a.move_to(32.5, -60.0, 32.5)
-        time.sleep(0.2); a.pump(0.2, move=False)
-        a.c.send_packet_raw(0x27, mcproto.write_varint(0)+pack_pos(dig_x,dig_y,dig_z)+bytes([1])+mcproto.write_varint(99))
-        time.sleep(0.5); a.pump(0.5); b.pump(0.5); c.pump(0.5)
 
         def upd_pos(d):
             bio=io.BytesIO(d); v=struct.unpack(">q", bio.read(8))[0]
             x=v>>38; y=(v & 0xFFF); y-=4096 if y>=2048 else 0
             z=(v>>12) & 0x3FFFFFF; z-=(1<<26) if z>=(1<<25) else 0
             st,_=read_varint(bio); return x,y,z,st
+
+        a.move_to(32.5, -60.0, 32.5)
+        time.sleep(0.2); a.pump(0.2, move=False)
+        a.c.send_packet_raw(0x27, mcproto.write_varint(0)+pack_pos(dig_x,dig_y,dig_z)+bytes([1])+mcproto.write_varint(99))
+        # Survival mining is a timed START/STOP interaction. Keep A at the
+        # dig target while enough server ticks elapse; the normal pump helper
+        # otherwise moves every bot back to spawn and cancels the break.
+        # Bare-hand mining of the flat world's grass block takes 60 server
+        # ticks (3 seconds at vanilla speed). Wait for the authoritative block
+        # update instead of assuming wall-clock delay equals server ticks.
+        dig_deadline = time.monotonic() + 10.0
+        while time.monotonic() < dig_deadline:
+            time.sleep(0.2)
+            a.pump(0.1, move=False)
+            b.pump(0.1)
+            c.pump(0.1)
+            if any(upd_pos(packet) == (dig_x, dig_y, dig_z, 0)
+                   for packet in b.updates if len(packet) >= 9):
+                break
+        a.c.send_packet_raw(0x27, mcproto.write_varint(2)+pack_pos(dig_x,dig_y,dig_z)+bytes([1])+mcproto.write_varint(100))
+        a.pump(0.5, move=False); b.pump(0.5); c.pump(0.5)
         got_b=[upd_pos(d) for d in b.updates]
         check((dig_x,dig_y,dig_z,0) in got_b, f"B block update via 0x09 (got {len(got_b)} updates)")
 

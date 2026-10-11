@@ -4,6 +4,7 @@
 #include "../src/game/Recipes.hpp"
 #include "../src/game/TagManager.hpp"
 #include "../src/generated/ItemIds.hpp"
+#include <array>
 #include <cstdio>
 #include <filesystem>
 #include <vector>
@@ -52,12 +53,24 @@ int main() {
     rm.syncTagsFrom(tm);
     rm.loadDirectory(recPath);
 
-    // 1) Size gate — 1578 JSON-driven (minecraft-data 1581 vs 3除外 document below)
-    std::printf("\n[1] size gate 1578 (minecraft-data 1581 vs 3 blank-pattern除外)\n");
+    // The checked-in corpus has one deliberately invalid zero-count air result.
+    // It must be rejected by the production parser rather than counted as a
+    // craftable recipe.
+    std::printf("\n[1] checked-in recipe corpus and invalid-result rejection\n");
     CHECK(rm.size() >= 1570 && rm.size() <= 1600, "RecipeManager size 1570-1600 (~1578)");
-    CHECK(rm.size() == 1578, "RecipeManager size ==1578 exact (trimBlankRows 3除外)");
+    std::size_t recipeFileCount = 0;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(recPath))
+        if (entry.is_regular_file() && entry.path().extension() == ".json")
+            ++recipeFileCount;
+    CHECK(recipeFileCount == 1578,
+          "checked-in recipe corpus contains 1578 JSON files");
+    CHECK(rm.size() == 1577 && rm.size() + 1 == recipeFileCount,
+          "1577 valid recipes load; the zero-count air result is rejected");
+    CHECK(rm.findById("minecraft:air") == nullptr,
+          "invalid zero-count air result is not published as a recipe");
     std::printf("  info: loaded %zu recipes from %s\n", rm.size(), recPath.c_str());
-    // 1581 vs 1578 note is documented in docs/MISSING_FEATURES_1_21_4.md; also verify trimBlankRows contract
+    // Keep row trimming independently covered; it must not rescue an empty
+    // shaped pattern into a visible recipe.
     {
         auto r1 = Recipe::trimBlankRows({"   ", " A ", "AAA"});
         CHECK(r1.size() == 2 && r1[0] == " A " && r1[1] == "AAA", "trimBlankRows [   , A ,AAA]->2 rows");
@@ -350,23 +363,33 @@ int main() {
     }
 
     // 7) findById / size invariants
-    std::printf("\n[7] findById + all() invariants (1581 vs 1578 contract)\n");
+    std::printf("\n[7] findById + all() invariants\n");
     CHECK(rm.findById("minecraft:does_not_exist")==nullptr, "findById nonexistent -> nullptr");
     CHECK(rm.findById("minecraft:bread")!=nullptr, "findById bread -> non-null");
     CHECK(rm.findById("minecraft:oak_stairs")!=nullptr, "findById oak_stairs -> non-null");
     CHECK(rm.all().size()==rm.size(), "all().size == size()");
-    // count kinds — real assets distribution: shaped 1285 shapeless 272 stonecutting 6 (plan32 JSON-driven, not minecraft-data 80 stonecutting)
-    int shaped=0, shapeless=0, stonecutting=0, smelting=0;
-    for (auto& r: rm.all()) { if(r.kind==Recipe::Kind::Shaped) ++shaped; else if(r.kind==Recipe::Kind::Shapeless) ++shapeless; else if(r.kind==Recipe::Kind::Stonecutting) ++stonecutting; else if(r.kind==Recipe::Kind::Smelting) ++smelting; }
-    std::printf("  info: shaped %d shapeless %d stonecutting %d smelting %d total %zu\n", shaped, shapeless, stonecutting, smelting, rm.size());
+    // Check every public recipe kind so additions cannot silently disappear
+    // from the summary total.
+    std::array<std::size_t, 6> kindCounts{};
+    for (const auto& recipe : rm.all())
+        ++kindCounts[static_cast<std::size_t>(recipe.kind)];
+    const auto shaped = kindCounts[static_cast<std::size_t>(Recipe::Kind::Shaped)];
+    const auto shapeless = kindCounts[static_cast<std::size_t>(Recipe::Kind::Shapeless)];
+    const auto stonecutting = kindCounts[static_cast<std::size_t>(Recipe::Kind::Stonecutting)];
+    const auto smelting = kindCounts[static_cast<std::size_t>(Recipe::Kind::Smelting)];
+    std::size_t classified = 0;
+    for (const auto count : kindCounts) classified += count;
+    std::printf("  info: shaped %zu shapeless %zu stonecutting %zu smelting %zu smithing %zu special %zu total %zu\n",
+                shaped, shapeless, stonecutting, smelting,
+                kindCounts[static_cast<std::size_t>(Recipe::Kind::Smithing)],
+                kindCounts[static_cast<std::size_t>(Recipe::Kind::Special)],
+                rm.size());
     CHECK(shaped >= 1280 && shaped <= 1300, "shaped ~1285");
     CHECK(shapeless >= 250 && shapeless <= 290, "shapeless ~272");
     CHECK(stonecutting >= 5 && stonecutting <= 15, "stonecutting ~6 (assets minimal)");
     // final gate
-    CHECK((int)rm.size() >= shaped + shapeless + stonecutting, "recipe kinds sum <= total");
-    CHECK(rm.size()==1578, "final size 1578 == minecraft-data 1581 -3 blank patterns (trimBlankRows)");
+    CHECK(classified == rm.size(), "all loaded recipes belong to exactly one declared kind");
 
     std::printf("\n=== test_recipes_mirror: %d PASS %d FAIL ===\n", g_pass, g_fail);
-    // Document 1581 vs 1578: minecraft-data 1.21.4 recipes.json 1581, assets/data/recipes 1578 after trimBlankRows removes ["   "] x3 blank patterns (debug empty). Verified above size 1578.
     return g_fail ? 1 : 0;
 }

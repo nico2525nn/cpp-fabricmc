@@ -15,6 +15,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include "../core/Utf8.hpp"
 
 namespace cppfm {
 
@@ -91,40 +92,7 @@ private:
     }
 
     static bool isValidUtf8(std::string_view input) {
-        std::size_t i = 0;
-        while (i < input.size()) {
-            const auto first = static_cast<unsigned char>(input[i]);
-            if (first <= 0x7f) {
-                ++i;
-                continue;
-            }
-
-            std::size_t length = 0;
-            unsigned char secondMin = 0x80;
-            unsigned char secondMax = 0xbf;
-            if (first >= 0xc2 && first <= 0xdf) {
-                length = 2;
-            } else if (first >= 0xe0 && first <= 0xef) {
-                length = 3;
-                if (first == 0xe0) secondMin = 0xa0;
-                if (first == 0xed) secondMax = 0x9f;
-            } else if (first >= 0xf0 && first <= 0xf4) {
-                length = 4;
-                if (first == 0xf0) secondMin = 0x90;
-                if (first == 0xf4) secondMax = 0x8f;
-            } else {
-                return false;
-            }
-            if (i + length > input.size()) return false;
-            const auto second = static_cast<unsigned char>(input[i + 1]);
-            if (second < secondMin || second > secondMax) return false;
-            for (std::size_t j = 2; j < length; ++j) {
-                const auto continuation = static_cast<unsigned char>(input[i + j]);
-                if (continuation < 0x80 || continuation > 0xbf) return false;
-            }
-            i += length;
-        }
-        return true;
+        return utf8::isValid(input);
     }
 
     static void appendUtf8(std::string& output, std::uint32_t codePoint) {

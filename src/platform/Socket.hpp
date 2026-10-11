@@ -27,6 +27,7 @@
 #include <ws2tcpip.h>
 #else
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
@@ -118,6 +119,18 @@ inline int bindSocket(socket_t socket, const sockaddr* address,
 
 inline int listenSocket(socket_t socket, int backlog) noexcept {
     return ::listen(socket, backlog);
+}
+
+inline bool setSocketNonBlocking(socket_t socket, bool enabled = true) noexcept {
+#ifdef _WIN32
+    u_long mode = enabled ? 1UL : 0UL;
+    return ::ioctlsocket(socket, FIONBIO, &mode) == 0;
+#else
+    const int flags = ::fcntl(socket, F_GETFL, 0);
+    if (flags < 0) return false;
+    const int updated = enabled ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
+    return ::fcntl(socket, F_SETFL, updated) == 0;
+#endif
 }
 
 inline socket_t acceptSocket(socket_t socket, sockaddr* address,

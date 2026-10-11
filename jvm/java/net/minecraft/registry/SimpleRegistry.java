@@ -223,12 +223,12 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     }
     private String nativeRegistryName() {
         if (key == null || key.getValue() == null) return "";
-        net.minecraft.util.Identifier value = key.getValue();
-        return "minecraft".equals(value.getNamespace()) ? value.getPath() : value.toString();
+        return key.getValue().toString();
     }
     private int nativeSize() {
         return switch (nativeRegistryName()) {
-            case "item", "block", "entity_type", "fluid" ->
+            case "minecraft:item", "minecraft:block",
+                 "minecraft:entity_type", "minecraft:fluid" ->
                 Math.max(0, NativeAccess.registryEntryCount(nativeRegistryName()));
             default -> 0;
         };
@@ -236,17 +236,17 @@ public class SimpleRegistry<T> implements MutableRegistry<T> {
     @SuppressWarnings("unchecked")
     private T resolveNative(net.minecraft.util.Identifier id) {
         return switch (nativeRegistryName()) {
-            case "item" -> {
+            case "minecraft:item" -> {
                 int rawId = NativeAccess.registryItemId(id.toString());
                 yield rawId < 0 ? null : (T) new Item(id, rawId);
             }
-            case "block" -> {
+            case "minecraft:block" -> {
                 int rawState = NativeAccess.registryBlockState(id.toString());
                 yield rawState < 0 ? null : (T) new Block(rawState, id);
             }
-            case "entity_type" -> hasNativeEntry(id)
+            case "minecraft:entity_type" -> hasNativeEntry(id)
                 ? (T) new EntityType<>(id, () -> null, 0.6f, 1.8f) : null;
-            case "fluid" -> hasNativeEntry(id) ? (T) new Fluid(id) : null;
+            case "minecraft:fluid" -> hasNativeEntry(id) ? (T) new Fluid(id) : null;
             default -> null;
         };
     }

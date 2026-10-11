@@ -148,6 +148,12 @@ public final class NativeAccess {
         catch (LinkageError | RuntimeException ignored) { return 0; }
     }
 
+    public static boolean worldHasChunk(long handle, int chunkX, int chunkZ) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeWorldHasChunk(handle, chunkX, chunkZ); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
     public static boolean setWorldBlock(long handle, int x, int y, int z, int state) {
         if (!usable(handle)) return false;
         try { return NativeBridge.nativeWorldSetBlock(handle, x, y, z, Math.max(0, state)); }
@@ -168,15 +174,59 @@ public final class NativeAccess {
         catch (LinkageError | RuntimeException ignored) { return -1; }
     }
 
+    public static boolean entityIsLiving(long handle) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeEntityIsLiving(handle); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static boolean entityIsHostile(long handle) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeEntityIsHostile(handle); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static boolean entityIsAnimal(long handle) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeEntityIsAnimal(handle); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static boolean entityIsFish(long handle) {
+        if (!usable(handle)) return false;
+        try { return NativeBridge.nativeEntityIsFish(handle); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
     public static float entityHealth(long handle) {
         if (!usable(handle)) return 0.0f;
         try { return Math.max(0.0f, NativeBridge.nativeEntityHealth(handle)); }
         catch (LinkageError | RuntimeException ignored) { return 0.0f; }
     }
 
+    public static float entityMaxHealth(long handle) {
+        if (!usable(handle)) return 0.0f;
+        try { return Math.max(0.0f, NativeBridge.nativeEntityMaxHealth(handle)); }
+        catch (LinkageError | RuntimeException ignored) { return 0.0f; }
+    }
+
     public static boolean setEntityHealth(long handle, float health) {
         if (!usable(handle) || !Float.isFinite(health) || health < 0.0f) return false;
         try { return NativeBridge.nativeEntitySetHealth(handle, health); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    public static boolean damageEntity(long handle, float amount, String cause) {
+        if (!usable(handle) || !Float.isFinite(amount) || amount <= 0.0f) return false;
+        String safeCause = cause == null || cause.isBlank() ? "generic" : cause;
+        try { return NativeBridge.nativeEntityDamage(handle, amount, safeCause); }
+        catch (LinkageError | RuntimeException ignored) { return false; }
+    }
+
+    /** Requests authoritative removal of a native mob (0=KILLED, 1=DISCARDED). */
+    public static boolean removeEntity(long handle, int reason) {
+        if (!usable(handle) || (reason != 0 && reason != 1)) return false;
+        try { return NativeBridge.nativeEntityRemove(handle, reason); }
         catch (LinkageError | RuntimeException ignored) { return false; }
     }
 

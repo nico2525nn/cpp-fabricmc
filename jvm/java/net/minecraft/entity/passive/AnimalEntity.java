@@ -9,6 +9,13 @@ import net.minecraft.world.World;
 
 /** Animal base ABI used by breeding-cap and conversion mixins. */
 public class AnimalEntity extends PassiveEntity {
+    public static AnimalEntity createNativeWrapper(long handle) {
+        String typeId = net.minecraft.util.NativeAccess.entityType(handle);
+        return new AnimalEntity(handle,
+            World.of(net.minecraft.util.NativeAccess.entityWorld(handle)),
+            EntityType.byId(typeId));
+    }
+
     protected AnimalEntity(EntityType<?> type, World world) { super(type, world); }
     protected AnimalEntity(long nativeHandle, World world, EntityType<?> type) { super(nativeHandle, world, type); }
     protected AnimalEntity() { super(); }

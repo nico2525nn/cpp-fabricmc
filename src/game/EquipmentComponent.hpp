@@ -1,6 +1,7 @@
 // calculation and EquipmentComponent-driven state sync.
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 #include <string>
@@ -42,22 +43,30 @@ public:
     std::array<float,4> armorDropChances{0.085f,0.085f,0.085f,0.085f};
 
     // Write SetEquipment payload (without entity id). Caller prefixes varint entityId.
-    // 1.21.4: slot varint with continuation bit 0x80 for multi-slot packet (slot|0x80 for all but last).
-    void writePayload(WriteBuffer& out) const {
-        std::vector<int> present;
-        for (int i=0;i<COUNT;++i) if (!slots_[i].empty()) present.push_back(i);
-        for (size_t idx=0; idx<present.size(); ++idx) {
+    // 1.21.4 encodes each slot marker as one signed byte. Bit 0x80 marks
+    // another entry; it is not a VarInt continuation bit.
+    void writePayload(WriteBuffer& out,
+                      const bool includeEmpty = false) const {
+        std::array<int, COUNT> present{};
+        std::size_t presentCount = 0;
+        for (int i = 0; i < COUNT; ++i) {
+            if (includeEmpty || !slots_[i].empty())
+                present[presentCount++] = i;
+        }
+        for (std::size_t idx = 0; idx < presentCount; ++idx) {
             int i = present[idx];
-            bool more = idx + 1 < present.size();
-            int slotByte = i | (more ? 0x80 : 0);
-            out.varint(slotByte);
-            slots_[i].write(out);
+            const bool more = idx + 1 < presentCount;
+            const auto slotByte = static_cast<std::uint8_t>(
+                i | (more ? 0x80 : 0));
+            out.u8(slotByte);
+            if (slots_[i].empty()) ItemStack::air().write(out);
+            else slots_[i].write(out);
         }
     }
     // Single-slot payload helper (dynamic sync on equip change)
     void writePayloadSingle(WriteBuffer& out, int slot) const {
         if (slot<0 || slot>=COUNT) return;
-        out.varint(slot); // single entry no continuation
+        out.u8(static_cast<std::uint8_t>(slot));
         if (!slots_[slot].empty()) slots_[slot].write(out);
         else ItemStack::air().write(out);
     }
@@ -75,5 +84,5 @@ private:
     std::array<ItemStack,6> slots_{};
 };
 
-// Helper to sync equipment to all tracking players (broadcast SetEquipment) is implemented in GameServer_items.cpp.
+// Helper to sync equipment to all tracking players (broadcast SetEquipment) is implemented in GameServer_equipment.cpp.
 } // namespace cppfm

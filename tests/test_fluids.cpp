@@ -195,7 +195,7 @@ static void test_directional_interaction_and_replaceable() {
 
 static void test_nether_water_and_lava_timing() {
     std::printf("\n[7] Nether fluid rules\n");
-    constexpr int y = -60;
+    constexpr int y = 64;
     World world("minecraft:plains", LevelType::Nether, 0);
     world.setDimensionId(-1);
     FluidSim fluids(world);
