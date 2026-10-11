@@ -28,7 +28,7 @@ main references are:
 
 | Area | Coverage |
 |---|---|
-| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, cookies, resource packs, transfer, plugin channels, and signed chat verification |
+| Network protocol | Status ping, login, online-mode encryption, configuration, play state, chunk streaming, batching, resource packs, transfer, plugin channels, and signed chat verification; cookie packet support is partial (responses are consumed but no outbound request/store flow is implemented) |
 | World and persistence | Anvil region files, `level.dat`, block entities, per-cell biomes, chunk loading/unloading, and interoperability with vanilla world data |
 | World generation | Multi-noise biomes, density functions, Nether and End terrain, ores, configured/placed features, and common structures |
 | Simulation | Block and fluid ticks, lighting, weather, redstone, pistons, rails, explosions, fire, portals, and world borders |
@@ -55,7 +55,10 @@ general-purpose arbitrary-mod loader.
   fails open to the native server when they are unavailable. A binary built
   without JNI remains native-only until rebuilt; arbitrary Fabric mods, the
   Mojang GameProvider, and the official client are outside the compatibility
-  claim.
+  claim. Selected JNI callbacks can overlap across session and tick threads;
+  native world mutations are queued to the server thread, but Fabric's exact
+  callback thread affinity is not reproduced and mod-owned callback state must
+  tolerate concurrency.
 - The full gameplay harness reports `806 PASS / 0 FAIL / 806`; its output still
   names arbitrary Java-extension execution as a declared limitation.
 - Enchanting and crafter behavior have focused coverage, but their bounded
@@ -152,6 +155,8 @@ Requirements:
 
 - C++20 compiler
 - CMake 3.20 or newer and Ninja (or another supported CMake generator)
+- `curl` on `PATH` for Mojang session authentication when `online-mode=true`
+  (the default); an explicitly offline test does not require it
 - Python 3 for the self-contained resource pack; the `package` target refuses
   to create a release-looking archive when the pack is unavailable
 - JDK 17 or newer, available at configure/build time, for the embedded

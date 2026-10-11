@@ -1,6 +1,7 @@
 
 #include "../src/core/ByteBuffer.hpp"
 #include "../src/core/NBT.hpp"
+#include "../src/core/Utf8.hpp"
 #include "../src/game/Attributes.hpp"
 #include "../src/game/Scoreboard.hpp"
 #include "../src/game/Teams.hpp"
@@ -22,6 +23,8 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -164,20 +167,417 @@ static void test_slot_component_ids() {
     std::printf("[A5] Slot SlotComponent ids: damage 3 / repair_cost 17 / trim 45 / enchant 10\n");
     check(ItemStack::kDamageComponentId==3, "damage component id 3");
     check(ItemStack::kRepairCostComponentId==17, "repair_cost id 17");
-    check(ItemStack::kTrimComponentIdReal==45, "trim id 45");
+    check(ItemStack::kTrimComponentId==45, "trim id 45");
     check(ItemStack::kEnchantmentsComponentId==10, "enchantments id 10");
+    {
+        auto invalid = ItemStack::of(1, 1);
+        invalid.removedComponents.push_back(
+            ItemStack::kMaxProtocolComponentId + 1);
+        check(!invalid.hasValidComponentData(),
+              "removed SlotComponentType ids outside protocol 769 are rejected");
+    }
+    {
+        ItemStack intangible = ItemStack::of(1, 1);
+        intangible.components.emplace_back(20, std::vector<std::uint8_t>{});
+        intangible.removedComponents.push_back(3);
+        const std::vector<std::uint8_t> expected{
+            0x01, 0x01, 0x01, 0x01, 0x14, 0x03};
+        WriteBuffer encoded;
+        intangible.write(encoded);
+        ReadBuffer input(expected);
+        const auto decoded = ItemStack::read(input);
+        nbt::Value item = nbt::Value::makeCompound();
+        const bool applied = item_component_nbt::applyProtocolComponentToNbt(
+            item, 20, &intangible.components.front().second);
+        const auto* componentMap = item.get("components");
+        const auto* unit = componentMap
+            ? componentMap->get("minecraft:intangible_projectile") : nullptr;
+        const auto persisted = unit
+            ? item_component_nbt::protocolComponentFromNbt(
+                  "minecraft:intangible_projectile", *unit)
+            : std::nullopt;
+        check(encoded.data == expected && input.remaining() == 0 &&
+                  decoded.components.size() == 1 &&
+                  decoded.components.front().first == 20 && applied && unit &&
+                  decoded.removedComponents ==
+                      std::vector<std::uint32_t>{3} &&
+                  unit->tag == nbt::Compound && unit->comp.empty() &&
+                  persisted && persisted->payload.empty(),
+              "intangible_projectile Unit roundtrips without consuming following Slot bytes");
+    }
+    {
+        nbt::Value savedComponents = nbt::Value::makeCompound();
+        nbt::Value potionContents = nbt::Value::makeCompound();
+        nbt::Value customEffects = nbt::Value::makeList(nbt::Compound);
+        nbt::Value effect = nbt::Value::makeCompound();
+        effect.set("id", nbt::Value::makeString("minecraft:speed"));
+        effect.set("amplifier", nbt::Value::makeString("not-an-integer"));
+        effect.set("duration", nbt::Value::makeInt(20));
+        customEffects.list.push_back(std::move(effect));
+        potionContents.set("custom_effects", std::move(customEffects));
+        savedComponents.set("minecraft:potion_contents",
+                            std::move(potionContents));
+        check(!item_component_nbt::potionContentsToProtocol(&savedComponents),
+              "malformed typed potion-effect fields are rejected, not coerced to zero");
+    }
     {
         ItemStack s = ItemStack::of(1,1); // itemId 1 for test
         s.setDamage(100);
         WriteBuffer b; s.write(b);
-        std::vector<std::uint8_t> exp{0x01,0x01,0x01,0x00,0x03,0x01,0x64};
-        expectEq(b.data, exp, "Slot damage=100 -> 01 01 01 00 03 01 64");
+        std::vector<std::uint8_t> exp{0x01,0x01,0x01,0x00,0x03,0x64};
+        expectEq(b.data, exp, "Slot damage=100 -> 01 01 01 00 03 64");
     }
     {
         WriteBuffer ench; ench.varint(1); ench.varint(32); ench.varint(5); ench.boolean(true);
         std::vector<std::uint8_t> exp{0x01,0x20,0x05,0x01};
         expectEq(ench.data, exp, "enchant payload sharpness(32) lvl5 -> 01 20 05 01");
     }
+}
+
+static void test_shulker_container_component_roundtrip() {
+    std::printf("[A5b] Shulker container component id 62 (protocol and NBT)\n");
+    const auto diamondId = gen::itemIdByName().at("minecraft:diamond");
+    nbt::Value item = nbt::Value::makeCompound();
+    item.set("id", nbt::Value::makeString("minecraft:shulker_box"));
+    item.set("count", nbt::Value::makeInt(1));
+    nbt::Value components = nbt::Value::makeCompound();
+    nbt::Value contents = nbt::Value::makeList(nbt::Compound);
+    nbt::Value entry = nbt::Value::makeCompound();
+    entry.set("slot", nbt::Value::makeInt(3));
+    nbt::Value nestedItem = nbt::Value::makeCompound();
+    nestedItem.set("id", nbt::Value::makeString("minecraft:diamond"));
+    nestedItem.set("count", nbt::Value::makeInt(1));
+    nestedItem.set("Slot", nbt::Value::makeByte(7));
+    entry.set("item", std::move(nestedItem));
+    contents.list.push_back(std::move(entry));
+    components.set("minecraft:container", std::move(contents));
+    item.set("components", std::move(components));
+
+    const auto parsed = ItemStack::fromNbt(item);
+    bool roundtrips = false;
+    if (parsed && parsed->components.size() == 1 &&
+        parsed->components.front().first == 62) {
+        WriteBuffer wire;
+        parsed->write(wire);
+        ReadBuffer contentsWire(parsed->components.front().second);
+        const auto slotCount = contentsWire.varint();
+        const bool wireContents = slotCount == 4 &&
+            contentsWire.varint() == 0 &&
+            contentsWire.varint() == 0 &&
+            contentsWire.varint() == 0 &&
+            contentsWire.varint() == 1 &&
+            contentsWire.varint() == static_cast<std::int32_t>(diamondId) &&
+            contentsWire.varint() == 0 &&
+            contentsWire.varint() == 0 &&
+            contentsWire.remaining() == 0;
+        ReadBuffer input(wire.data);
+        const auto decoded = ItemStack::read(input);
+        const auto saved = decoded.toNbt(0);
+        const auto* savedComponents = saved.get("components");
+        const auto* savedContents = savedComponents
+            ? savedComponents->get("minecraft:container") : nullptr;
+        const auto* savedEntry = savedContents &&
+                savedContents->tag == nbt::List &&
+                !savedContents->list.empty()
+            ? &savedContents->list.front() : nullptr;
+        const auto* savedSlot = savedEntry ? savedEntry->get("slot") : nullptr;
+        const auto* savedItem = savedEntry ? savedEntry->get("item") : nullptr;
+        const auto* savedId = savedItem ? savedItem->get("id") : nullptr;
+        const auto* savedCount = savedItem ? savedItem->get("count") : nullptr;
+        roundtrips = wireContents && input.remaining() == 0 && savedSlot &&
+            savedSlot->tag == nbt::Int && savedSlot->i == 3 && savedId &&
+            savedId->tag == nbt::String &&
+            savedId->str == "minecraft:diamond" && savedCount &&
+            savedCount->tag == nbt::Int && savedCount->i == 1 &&
+            !savedItem->get("Slot") &&
+            item_component_nbt::isValidProtocolComponentPayload(
+                62, parsed->components.front().second);
+    }
+    check(roundtrips,
+          "sparse shulker contents preserve slot and item across protocol/NBT roundtrip");
+}
+
+static void test_nested_book_and_container_loot_components() {
+    std::printf("[A5c] nested book and container-loot item components\n");
+    nbt::Value outer = nbt::Value::makeCompound();
+    outer.set("id", nbt::Value::makeString("minecraft:shulker_box"));
+    outer.set("count", nbt::Value::makeInt(1));
+    nbt::Value outerComponents = nbt::Value::makeCompound();
+    nbt::Value contents = nbt::Value::makeList(nbt::Compound);
+
+    const auto filteredString = [](std::string raw,
+                                   std::optional<std::string> filtered = {}) {
+        nbt::Value pair = nbt::Value::makeCompound();
+        pair.set("raw", nbt::Value::makeString(std::move(raw)));
+        if (filtered)
+            pair.set("filtered",
+                     nbt::Value::makeString(std::move(*filtered)));
+        return pair;
+    };
+    const auto append = [&](std::int32_t slot, nbt::Value item) {
+        nbt::Value entry = nbt::Value::makeCompound();
+        entry.set("slot", nbt::Value::makeInt(slot));
+        entry.set("item", std::move(item));
+        contents.list.push_back(std::move(entry));
+    };
+
+    nbt::Value writtenBook = nbt::Value::makeCompound();
+    writtenBook.set("id", nbt::Value::makeString("minecraft:written_book"));
+    writtenBook.set("count", nbt::Value::makeInt(1));
+    nbt::Value writtenBookComponents = nbt::Value::makeCompound();
+    nbt::Value writtenContent = nbt::Value::makeCompound();
+    writtenContent.set("title", filteredString("Guide", "Filtered guide"));
+    writtenContent.set("author", nbt::Value::makeString("Ada"));
+    writtenContent.set("generation", nbt::Value::makeInt(2));
+    nbt::Value writtenPages = nbt::Value::makeList(nbt::Compound);
+    nbt::Value writtenPage = nbt::Value::makeCompound();
+    writtenPage.set("raw", nbt::Value::makeString("A page"));
+    writtenPage.set("filtered", nbt::Value::makeString("Filtered page"));
+    writtenPages.list.push_back(std::move(writtenPage));
+    writtenContent.set("pages", std::move(writtenPages));
+    writtenContent.set("resolved", nbt::Value::makeByte(1));
+    writtenBookComponents.set("minecraft:written_book_content",
+                              std::move(writtenContent));
+    writtenBook.set("components", std::move(writtenBookComponents));
+    append(0, std::move(writtenBook));
+
+    nbt::Value writableBook = nbt::Value::makeCompound();
+    writableBook.set("id", nbt::Value::makeString("minecraft:writable_book"));
+    writableBook.set("count", nbt::Value::makeInt(1));
+    nbt::Value writableBookComponents = nbt::Value::makeCompound();
+    nbt::Value writableContent = nbt::Value::makeCompound();
+    nbt::Value writablePages = nbt::Value::makeList(nbt::Compound);
+    writablePages.list.push_back(filteredString("Draft", "Filtered draft"));
+    writableContent.set("pages", std::move(writablePages));
+    writableBookComponents.set("minecraft:writable_book_content",
+                               std::move(writableContent));
+    writableBook.set("components", std::move(writableBookComponents));
+    append(2, std::move(writableBook));
+
+    nbt::Value lootChest = nbt::Value::makeCompound();
+    lootChest.set("id", nbt::Value::makeString("minecraft:chest"));
+    lootChest.set("count", nbt::Value::makeInt(1));
+    nbt::Value lootComponents = nbt::Value::makeCompound();
+    nbt::Value loot = nbt::Value::makeCompound();
+    loot.set("loot_table",
+             nbt::Value::makeString("minecraft:chests/simple_dungeon"));
+    loot.set("seed", nbt::Value::makeLong(123456789));
+    lootComponents.set("minecraft:container_loot", std::move(loot));
+    lootChest.set("components", std::move(lootComponents));
+    append(5, std::move(lootChest));
+
+    outerComponents.set("minecraft:container", std::move(contents));
+    outer.set("components", std::move(outerComponents));
+
+    const auto parsed = ItemStack::fromNbt(outer);
+    bool roundtrips = parsed && parsed->components.size() == 1 &&
+        parsed->components.front().first == 62 && parsed->hasValidComponentData();
+    if (roundtrips) {
+        WriteBuffer wire;
+        parsed->write(wire);
+        ReadBuffer input(wire.data);
+        const auto decoded = ItemStack::read(input);
+        const auto saved = decoded.toNbt(-1);
+        const auto* savedComponents = saved.get("components");
+        const auto* savedContents = savedComponents
+            ? savedComponents->get("minecraft:container") : nullptr;
+        const auto findItemAt = [&](std::int32_t slot) -> const nbt::Value* {
+            if (!savedContents || savedContents->tag != nbt::List) return nullptr;
+            for (const auto& entry : savedContents->list) {
+                const auto* savedSlot = entry.get("slot");
+                if (savedSlot && savedSlot->tag == nbt::Int &&
+                    savedSlot->i == slot)
+                    return entry.get("item");
+            }
+            return nullptr;
+        };
+        const auto hasComponent = [&](const nbt::Value* item,
+                                      std::string_view name) {
+            const auto* itemComponents = item ? item->get("components") : nullptr;
+            return itemComponents && itemComponents->tag == nbt::Compound &&
+                   itemComponents->get(name);
+        };
+        const auto* savedBook = findItemAt(0);
+        const auto* savedBookContent = savedBook && savedBook->get("components")
+            ? savedBook->get("components")->get(
+                  "minecraft:written_book_content") : nullptr;
+        const auto* savedTitle = savedBookContent
+            ? savedBookContent->get("title") : nullptr;
+        const auto* savedTitleRaw = savedTitle ? savedTitle->get("raw") : nullptr;
+        const auto* savedBookPages = savedBookContent
+            ? savedBookContent->get("pages") : nullptr;
+        const auto* savedPage = savedBookPages &&
+                savedBookPages->tag == nbt::List &&
+                !savedBookPages->list.empty()
+            ? &savedBookPages->list.front() : nullptr;
+        const auto* savedPageFiltered = savedPage
+            ? savedPage->get("filtered") : nullptr;
+        const auto* savedLoot = findItemAt(5);
+        const auto* savedLootData = savedLoot && savedLoot->get("components")
+            ? savedLoot->get("components")->get("minecraft:container_loot")
+            : nullptr;
+        const auto* savedLootTable = savedLootData
+            ? savedLootData->get("loot_table") : nullptr;
+        const auto* savedLootSeed = savedLootData
+            ? savedLootData->get("seed") : nullptr;
+        roundtrips = input.remaining() == 0 && decoded.components.size() == 1 &&
+            decoded.components.front().first == 62 &&
+            item_component_nbt::isValidProtocolComponentPayload(
+                62, decoded.components.front().second) &&
+            hasComponent(savedBook, "minecraft:written_book_content") &&
+            hasComponent(findItemAt(2), "minecraft:writable_book_content") &&
+            savedTitleRaw && savedTitleRaw->tag == nbt::String &&
+            savedTitleRaw->str == "Guide" && savedPageFiltered &&
+            savedPageFiltered->tag == nbt::String &&
+            savedPageFiltered->str == "Filtered page" && savedLootTable &&
+            savedLootTable->tag == nbt::String &&
+            savedLootTable->str == "minecraft:chests/simple_dungeon" &&
+            savedLootSeed && savedLootSeed->tag == nbt::Long &&
+            savedLootSeed->l == 123456789 &&
+            ItemStack::kMaxProtocolComponentId == 66;
+    }
+    check(roundtrips,
+          "nested writable/written books and container_loot survive protocol/NBT conversion");
+}
+
+static void test_filtered_book_page_wire_golden() {
+    std::printf("[A5d] written-book filtered page uses anonOptionalNbt\n");
+    const auto text = [](std::string value) {
+        auto result = nbt::Value::makeCompound();
+        result.set("text", nbt::Value::makeString(std::move(value)));
+        return result;
+    };
+    nbt::Value pair = nbt::Value::makeCompound();
+    pair.set("raw", text("raw"));
+    pair.set("filtered", text("filtered"));
+
+    const std::vector<std::uint8_t> expectedFiltered{
+        0x0A, 0x08, 0x00, 0x04, 't', 'e', 'x', 't', 0x00, 0x03,
+        'r', 'a', 'w', 0x00,
+        0x0A, 0x08, 0x00, 0x04, 't', 'e', 'x', 't', 0x00, 0x08,
+        'f', 'i', 'l', 't', 'e', 'r', 'e', 'd', 0x00};
+    WriteBuffer encodedFiltered;
+    const bool wroteFiltered = item_component_nbt::writeFilteredTextPair(
+        pair, encodedFiltered);
+    check(wroteFiltered && encodedFiltered.data == expectedFiltered,
+          "filtered page bytes contain consecutive anonymous NBT roots without boolean");
+    ReadBuffer filteredInput(expectedFiltered);
+    const auto decodedFiltered = item_component_nbt::readFilteredTextPair(
+        filteredInput);
+    const auto* decodedValue = decodedFiltered
+        ? decodedFiltered->get("filtered") : nullptr;
+    const auto* decodedText = decodedValue ? decodedValue->get("text") : nullptr;
+    check(decodedFiltered && filteredInput.remaining() == 0 && decodedText &&
+              decodedText->tag == nbt::String && decodedText->str == "filtered",
+          "filtered page golden bytes decode and consume exactly");
+
+    nbt::Value rawOnly = nbt::Value::makeCompound();
+    rawOnly.set("raw", text("raw"));
+    const std::vector<std::uint8_t> expectedRawOnly{
+        0x0A, 0x08, 0x00, 0x04, 't', 'e', 'x', 't', 0x00, 0x03,
+        'r', 'a', 'w', 0x00, 0x00};
+    WriteBuffer encodedRawOnly;
+    const bool wroteRawOnly = item_component_nbt::writeFilteredTextPair(
+        rawOnly, encodedRawOnly);
+    check(wroteRawOnly && encodedRawOnly.data == expectedRawOnly,
+          "unfiltered page ends with the optional NBT End tag");
+    ReadBuffer rawOnlyInput(expectedRawOnly);
+    const auto decodedRawOnly = item_component_nbt::readFilteredTextPair(
+        rawOnlyInput);
+    check(decodedRawOnly && rawOnlyInput.remaining() == 0 &&
+              !decodedRawOnly->get("filtered"),
+          "optional NBT End tag decodes as no filtered page");
+}
+
+static void test_book_string_length_limits() {
+    std::printf("[A5e] book string limits use Java UTF-16 code units\n");
+    const auto repeatDay = [](std::size_t count) {
+        std::string value;
+        value.reserve(count * 3);
+        for (std::size_t i = 0; i < count; ++i)
+            value.append("\xE6\x97\xA5", 3);
+        return value;
+    };
+    const auto pairWithRaw = [](std::string value) {
+        nbt::Value pair = nbt::Value::makeCompound();
+        pair.set("raw", nbt::Value::makeString(std::move(value)));
+        return pair;
+    };
+
+    const auto title32 = pairWithRaw(repeatDay(
+        item_component_nbt::kMaxBookTitleUtf16Units));
+    WriteBuffer titleBytes;
+    const bool titleAccepted = item_component_nbt::writeFilteredStringPair(
+        title32, item_component_nbt::kMaxBookTitleUtf16Units, titleBytes);
+    ReadBuffer titleInput(titleBytes.data);
+    const auto titleDecoded = item_component_nbt::readFilteredStringPair(
+        titleInput, item_component_nbt::kMaxBookTitleUtf16Units);
+    const auto* titleRaw = titleDecoded ? titleDecoded->get("raw") : nullptr;
+    const auto title33 = pairWithRaw(repeatDay(
+        item_component_nbt::kMaxBookTitleUtf16Units + 1));
+    WriteBuffer tooLongTitle;
+    check(titleAccepted && titleBytes.data.size() > 32 && titleDecoded &&
+              titleInput.remaining() == 0 && titleRaw &&
+              titleRaw->tag == nbt::String &&
+              titleRaw->str == repeatDay(
+                  item_component_nbt::kMaxBookTitleUtf16Units) &&
+              !item_component_nbt::writeFilteredStringPair(
+                  title33, item_component_nbt::kMaxBookTitleUtf16Units,
+                  tooLongTitle),
+          "32 multibyte title characters are accepted; 33 are rejected");
+
+    const auto page1024 = pairWithRaw(repeatDay(
+        item_component_nbt::kMaxWritableBookPageUtf16Units));
+    WriteBuffer pageBytes;
+    const bool pageAccepted = item_component_nbt::writeFilteredStringPair(
+        page1024, item_component_nbt::kMaxWritableBookPageUtf16Units,
+        pageBytes);
+    ReadBuffer pageInput(pageBytes.data);
+    const auto pageDecoded = item_component_nbt::readFilteredStringPair(
+        pageInput, item_component_nbt::kMaxWritableBookPageUtf16Units);
+    const auto* pageRaw = pageDecoded ? pageDecoded->get("raw") : nullptr;
+    const auto page1025 = pairWithRaw(repeatDay(
+        item_component_nbt::kMaxWritableBookPageUtf16Units + 1));
+    WriteBuffer tooLongPage;
+    check(pageAccepted && pageBytes.data.size() > 1024 && pageDecoded &&
+              pageInput.remaining() == 0 && pageRaw &&
+              pageRaw->tag == nbt::String &&
+              pageRaw->str == repeatDay(
+                  item_component_nbt::kMaxWritableBookPageUtf16Units) &&
+              !item_component_nbt::writeFilteredStringPair(
+                  page1025,
+                  item_component_nbt::kMaxWritableBookPageUtf16Units,
+                  tooLongPage),
+          "1024 multibyte writable-book page characters are accepted; 1025 are rejected");
+
+    const std::string withSupplementary =
+        std::string("A") + "\xF0\x9F\x98\x80";
+    const std::string invalidUtf8("\xC0\x80", 2);
+    const auto supplementaryLength =
+        cppfm::utf8::utf16Length(withSupplementary);
+    check(supplementaryLength && *supplementaryLength == 3 &&
+              !cppfm::utf8::utf16Length(invalidUtf8),
+          "UTF-16 length counts supplementary characters as two and rejects overlong UTF-8");
+
+    const std::string withEmbeddedNul("A\0\xF0\x9F\x98\x80", 6);
+    std::u16string javaUnits;
+    std::string roundTrip;
+    const bool utf8ToUtf16 = cppfm::utf8::toUtf16(withEmbeddedNul, javaUnits);
+    const bool utf16ToUtf8 = cppfm::utf8::fromUtf16(javaUnits, roundTrip);
+    check(utf8ToUtf16 && javaUnits ==
+              std::u16string{u'A', u'\0', 0xd83d, 0xde00} &&
+              utf16ToUtf8 && roundTrip == withEmbeddedNul,
+          "UTF-8/UTF-16 conversion preserves embedded NUL and supplementary code points");
+
+    std::string preservedOutput = "unchanged";
+    const std::u16string isolatedSurrogate{static_cast<char16_t>(0xd800)};
+    const bool isolatedRejected =
+        !cppfm::utf8::fromUtf16(isolatedSurrogate, preservedOutput);
+    const bool isolatedReplaced = cppfm::utf8::fromUtf16(
+        isolatedSurrogate, roundTrip, true);
+    check(isolatedRejected && preservedOutput == "unchanged" &&
+              isolatedReplaced && roundTrip == "\xef\xbf\xbd",
+          "UTF-16 conversion rejects or explicitly replaces isolated surrogates");
 }
 
 static void test_paletted_single_valued() {
@@ -187,7 +587,12 @@ static void test_paletted_single_valued() {
     std::vector<std::uint8_t> exp{0x00,0x28,0x00};
     expectEq(b.data, exp, "single-valued plains 40 => 00 28 00");
     {
-        Chunk ch; ch.blocks.fill(0); ch.blocks[0]=1;
+        Chunk ch;
+        {
+            ChunkBuildWriter writer(ch);
+            writer.blocks.fill(0);
+            writer.blocks.set(0, 1);
+        }
         ch.biomes.fill(40); // plains registry idx 40 -> uniform
         WriteBuffer blob; serializeSectionData(blob, &ch, 40);
         check(blob.data.size() > 3, "serializeSectionData non-empty for uniform biome 64");
@@ -198,8 +603,12 @@ static void test_paletted_single_valued() {
 
 static void test_heightmaps_37_longs() {
     std::printf("[B2] Heightmaps 37 longs, 7 non-straddling 9-bit values per long\n");
-    Chunk ch; ch.blocks.fill(0);
-    ch.blocks[Chunk::index(4,0,0,0)] = 1; // section 4 (y 64-79), local y 0
+    Chunk ch;
+    {
+        ChunkBuildWriter writer(ch);
+        writer.blocks.fill(0);
+        writer.blocks.set(Chunk::index(4,0,0,0), 1);
+    } // section 4 (y 64-79), local y 0
     std::vector<std::int64_t> packed;
     packHeightmapGeneric(packed, [](int x, int z) {
         return (x == 7 && z == 0) ? 0x1ff : 0;
@@ -990,6 +1399,55 @@ static void test_loot100_plan40(){
     check(eval.tables().find("minecraft:chests/bastion_other") != eval.tables().end(), "loot bastion_other exists");
     check(eval.tables().find("minecraft:entities/cow") != eval.tables().end(), "loot cow exists");
     check(eval.tables().find("minecraft:gameplay/fishing") != eval.tables().end(), "loot gameplay/fishing exists");
+    {
+        LootContext notPlayer;
+        LootContext playerKill;
+        notPlayer.hasEntityContext = true;
+        playerKill.hasEntityContext = true;
+        playerKill.wasKilledByPlayer = true;
+        bool shulkerPlayerGateMatches = false;
+        for (std::int64_t seed = 0; seed < 256; ++seed) {
+            const auto environmental = eval.evaluateRegisteredTable(
+                "minecraft:entities/shulker", {}, &notPlayer, seed);
+            const auto player = eval.evaluateRegisteredTable(
+                "minecraft:entities/shulker", {}, &playerKill, seed);
+            if (environmental && player && !player->empty()) {
+                shulkerPlayerGateMatches = environmental->empty();
+                break;
+            }
+        }
+        check(shulkerPlayerGateMatches,
+              "entity loot root killed_by_player condition gates shulker drops");
+
+        LootContext notOnFire;
+        LootContext onFire;
+        notOnFire.hasEntityContext = true;
+        onFire.hasEntityContext = true;
+        onFire.entityOnFire = true;
+        bool cowFireSmeltingMatches = false;
+        for (std::int64_t seed = 0; seed < 256; ++seed) {
+            const auto raw = eval.evaluateRegisteredTable(
+                "minecraft:entities/cow", {}, &notOnFire, seed);
+            const auto cooked = eval.evaluateRegisteredTable(
+                "minecraft:entities/cow", {}, &onFire, seed);
+            if (!raw || !cooked) continue;
+            const auto rawBeef = std::find_if(raw->begin(), raw->end(),
+                [](const ItemStack& stack) {
+                    return stack.name() == "minecraft:beef";
+                });
+            const auto cookedBeef = std::find_if(cooked->begin(), cooked->end(),
+                [](const ItemStack& stack) {
+                    return stack.name() == "minecraft:cooked_beef";
+                });
+            if (rawBeef != raw->end()) {
+                cowFireSmeltingMatches = cookedBeef != cooked->end() &&
+                    cookedBeef->count == rawBeef->count;
+                break;
+            }
+        }
+        check(cowFireSmeltingMatches,
+              "conditional furnace_smelt cooks beef only when the cow is on fire");
+    }
     if (auto it = eval.tables().find("minecraft:blocks/coal_ore"); it != eval.tables().end()){
         auto &e = it->second.pools[0].entries[0];
         check(e.applyBonusOre, "coal_ore apply_bonus ore_drops true");
@@ -1014,12 +1472,27 @@ static void test_loot100_plan40(){
     // Exercise the parser with a small, isolated fixture so this test verifies
     // the optional function rather than attributing it to the wrong table.
     namespace fs = std::filesystem;
-    const fs::path limitFixture = fs::temp_directory_path() / "cppfm-loot-limit-regression";
+    static std::atomic<std::uint64_t> nextFixtureId{0};
+    const auto fixtureTimestamp =
+        std::chrono::steady_clock::now().time_since_epoch().count();
+    fs::path limitFixture;
     std::error_code fixtureEc;
-    fs::remove_all(limitFixture, fixtureEc);
-    fs::create_directories(limitFixture / "loot_tables/blocks", fixtureEc);
-    check(!fixtureEc, "loot limit fixture directory is created");
-    {
+    bool limitFixtureCreated = false;
+    for (int attempt = 0; attempt < 32 && !limitFixtureCreated; ++attempt) {
+        limitFixture = fs::temp_directory_path() /
+            ("cppfm-loot-limit-regression-" +
+             std::to_string(fixtureTimestamp) + "-" +
+             std::to_string(nextFixtureId.fetch_add(1)));
+        fixtureEc.clear();
+        limitFixtureCreated = fs::create_directory(limitFixture, fixtureEc);
+        if (fixtureEc == std::errc::file_exists) fixtureEc.clear();
+    }
+    if (limitFixtureCreated)
+        fs::create_directories(limitFixture / "loot_tables" / "blocks",
+                               fixtureEc);
+    bool limitFixtureReady = limitFixtureCreated && !fixtureEc;
+    check(limitFixtureReady, "unique loot limit fixture directory is created");
+    if (limitFixtureReady) {
         std::ofstream fixture(limitFixture / "loot_tables/blocks/limit_regression.json",
                               std::ios::binary);
         fixture << R"({
@@ -1038,8 +1511,9 @@ static void test_loot100_plan40(){
         check(static_cast<bool>(fixture), "loot limit fixture is written");
     }
     LootTableEvaluator limitEval;
-    limitEval.loadDirectory(limitFixture.string());
-    if (const auto* table = limitEval.find("minecraft:blocks/limit_regression");
+    if (limitFixtureReady) limitEval.loadDirectory(limitFixture.string());
+    if (const auto* table = limitFixtureReady
+            ? limitEval.find("minecraft:blocks/limit_regression") : nullptr;
         table && !table->pools.empty() && !table->pools[0].entries.empty()) {
         const auto& entry = table->pools[0].entries[0];
         check(entry.hasLimit && entry.limitMin == 2 && entry.limitMax == 5,
@@ -1047,15 +1521,31 @@ static void test_loot100_plan40(){
     } else {
         check(false, "limit_count fixture is loaded");
     }
-    fixtureEc.clear();
-    fs::remove_all(limitFixture, fixtureEc);
-    check(!fixtureEc, "loot limit fixture is cleaned up");
+    if (limitFixtureCreated) {
+        fixtureEc.clear();
+        fs::remove_all(limitFixture, fixtureEc);
+        check(!fixtureEc, "owned loot limit fixture directory is cleaned up");
+    }
     {
-        LootContext ctx0{0,0,0,"",false}; ctx0.fortuneLevel=0;
+        LootContext ctx0;
         auto d0 = eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx0);
-        LootContext ctx3{0,3,0,"",false}; ctx3.fortuneLevel=3;
-        auto d3 = eval.evaluateWithContext("minecraft:blocks/coal_ore", ItemStack::ofName("minecraft:iron_pickaxe",1), &ctx3);
-        check(!d0.empty() && !d3.empty(), "loot evaluate fortune 0 and 3 non-empty");
+        LootContext ctx3;
+        ctx3.fortuneLevel = 3;
+        int maxFortuneThreeCount = 0;
+        bool observedMaximumFortuneThreeCount = false;
+        for (std::int64_t seed = 0; seed < 512; ++seed) {
+            const auto drops = eval.evaluateWithContext(
+                "minecraft:blocks/coal_ore",
+                ItemStack::ofName("minecraft:iron_pickaxe", 1),
+                &ctx3, seed);
+            int count = 0;
+            for (const auto& stack : drops) count += stack.count;
+            maxFortuneThreeCount = std::max(maxFortuneThreeCount, count);
+            observedMaximumFortuneThreeCount |= count == 4;
+        }
+        check(!d0.empty() && maxFortuneThreeCount == 4 &&
+                  observedMaximumFortuneThreeCount,
+              "ore_drops Fortune III uses a 1x–4x multiplier, never a fifth item");
     }
 }
 static void test_advancement80_plan40(){
@@ -1231,6 +1721,109 @@ static void test_enchant41_plan40(){
     }
 }
 
+static void test_persisted_enchantment_edits() {
+    std::printf("[ItemStack] persisted enchantment edits preserve flags and opaque entries\n");
+    const auto makeSavedStack = [](const char* itemName,
+                                   const char* componentName,
+                                   bool includeUnknown) {
+        nbt::Value item = nbt::Value::makeCompound();
+        item.set("id", nbt::Value::makeString(itemName));
+        item.set("count", nbt::Value::makeInt(1));
+        nbt::Value components = nbt::Value::makeCompound();
+        nbt::Value enchantments = nbt::Value::makeCompound();
+        nbt::Value levels = nbt::Value::makeCompound();
+        levels.set("minecraft:sharpness", nbt::Value::makeInt(2));
+        if (includeUnknown)
+            levels.set("example:custom_enchantment", nbt::Value::makeInt(7));
+        enchantments.set("levels", std::move(levels));
+        enchantments.set("show_in_tooltip", nbt::Value::makeByte(0));
+        components.set(componentName, std::move(enchantments));
+        item.set("components", std::move(components));
+        return item;
+    };
+    const auto savedShowTooltipIsFalse = [](const nbt::Value& item,
+                                             const char* componentName) {
+        const auto* components = item.get("components");
+        const auto* enchantments = components
+            ? components->get(componentName) : nullptr;
+        const auto* showTooltip = enchantments
+            ? enchantments->get("show_in_tooltip") : nullptr;
+        return showTooltip && showTooltip->tag == nbt::Byte &&
+               showTooltip->b == 0;
+    };
+
+    for (const auto& [itemName, componentName] : {
+             std::pair{"minecraft:diamond_sword", "minecraft:enchantments"},
+             std::pair{"minecraft:enchanted_book",
+                       "minecraft:stored_enchantments"}}) {
+        auto stack = ItemStack::fromNbt(
+            makeSavedStack(itemName, componentName, false));
+        check(stack.has_value(), "known saved enchantment component parses");
+        if (!stack) continue;
+        ItemStack::addEnchant(*stack, "minecraft:sharpness", 4);
+        ItemStack::addEnchant(*stack, "minecraft:mending", 1);
+        const auto saved = stack->toNbt(-1);
+        check(savedShowTooltipIsFalse(saved, componentName),
+              "addEnchant preserves show_in_tooltip=false");
+        const auto* components = saved.get("components");
+        const auto* enchantments = components
+            ? components->get(componentName) : nullptr;
+        const auto* levels = enchantments ? enchantments->get("levels") : nullptr;
+        const auto* sharpness = levels ? levels->get("minecraft:sharpness") : nullptr;
+        const auto* mending = levels ? levels->get("minecraft:mending") : nullptr;
+        check(sharpness && sharpness->tag == nbt::Int && sharpness->i == 4 &&
+                  mending && mending->tag == nbt::Int && mending->i == 1,
+              "edited enchantment levels are persisted for component type");
+    }
+
+    auto enchantedBook = ItemStack::ofName("minecraft:enchanted_book");
+    enchantedBook.removedComponents.push_back(
+        ItemStack::kStoredEnchantmentsComponentId);
+    ItemStack::addEnchant(enchantedBook, "minecraft:mending", 1);
+    check(enchantedBook.hasValidComponentData() &&
+              enchantedBook.removedComponents.empty() &&
+              std::any_of(enchantedBook.components.begin(),
+                          enchantedBook.components.end(), [](const auto& c) {
+                              return c.first ==
+                                  ItemStack::kStoredEnchantmentsComponentId;
+                          }),
+          "adding stored enchantment removes overlapping removed-component id");
+
+    auto opaqueStack = ItemStack::fromNbt(makeSavedStack(
+        "minecraft:diamond_sword", "minecraft:enchantments", true));
+    check(opaqueStack && opaqueStack->persistedNbt &&
+              opaqueStack->persistedNbt->hasOpaqueComponents,
+          "unknown saved enchantment makes its component opaque");
+    if (opaqueStack) {
+        ItemStack::addEnchant(*opaqueStack, "minecraft:mending", 1);
+        const auto saved = opaqueStack->toNbt(-1);
+        const auto* components = saved.get("components");
+        const auto* enchantments = components
+            ? components->get("minecraft:enchantments") : nullptr;
+        const auto* levels = enchantments ? enchantments->get("levels") : nullptr;
+        const auto* sharpness = levels ? levels->get("minecraft:sharpness") : nullptr;
+        const auto* unknown = levels
+            ? levels->get("example:custom_enchantment") : nullptr;
+        check(sharpness && sharpness->tag == nbt::Int && sharpness->i == 2 &&
+                  unknown && unknown->tag == nbt::Int && unknown->i == 7 &&
+                  !opaqueStack->hasEnchant("minecraft:mending"),
+              "addEnchant is a lossless no-op for opaque enchantment component");
+    }
+}
+
+static void test_item_nbt_signed_slot_aliases() {
+    const auto offhand = ItemStack::ofName("minecraft:shield");
+    const auto serializedOffhand = offhand.toNbt(-106);
+    const auto* offhandSlot = serializedOffhand.get("Slot");
+    check(offhandSlot && offhandSlot->tag == nbt::Byte &&
+              offhandSlot->b == static_cast<std::int8_t>(-106),
+          "player offhand NBT preserves its signed -106 slot alias");
+
+    const auto unslotted = offhand.toNbt(-1);
+    check(unslotted.get("Slot") == nullptr,
+          "explicit no-slot sentinel omits the NBT Slot field");
+}
+
 static void test_plan43_cs_ids() {
     std::printf("[P43-1] cs/sc ids: signed 0x06 / tab 0x0D / use_entity 0x18 / move 0x1C-0x1F / abilities / sign\n");
     check(proto::pl::cs::ChatCommandSigned==0x06, "cs ChatCommandSigned 0x06");
@@ -1372,6 +1965,10 @@ int main(){
     test_entity_spawn_uuid();
     test_slot_air();
     test_slot_component_ids();
+    test_shulker_container_component_roundtrip();
+    test_nested_book_and_container_loot_components();
+    test_filtered_book_page_wire_golden();
+    test_book_string_length_limits();
     test_paletted_single_valued();
     test_heightmaps_37_longs();
     test_multi_block_change_wire();
@@ -1439,6 +2036,8 @@ int main(){
     test_advancement80_plan40();
     test_predicate22_plan40();
     test_enchant41_plan40();
+    test_persisted_enchantment_edits();
+    test_item_nbt_signed_slot_aliases();
     test_open_horse_window_plan41();
     test_vehicle_move_plan41();
     test_plan43_cs_ids();

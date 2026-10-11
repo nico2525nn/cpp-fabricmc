@@ -24,15 +24,19 @@ evidence, and feature implementations are not deletion targets.
   sections are mostly COMDAT/template/header-inline duplicates, so linker
   garbage bytes are not source LOC that can be deleted safely.
 
-The only additional callsite-zero production cleanup that met the current
-policy was the alternate `StructureManager` pending API already removed in
-the PR. A second audit also found `GameServer::requestCookie` to be an
+The original version of this audit found `GameServer::requestCookie` to be an
 unreferenced public convenience wrapper (`src/game/GameServer.hpp:1017`,
-`src/game/GameServer_core.cpp:1570`); its declaration and 11-line body were
-removed while the active cookie store/erase/load and response handling remain
-untouched. Canonical `drainPendingMobs`/`drainPendingLoot` remain in
-`src/game/GameServer_tick.cpp`. No new feature, test, fixture, evidence, or
-generated-file deletion is justified by this pass.
+`src/game/GameServer_core.cpp:1570`) and removed its declaration and 11-line
+body. At that time the cookie store/erase/load path was still present. A later
+goal-hardening pass removed that unused persistence path as well: the server
+does not issue CookieRequest/StoreCookie packets, and inbound CookieResponse
+values are length-checked and skipped without retaining them. Legacy
+`world/data/cookies` files are intentionally left untouched and are not read;
+the current boundary is recorded in MISSING_FEATURES row 76. The alternate
+`StructureManager` pending API was likewise removed in the earlier cleanup;
+canonical `drainPendingMobs`/`drainPendingLoot` remain in
+`src/game/GameServer_tick.cpp`. No generated-file deletion is justified by
+this pass.
 
 ## Boundary
 

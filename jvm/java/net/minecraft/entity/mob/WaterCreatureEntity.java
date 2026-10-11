@@ -3,8 +3,18 @@ package net.minecraft.entity.mob;
 import net.minecraft.entity.EntityType;
 import net.minecraft.world.World;
 
-/** Base type for water creatures in the 1.21.4 entity hierarchy. */
-public class WaterCreatureEntity extends MobEntity {
-    protected WaterCreatureEntity(EntityType<?> type, World world) { super(type, world); }
-    protected WaterCreatureEntity() { super(); }
+/** Vanilla 1.21.4 water-creature hierarchy anchor. */
+public class WaterCreatureEntity extends PathAwareEntity {
+    protected WaterCreatureEntity(EntityType<?> type, World world) {
+        super(type, world);
+    }
+
+    protected WaterCreatureEntity(long nativeHandle, World world,
+                                  EntityType<?> type) {
+        super(nativeHandle, world, type);
+    }
+
+    protected WaterCreatureEntity() {
+        super();
+    }
 }

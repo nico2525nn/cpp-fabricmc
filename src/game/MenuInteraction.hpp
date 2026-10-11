@@ -1,6 +1,7 @@
 // MenuInteraction: vanilla click semantics for open menus. Pure logic —
 // packet emission stays in the session layer so this is unit-testable.
 #pragma once
+#include <optional>
 #include "Containers.hpp"
 #include "Recipes.hpp"
 
@@ -12,6 +13,9 @@ struct MenuIo {
     virtual ~MenuIo() = default;
     virtual void dropFromPlayer(Player& p, const ItemStack& stack, bool wholeStack) = 0;
     virtual void blockEntityChanged(std::int64_t key) = 0;
+    void blockEntityChanged(const std::optional<std::int64_t>& key) {
+        if (key) blockEntityChanged(*key);
+    }
     virtual void itemCrafted(Player& p, const ItemStack& result) = 0;
     virtual void itemSmelted(Player& p, const ItemStack& result) = 0;
 };
@@ -21,6 +25,8 @@ bool isFuelItem(std::uint32_t itemId);
 int furnaceFuelTicks(std::uint32_t itemId);
 int maxStackFor(const ItemStack& s);             // 64 / 16 / 1 by item class
 int maxStackForId(std::uint32_t itemId);         // id form (single truth for MenuLogic)
+std::optional<Recipe::CookingStation> cookingStationForMenu(
+    MenuType type) noexcept;
 
 class ClickLogic {
 public:
@@ -39,7 +45,7 @@ private:
     static bool throwSlot(Menu& m, Player& p, int slot, int button,
                           ItemStack& cursor, MenuIo& io);
     static bool pickupAll(Menu& m, Player& p, int slot, ItemStack& cursor,
-                          MenuIo& io);
+                          MenuIo& io, const RecipeManager& recipes);
 
     static void craftTaken(Menu& m, const RecipeManager& recipes);
     static bool mergeInto(ItemStack& from, ItemStack& into, int amount = -1);

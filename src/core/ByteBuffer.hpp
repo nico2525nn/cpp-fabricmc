@@ -183,6 +183,10 @@ public:
         off += n;
         return v;
     }
+    void skip(std::size_t n) {
+        need(n);
+        off += n;
+    }
     std::size_t skipRest() { std::size_t r = remaining(); off = len; return r; }
 };
 

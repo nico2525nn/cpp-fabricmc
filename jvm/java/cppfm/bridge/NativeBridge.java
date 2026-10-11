@@ -28,9 +28,11 @@ public final class NativeBridge {
     public static native double nativePlayerCoordinate(long handle, int axis);
     public static native boolean nativePlayerSetPosition(long handle, double x, double y, double z);
     public static native boolean nativePlayerSendMessage(long handle, String message, boolean overlay);
+    public static native boolean nativePlayerDisconnect(long handle, String reason);
     public static native long nativePlayerWorld(long handle);
     public static native long nativeServerWorld(int dimension);
     public static native String nativeWorldName(long handle);
+    public static native boolean nativeWorldHasChunk(long handle, int chunkX, int chunkZ);
     public static native int nativeWorldBlock(long handle, int x, int y, int z);
     public static native boolean nativeWorldSetBlock(long handle, int x, int y, int z, int state);
     public static native boolean nativeExecuteCommand(String command);
@@ -42,8 +44,16 @@ public final class NativeBridge {
     // neutral fallback for javac-only fixture execution.
     public static native String nativeEntityType(long handle);
     public static native int nativeEntityTypeId(long handle);
+    public static native boolean nativeEntityIsLiving(long handle);
+    public static native boolean nativeEntityIsHostile(long handle);
+    public static native boolean nativeEntityIsAnimal(long handle);
+    public static native boolean nativeEntityIsFish(long handle);
     public static native float nativeEntityHealth(long handle);
+    public static native float nativeEntityMaxHealth(long handle);
     public static native boolean nativeEntitySetHealth(long handle, float health);
+    public static native boolean nativeEntityDamage(long handle, float amount, String cause);
+    /** reason 0=KILLED, 1=DISCARDED; unsupported lifecycle transitions fail closed. */
+    public static native boolean nativeEntityRemove(long handle, int reason);
     public static native boolean nativeEntityDead(long handle);
     public static native long nativeEntityWorld(long handle);
     public static native double nativeEntityCoordinate(long handle, int axis);

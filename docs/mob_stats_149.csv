@@ -56,7 +56,7 @@ minecraft:armadillo,12.,0.09,0.,16.0,0,minecraft:armadillo_scute,1,1,,default16
 minecraft:bee,10.,0.10,2.,16.0,0,,0,0,,default16
 minecraft:bogged,16.,0.10,2.,16.0,5,minecraft:arrow,0,2,,default16
 minecraft:breeze,30.,0.09,6.,24.0,5,minecraft:breeze_rod,0,1,,vanilla-fr
-minecraft:camel,32.,0.09,0.,16.0,0,,0,0,,default16
+minecraft:camel,32.,0.09,0.,16.0,0,,0,0,minecraft:cactus,default16
 minecraft:cat,10.,0.10,3.,16.0,0,,0,0,,default16
 minecraft:cave_spider,12.,0.12,2.,16.0,5,minecraft:string,0,2,,default16
 minecraft:creaking,1.,0.08,7.,32.0,5,minecraft:resin_clump,0,2,,vanilla-fr

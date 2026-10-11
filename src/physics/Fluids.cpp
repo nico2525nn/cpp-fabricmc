@@ -233,7 +233,7 @@ void FluidSim::touch(std::int32_t x, std::int32_t y, std::int32_t z) {
     constexpr std::int32_t kMinCoord = -(1 << 25);
     constexpr std::int32_t kMaxCoord = (1 << 25) - 1;
     if (x < kMinCoord || x > kMaxCoord || z < kMinCoord || z > kMaxCoord ||
-        y < kMinY || y >= kMaxY) return;
+        y < world_.minY() || y >= world_.maxY()) return;
     schedule(x, y, z, 0);
 }
 
@@ -362,7 +362,7 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
         }
     }
     const bool belowAirOrSame = belowState == 0 || (belowKind == kindInt);
-    if (belowAirOrSame && y - 1 >= kMinY) {
+    if (belowAirOrSame && y - 1 >= world_.minY()) {
         if (belowState == 0 || (belowKind == kindInt && belowLevel != 8 && belowLevel != 0)) {
             const std::uint16_t falling = fluidState(kind, 8);
             if (world_.getBlock(x, y - 1, z) != falling)
@@ -412,7 +412,7 @@ void FluidSim::apply(std::int32_t x, std::int32_t y, std::int32_t z,
             static constexpr int DZ3[4] = {0,0,1,-1};
             for (int d = 0; d < 4; ++d) {
                 const std::int32_t nx = x + DX3[d], nz = z + DZ3[d];
-                if (y < kMinY || y >= kMaxY) continue;
+                if (y < world_.minY() || y >= world_.maxY()) continue;
                 const std::uint16_t ns = world_.getBlock(nx, y, nz);
                 if (ns != 0) {
                     int nl = -1;

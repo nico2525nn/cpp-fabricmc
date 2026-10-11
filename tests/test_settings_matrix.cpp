@@ -38,6 +38,8 @@ void testVanillaDefaultsAndSeedSemantics() {
     const ServerConfig defaults;
     check(defaults.onlineMode && defaults.enforceSecureProfile,
           "online authentication and secure profiles default to vanilla enabled");
+    check(defaults.gameMode == 0 && !defaults.forceGameMode,
+          "default game mode is survival and force-gamemode is disabled by default");
     check(defaults.viewDistance == 10 && defaults.motd == "A Minecraft Server" &&
               defaults.difficulty == "easy",
           "view distance, MOTD, and difficulty use vanilla defaults");
@@ -134,6 +136,8 @@ void testCanonicalProperties() {
               "motd=matrix server\n"
               "world-dir=matrix world\n"
               "level-type=flat\n"
+              "gamemode=creative\n"
+              "force-gamemode=true\n"
               "difficulty=hard\n"
               "spawn-protection=32\n"
               "start-time=-123\n"
@@ -176,6 +180,8 @@ void testCanonicalProperties() {
               config.levelType == "flat" && config.difficulty == "hard" &&
               config.startTime == -123,
           "text, difficulty, and level settings preserve their values");
+    check(config.gameMode == 1 && config.forceGameMode,
+          "gamemode and force-gamemode properties are applied");
     check(config.spawnProtection == 32 && config.compressionThreshold == 128 &&
               config.maxLoadedChunks == 4096 && config.ioWorkerThreads == 8,
           "bounded operational settings apply exactly");
@@ -258,6 +264,36 @@ void testDifficultyOrdinals() {
           "malformed signed integer properties are rejected instead of being clamped");
     check(malformedConfig.hashedSeed == 42767 && malformedConfig.seed == 42767,
           "a non-numeric level-seed with a doubled sign uses Java string hashing");
+}
+
+void testGameModeSettings() {
+    std::cout << "\n[game-mode property parsing and CLI precedence]\n";
+    ServerProperties properties;
+    check(properties.loadText("gamemode=3\nforce-gamemode=false\n"),
+          "numeric game mode fixture parses");
+    ServerConfig config;
+    ConfigDiagnostics diagnostics;
+    applyServerProperties(config, properties, &diagnostics);
+    check(diagnostics.entries.empty() && config.gameMode == 3 && !config.forceGameMode,
+          "numeric game mode follows the vanilla ordinal mapping");
+
+    const auto cli = parseCommandLine(
+        {"--gamemode=survival", "--force-gamemode=true"});
+    check(cli.diagnostics.entries.empty() && cli.assignments.size() == 2,
+          "game-mode CLI settings parse");
+    applyCommandLine(config, cli, &diagnostics);
+    check(config.gameMode == 0 && config.forceGameMode,
+          "CLI game-mode settings override server.properties");
+
+    ServerProperties invalidProperties;
+    check(invalidProperties.loadText("gamemode=creative-ish\n"),
+          "invalid game mode fixture parses as properties text");
+    config = ServerConfig{};
+    diagnostics.entries.clear();
+    applyServerProperties(config, invalidProperties, &diagnostics);
+    check(config.gameMode == 0 &&
+              hasDiagnostic(diagnostics, ConfigDiagnosticKind::InvalidValue, "gamemode"),
+          "invalid game mode is diagnosed without replacing the vanilla default");
 }
 
 void testAliasOrderAndMapMutation() {
@@ -356,6 +392,7 @@ int main() {
     testPropertyKeyCaseAndBooleanSemantics();
     testCanonicalProperties();
     testDifficultyOrdinals();
+    testGameModeSettings();
     testAliasOrderAndMapMutation();
     testCommandLinePrecedence();
     testInvalidSettings();

@@ -2,7 +2,6 @@ package net.fabricmc.fabric.api.entity.event.v1;
 
 import cppfm.bridge.CppModRuntime;
 import net.fabricmc.fabric.api.event.Event;
-import net.fabricmc.fabric.api.event.EventFactory;
 import net.minecraft.entity.damage.DamageSource;
 import net.minecraft.server.network.ServerPlayNetworkHandler;
 import net.minecraft.server.network.ServerPlayerEntity;
@@ -57,7 +56,7 @@ public final class ServerPlayerEvents {
         boolean allowDeath(ServerPlayerEntity player, DamageSource damageSource, float damageAmount);
     }
     @Deprecated
-    public static final Event<AllowDeath> ALLOW_DEATH = EventFactory.createArrayBacked(
+    public static final Event<AllowDeath> ALLOW_DEATH = new Event<>(CppModRuntime::registerPlayerAllowDeath,
         AllowDeath.class, callbacks -> (player, source, amount) -> {
             for (AllowDeath callback : callbacks)
                 if (!callback.allowDeath(player, source, amount)) return false;

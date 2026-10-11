@@ -1,4 +1,6 @@
 #pragma once
+#include <bit>
+#include <cmath>
 #include <cstdint>
 
 // All values are wire / gameplay behavior preserving (constexpr replacement only).
@@ -41,5 +43,20 @@ constexpr int kChatSignatureBytes = 256;
 // kAngleScaleNum / kAngleScaleDen` stays bit-identical to the previous `deg * 256.f / 360.f` (float rounding).
 constexpr float kAngleScaleNum = 256.0f;
 constexpr float kAngleScaleDen = 360.0f;
+
+// Convert finite degrees to the protocol's wrapping signed/unsigned angle
+// byte without an out-of-range floating-to-integer conversion. The modulo is
+// also what makes equivalent rotations one full turn apart encode alike.
+inline std::uint8_t protocolAngleByte(float degrees) noexcept {
+    if (!std::isfinite(degrees)) return 0;
+    const float wrapped = std::fmod(degrees, kAngleScaleDen);
+    const float scaled = wrapped * kAngleScaleNum / kAngleScaleDen;
+    const auto wholeAngle = static_cast<std::int16_t>(scaled);
+    return static_cast<std::uint8_t>(wholeAngle);
+}
+
+inline std::int8_t protocolSignedAngleByte(float degrees) noexcept {
+    return std::bit_cast<std::int8_t>(protocolAngleByte(degrees));
+}
 
 } // namespace cppfm::constants

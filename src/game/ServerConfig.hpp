@@ -51,6 +51,11 @@ struct ServerConfig {
     bool pvp = true;
     bool allowFlight = false;
     bool hardcore = false;
+    // Match the Java server's default and force-gamemode properties. Values
+    // use the protocol/game-data ordinals: survival=0, creative=1,
+    // adventure=2, spectator=3.
+    std::uint8_t gameMode = 0;
+    bool forceGameMode = false;
     // Fabric-compatible Java integration is enabled by default.  When a JDK
     // or the bundled shadow classes are unavailable, non-strict startup logs
     // the reason and keeps the native server authoritative.

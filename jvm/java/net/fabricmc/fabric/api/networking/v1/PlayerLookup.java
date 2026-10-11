@@ -18,7 +18,9 @@ public final class PlayerLookup {
     private PlayerLookup() { }
 
     public static Collection<ServerPlayerEntity> all(MinecraftServer server) {
-        return server == null ? List.of() : List.copyOf(server.getPlayerManager().getPlayerList());
+        net.minecraft.server.PlayerManager playerManager =
+            server == null ? null : server.getPlayerManager();
+        return playerManager == null ? List.of() : List.copyOf(playerManager.getPlayerList());
     }
 
     public static Collection<ServerPlayerEntity> world(ServerWorld world) {

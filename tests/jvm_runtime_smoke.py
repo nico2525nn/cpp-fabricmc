@@ -70,6 +70,12 @@ def main() -> int:
                 "dynamic route JVM_TRANSFORMED owner=net/minecraft/server/MinecraftServer method=setTick descriptor=(J)V tick=1",
                 "fixture COMMAND_REGISTERED",
                 "fixture COMMAND_EXECUTED 7",
+                "fixture DAMAGE_BRIDGE_SETUP true",
+                "fixture DAMAGE_PROBE_CANCEL result=false health=4.0 callbacks=1",
+                "fixture DAMAGE_BRIDGE_CANCEL true",
+                "fixture DAMAGE_BRIDGE_NESTED_REJECT true",
+                "fixture DAMAGE_BRIDGE_DEATH_VETO true",
+                "fixture DAMAGE_BRIDGE_DEATH_ALLOW true",
                 "fixture WORLD_API",
                 "fixture RELOAD_SUCCESS resource=true",
                 "fixture RELOAD_FAILURE_INVOKED",
@@ -120,9 +126,68 @@ def main() -> int:
                 print("JVM smoke server exited with", proc.returncode, file=sys.stderr)
                 print("\n".join(output[-80:]), file=sys.stderr)
                 return 1
+            stopping = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=server-stopping " in item
+            ]
+            world_unloads = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=world-unload " in item
+            ]
+            stopped = [
+                item for item in output
+                if "fixture SHUTDOWN_EVENT " in item and
+                "phase=server-stopped " in item
+            ]
+            expected_dimensions = {
+                "minecraft:overworld",
+                "minecraft:the_nether",
+                "minecraft:the_end",
+            }
+            actual_dimensions = {
+                item.split("dimension=", 1)[1].split(" ", 1)[0]
+                for item in world_unloads
+                if "dimension=" in item
+            }
+            if (len(stopping) != 1 or "status=PASS" not in stopping[0] or
+                    "count=1" not in stopping[0] or "nativeServer=0" in stopping[0] or
+                    "worldHandle=0" in stopping[0] or "tick=0" in stopping[0] or
+                    "nativeMutation=PASS" not in stopping[0] or
+                    len(world_unloads) != 3 or
+                    any("status=PASS" not in item or "nativeServer=0" in item or
+                        "worldHandle=0" in item or "tick=0" in item
+                        for item in world_unloads) or
+                    actual_dimensions != expected_dimensions or
+                    len(stopped) != 1 or "status=PASS" not in stopped[0] or
+                    "count=1" not in stopped[0] or "nativeServer=0" in stopped[0] or
+                    "worldHandle=0" not in stopped[0] or "tick=0" in stopped[0] or
+                    "worldsClosed=PASS" not in stopped[0]):
+                print(
+                    "JVM shutdown lifecycle evidence invalid: expected "
+                    "SERVER_STOPPING, one valid UNLOAD per world, then "
+                    "SERVER_STOPPED after worlds close",
+                    file=sys.stderr,
+                )
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
+            shutdown_markers = [stopping[0], *world_unloads, stopped[0]]
+            if any(output.index(before) >= output.index(after)
+                   for before, after in zip(shutdown_markers,
+                                            shutdown_markers[1:])):
+                print("JVM shutdown lifecycle events were out of order", file=sys.stderr)
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
+            if any("fixture CALLBACK_THREAD_MISMATCH" in item for item in output):
+                print("JVM shutdown callback left the authoritative server thread",
+                      file=sys.stderr)
+                print("\n".join(output[-80:]), file=sys.stderr)
+                return 1
             print("JVM smoke: PASS")
             for item in output:
-                if any(token in item for token in required):
+                if (any(token in item for token in required) or
+                        "fixture SHUTDOWN_EVENT " in item):
                     print(item)
     return 0
 

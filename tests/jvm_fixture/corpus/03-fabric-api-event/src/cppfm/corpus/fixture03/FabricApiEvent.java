@@ -33,12 +33,17 @@ public final class FabricApiEvent implements DedicatedServerModInitializer {
 
     @Override
     public void onInitializeServer() {
-        ServerLifecycleEvents.SERVER_STARTING.register(server ->
-            result("server-starting", true));
+        ServerLifecycleEvents.SERVER_STARTING.register(server -> {
+            result("server-starting", true);
+            result("server-starting-before-world-load",
+                server.getOverworld() == null && server.getWorlds().isEmpty() &&
+                server.getPlayerManager() == null);
+        });
         ServerWorldEvents.LOAD.register((server, world) ->
             result("world-load-" + world.getRegistryKey().getValue(), true));
         ServerLifecycleEvents.SERVER_STARTED.register(server ->
-            result("server-started", true));
+            result("server-started", server.getOverworld() != null &&
+                !server.getWorlds().isEmpty() && server.getPlayerManager() != null));
         ServerTickEvents.START.register(server -> {
             if (server.getTicks() == 1 && START_TICK_SEEN.compareAndSet(false, true))
                 result("tick-start-1", true);

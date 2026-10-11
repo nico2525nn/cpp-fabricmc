@@ -60,6 +60,11 @@ public final class KnotLauncher {
     private static Class<?> runtimeType;
     private static Method runtimeBootstrap;
     private static Method runtimeShutdown;
+    private static Method runtimeServerShutdown;
+    private static Method runtimeServerStopping;
+    private static Method runtimeServerWorldsLoaded;
+    private static Method runtimeWorldsUnloading;
+    private static Method runtimeServerStopped;
     private static Method runtimeTick;
     private static Method runtimeJoin;
     private static Method runtimeQuit;
@@ -69,8 +74,16 @@ public final class KnotLauncher {
     private static Method runtimeBlockClicked;
     private static Method runtimeCommand;
     private static Method runtimeDamage;
+    private static Method runtimeAllowDeath;
+    private static Method runtimeDamageApplied;
     private static Method runtimeSpawn;
-    private static boolean started;
+    private static Method runtimeMobLoad;
+    private static Method runtimeMobUnload;
+    private static volatile boolean started;
+    private static boolean bootstrapping;
+    private static boolean shutdownInProgress;
+    private static boolean shutdownCleanupPending;
+    private static int runtimeCalls;
 
     private KnotLauncher() {}
 
@@ -80,27 +93,43 @@ public final class KnotLauncher {
     public static boolean bootstrap(String classesDir, String modsDir, String configDir) {
         synchronized (LOCK) {
             if (started) return true;
-            try {
-                String officialRuntime = configured(OFFICIAL_RUNTIME_PROPERTY, OFFICIAL_RUNTIME_ENV);
-                if (officialRuntime != null) {
-                    bootstrapOfficial(classesDir, modsDir, configDir,
-                                      Paths.get(officialRuntime).toAbsolutePath().normalize());
-                } else {
-                    bootstrapFallback(classesDir, modsDir, configDir);
-                    logTransformerDiagnostics();
-                }
+            if (bootstrapping || shutdownInProgress) return false;
+            bootstrapping = true;
+        }
+        Throwable failure = null;
+        try {
+            String officialRuntime = configured(OFFICIAL_RUNTIME_PROPERTY, OFFICIAL_RUNTIME_ENV);
+            if (officialRuntime != null) {
+                bootstrapOfficial(classesDir, modsDir, configDir,
+                                  Paths.get(officialRuntime).toAbsolutePath().normalize());
+            } else {
+                bootstrapFallback(classesDir, modsDir, configDir);
+                logTransformerDiagnostics();
+            }
+        } catch (Throwable caught) {
+            failure = caught;
+        }
+        boolean shutdownAfterBootstrap = false;
+        synchronized (LOCK) {
+            bootstrapping = false;
+            if (failure == null) {
                 started = true;
-                return true;
-            } catch (Throwable failure) {
+                shutdownAfterBootstrap = shutdownCleanupPending || shutdownInProgress;
+                if (!shutdownAfterBootstrap) return true;
+            } else {
                 closeLoader();
                 closeOfficialResources();
                 clear();
-                Throwable cause = failure instanceof InvocationTargetException ite && ite.getCause() != null
-                    ? ite.getCause() : failure;
-                NativeBridge.logFallback("ERROR", "Knot bootstrap failed:\n" + describeFailure(cause));
-                return false;
             }
         }
+        if (failure == null) {
+            shutdown();
+            return false;
+        }
+        Throwable cause = failure instanceof InvocationTargetException ite && ite.getCause() != null
+            ? ite.getCause() : failure;
+        NativeBridge.logFallback("ERROR", "Knot bootstrap failed:\n" + describeFailure(cause));
+        return false;
     }
 
     /**
@@ -232,38 +261,116 @@ public final class KnotLauncher {
      * Loader, while CppModRuntime owns the native event bridge.
      */
     public static void officialFinalize() throws Exception {
+        Method bootstrap;
+        String modsDirectory;
+        String configDirectory;
         synchronized (LOCK) {
             if (!officialMode || !officialHandoff)
                 throw new IllegalStateException("official event handoff is not ready");
             if (officialEventsStarted) return;
-            Boolean ok = (Boolean) invoke(runtimeBootstrap,
-                                          officialEmptyMods.toString(), officialConfigDir.toString());
+            officialEventsStarted = true;
+            bootstrap = runtimeBootstrap;
+            modsDirectory = officialEmptyMods.toString();
+            configDirectory = officialConfigDir.toString();
+        }
+        try {
+            Boolean ok = (Boolean) invoke(bootstrap, modsDirectory, configDirectory);
             if (!Boolean.TRUE.equals(ok))
                 throw new IllegalStateException("official event bridge bootstrap returned false");
-            officialEventsStarted = true;
             System.out.println("CPPFM_OFFICIAL_EVENT_BRIDGE_READY classLoader="
                                + runtimeType.getClassLoader().getClass().getName());
+        } catch (Exception failure) {
+            synchronized (LOCK) { officialEventsStarted = false; }
+            throw failure;
+        }
+    }
+
+    public static void onServerStopping() {
+        invokeRuntimeLifecycle(runtimeServerStopping, "SERVER_STOPPING");
+    }
+
+    public static void onServerWorldsLoaded() {
+        invokeRuntimeLifecycle(runtimeServerWorldsLoaded, "server worlds loaded");
+    }
+
+    public static void onWorldsUnloading() {
+        invokeRuntimeLifecycle(runtimeWorldsUnloading, "ServerWorldEvents.UNLOAD");
+    }
+
+    public static void onServerStopped() {
+        invokeRuntimeLifecycle(runtimeServerStopped, "SERVER_STOPPED");
+    }
+
+    public static void onServerShutdown() {
+        onServerStopping();
+        onWorldsUnloading();
+        onServerStopped();
+    }
+
+    private static Method beginRuntimeCall(Method method) {
+        synchronized (LOCK) {
+            if (!started || shutdownInProgress || method == null) return null;
+            runtimeCalls++;
+            return method;
+        }
+    }
+
+    private static void finishRuntimeCall() {
+        synchronized (LOCK) {
+            if (runtimeCalls > 0) runtimeCalls--;
+            if (runtimeCalls == 0 && shutdownInProgress && shutdownCleanupPending)
+                finishShutdownLocked();
+        }
+    }
+
+    private static void invokeRuntimeLifecycle(Method method, String eventName) {
+        Method target = beginRuntimeCall(method);
+        if (target == null) return;
+        try {
+            invoke(target);
+        } catch (Throwable failure) {
+            NativeBridge.logFallback("ERROR", "Knot " + eventName +
+                " callback failed:\n" + describeFailure(failure));
+            throw new IllegalStateException("Knot " + eventName + " dispatch failed", failure);
+        } finally {
+            finishRuntimeCall();
         }
     }
 
     public static void shutdown() {
+        Method runtimeMethod;
         synchronized (LOCK) {
-            if (!started) {
-                closeLoader();
-                closeOfficialResources();
-                clear();
+            if (bootstrapping) {
+                shutdownCleanupPending = true;
                 return;
             }
-            try { invoke(runtimeShutdown); }
-            catch (Throwable failure) {
-                NativeBridge.logFallback("ERROR", "Knot shutdown failed:\n" + describeFailure(failure));
-            }
-            finally {
-                closeLoader();
-                closeOfficialResources();
-                clear();
+            if (shutdownInProgress) return;
+            shutdownInProgress = true;
+            runtimeMethod = started ? runtimeShutdown : null;
+        }
+
+        Throwable failure = null;
+        try {
+            if (runtimeMethod != null) invoke(runtimeMethod);
+        } catch (Throwable caught) {
+            failure = caught;
+        } finally {
+            synchronized (LOCK) {
+                if (runtimeCalls == 0) finishShutdownLocked();
+                else shutdownCleanupPending = true;
             }
         }
+        if (failure != null)
+            NativeBridge.logFallback("ERROR", "Knot shutdown callback failed:\n"
+                + describeFailure(failure));
+    }
+
+    /** Must be called with LOCK held; no user callback runs in this method. */
+    private static void finishShutdownLocked() {
+        closeLoader();
+        closeOfficialResources();
+        clear();
+        shutdownInProgress = false;
     }
 
     public static void onServerTick(long tick) { invokeVoid(runtimeTick, tick); }
@@ -294,8 +401,28 @@ public final class KnotLauncher {
                                          float amount, String cause) {
         return booleanResult(invokeQuiet(runtimeDamage, playerHandle, entityHandle, amount, cause), true);
     }
-    public static boolean onMobSpawn(long entityHandle, double x, double y, double z) {
-        return booleanResult(invokeQuiet(runtimeSpawn, entityHandle, x, y, z), true);
+    public static boolean onEntityAllowDeath(long playerHandle, long entityHandle,
+                                             float amount, String cause) {
+        return booleanResult(
+            invokeQuiet(runtimeAllowDeath, playerHandle, entityHandle, amount, cause), true);
+    }
+    public static void onEntityDamageApplied(long playerHandle, long entityHandle,
+                                             float baseDamage, float damageTaken,
+                                             boolean blocked, boolean died,
+                                             String cause) {
+        invokeVoid(runtimeDamageApplied, playerHandle, entityHandle, baseDamage,
+                   damageTaken, blocked, died, cause);
+    }
+    public static boolean onMobSpawn(long entityHandle, double x, double y,
+                                     double z, int dimension) {
+        return booleanResult(
+            invokeQuiet(runtimeSpawn, entityHandle, x, y, z, dimension), true);
+    }
+    public static void onMobLoad(long entityHandle, int dimension) {
+        invokeVoid(runtimeMobLoad, entityHandle, dimension);
+    }
+    public static void onMobUnload(long entityHandle, int dimension) {
+        invokeVoid(runtimeMobUnload, entityHandle, dimension);
     }
 
     private static Object invokeQuiet(Method method, Object... args) {
@@ -328,6 +455,11 @@ public final class KnotLauncher {
     private static void cacheRuntimeMethods(Class<?> type) throws NoSuchMethodException {
         runtimeBootstrap = method(type, "bootstrap", String.class, String.class);
         runtimeShutdown = method(type, "shutdown");
+        runtimeServerShutdown = method(type, "onServerShutdown");
+        runtimeServerStopping = method(type, "onServerStopping");
+        runtimeServerWorldsLoaded = method(type, "onServerWorldsLoaded");
+        runtimeWorldsUnloading = method(type, "onWorldsUnloading");
+        runtimeServerStopped = method(type, "onServerStopped");
         runtimeTick = method(type, "onServerTick", long.class);
         runtimeJoin = method(type, "onPlayerJoin", long.class);
         runtimeQuit = method(type, "onPlayerQuit", long.class);
@@ -341,8 +473,15 @@ public final class KnotLauncher {
         runtimeCommand = method(type, "onCommand", long.class, String.class);
         runtimeDamage = method(type, "onEntityDamage", long.class, long.class,
                                float.class, String.class);
+        runtimeAllowDeath = method(type, "onEntityAllowDeath", long.class,
+                                   long.class, float.class, String.class);
+        runtimeDamageApplied = method(type, "onEntityDamageApplied", long.class,
+                                      long.class, float.class, float.class,
+                                      boolean.class, boolean.class, String.class);
         runtimeSpawn = method(type, "onMobSpawn", long.class, double.class,
-                              double.class, double.class);
+                              double.class, double.class, int.class);
+        runtimeMobLoad = method(type, "onMobLoad", long.class, int.class);
+        runtimeMobUnload = method(type, "onMobUnload", long.class, int.class);
     }
 
     private static void invokeMain(ClassLoader classLoader, String className,
@@ -626,6 +765,11 @@ public final class KnotLauncher {
         runtimeType = null;
         runtimeBootstrap = null;
         runtimeShutdown = null;
+        runtimeServerShutdown = null;
+        runtimeServerStopping = null;
+        runtimeServerWorldsLoaded = null;
+        runtimeWorldsUnloading = null;
+        runtimeServerStopped = null;
         runtimeTick = null;
         runtimeJoin = null;
         runtimeQuit = null;
@@ -636,7 +780,11 @@ public final class KnotLauncher {
         runtimeCommand = null;
         runtimeDamage = null;
         runtimeSpawn = null;
+        runtimeMobLoad = null;
+        runtimeMobUnload = null;
         started = false;
+        runtimeCalls = 0;
+        shutdownCleanupPending = false;
         savedOfficialProperties.clear();
     }
 
