@@ -131,6 +131,7 @@ public:
     void clear() {
         recipes_.clear();
         tags_.clear();
+        builtInTags_.clear();
         tagPlanks_.clear();
     }
     void loadDefaults();                         // built-in table (see Recipes.cpp)
@@ -164,6 +165,10 @@ private:
     Ingredient fromName(const std::string& n) const;
 
     std::vector<Recipe> recipes_;
+    // Stable clean-room defaults are the baseline; resource/datapack tags
+    // are rebuilt from their current source instead of accumulating into it.
+    std::unordered_map<std::string, std::unordered_set<std::uint32_t>>
+        builtInTags_;
 
 protected:
     std::uint32_t itemIdOr0(const std::string& name) const {

@@ -2,6 +2,10 @@
 #pragma once
 #include "ByteBuffer.hpp"
 #include "NBT.hpp"
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <limits>
@@ -83,6 +87,113 @@ struct Value {
     }
 };
 
+namespace detail {
+inline bool sameNbtFloat(float expected, float actual) noexcept {
+    if (std::isnan(expected) && std::isnan(actual)) return true;
+    return std::bit_cast<std::uint32_t>(expected) ==
+           std::bit_cast<std::uint32_t>(actual);
+}
+
+inline bool sameNbtDouble(double expected, double actual) noexcept {
+    if (std::isnan(expected) && std::isnan(actual)) return true;
+    return std::bit_cast<std::uint64_t>(expected) ==
+           std::bit_cast<std::uint64_t>(actual);
+}
+
+inline bool equalNbtValue(const Value& left, const Value& right) {
+    if (left.tag != right.tag) return false;
+    switch (left.tag) {
+    case End: return true;
+    case Byte: return left.b == right.b;
+    case Short: return left.s == right.s;
+    case Int: return left.i == right.i;
+    case Long: return left.l == right.l;
+    case Float: return sameNbtFloat(left.f, right.f);
+    case Double: return sameNbtDouble(left.d, right.d);
+    case ByteArray: return left.byteArray == right.byteArray;
+    case String: return left.str == right.str;
+    case List:
+        if (left.listElement != right.listElement ||
+            left.list.size() != right.list.size()) return false;
+        for (std::size_t i = 0; i < left.list.size(); ++i)
+            if (!equalNbtValue(left.list[i], right.list[i])) return false;
+        return true;
+    case Compound:
+        if (left.comp.size() != right.comp.size()) return false;
+        for (const auto& [key, value] : left.comp) {
+            const auto* other = right.get(key);
+            if (!other || !equalNbtValue(value, *other)) return false;
+        }
+        return true;
+    case IntArray: return left.intArray == right.intArray;
+    case LongArray: return left.longArray == right.longArray;
+    default: return false;
+    }
+}
+} // namespace detail
+
+// Mirrors NbtHelper.matches(standard, subject, ignoreListOrder): compounds
+// in `expected` are subsets of `actual`, while primitive values and arrays
+// must match exactly. Order-insensitive lists use vanilla's membership rule
+// (duplicate expected values do not require duplicate actual values).
+inline bool matchesSubset(const Value& expected, const Value& actual,
+                          bool ignoreListOrder = true) {
+    if (expected.tag != actual.tag) return false;
+    switch (expected.tag) {
+    case End:
+        return true;
+    case Byte:
+        return expected.b == actual.b;
+    case Short:
+        return expected.s == actual.s;
+    case Int:
+        return expected.i == actual.i;
+    case Long:
+        return expected.l == actual.l;
+    case Float:
+        return detail::sameNbtFloat(expected.f, actual.f);
+    case Double:
+        return detail::sameNbtDouble(expected.d, actual.d);
+    case ByteArray:
+        return expected.byteArray == actual.byteArray;
+    case String:
+        return expected.str == actual.str;
+    case List:
+        if (!ignoreListOrder) {
+            if (expected.listElement != actual.listElement ||
+                expected.list.size() != actual.list.size()) return false;
+            for (std::size_t i = 0; i < expected.list.size(); ++i)
+                if (!detail::equalNbtValue(expected.list[i], actual.list[i]))
+                    return false;
+            return true;
+        }
+        if (expected.list.empty()) return actual.list.empty();
+        for (const auto& expectedElement : expected.list) {
+            const auto found = std::find_if(
+                actual.list.begin(), actual.list.end(),
+                [&](const Value& actualElement) {
+                    return matchesSubset(expectedElement, actualElement, true);
+                });
+            if (found == actual.list.end()) return false;
+        }
+        return true;
+    case Compound:
+        for (const auto& [key, expectedValue] : expected.comp) {
+            const auto* actualValue = actual.get(key);
+            if (!actualValue ||
+                !matchesSubset(expectedValue, *actualValue, ignoreListOrder))
+                return false;
+        }
+        return true;
+    case IntArray:
+        return expected.intArray == actual.intArray;
+    case LongArray:
+        return expected.longArray == actual.longArray;
+    default:
+        return false;
+    }
+}
+
 inline void writePayload(WriteBuffer& out, const Value& v) {
     switch (v.tag) {
     case Byte: out.i8(v.b); break;
@@ -158,23 +269,166 @@ inline void writeFileRoot(WriteBuffer& out, const Value& root, std::string_view 
 
 class Parser {
 public:
-    explicit Parser(ReadBuffer& in) : in_(in) {}
+    static constexpr std::size_t kDefaultAllocationBudget = 64u * 1024u * 1024u;
+
+    explicit Parser(ReadBuffer& in,
+                    std::size_t allocationBudget = kDefaultAllocationBudget)
+        : in_(in), allocationBudget_(allocationBudget) {}
+    // Reads one unnamed root value as used by the network protocol. Unlike
+    // file-style NBT, an anonymous root may be any non-End tag, not only a
+    // compound. The caller owns framing and may continue reading afterward.
+    Value readAnonymousRoot() {
+        const Tag tag = static_cast<Tag>(in_.u8());
+        if (!isValidTag(tag) || tag == End)
+            throw std::runtime_error("invalid anonymous NBT root tag");
+        return payload(tag);
+    }
+
     // Reads a NAMED root (file style): type + name + payload
     Value readFileRoot(std::string* nameOut = nullptr) {
         const Tag t = static_cast<Tag>(in_.u8());
         if (t != Compound) throw std::runtime_error("file root not compound");
         const std::uint16_t nl = in_.u16();
-        const auto nameBytes = in_.bytes(nl);
         std::string name;
-        if (!nameBytes.empty())
-            name.assign(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
-        if (nameOut) *nameOut = name;
+        if (nameOut && nl != 0) {
+            chargeAllocation(static_cast<std::size_t>(nl) + 1);
+            in_.need(nl);
+            name.assign(reinterpret_cast<const char*>(in_.p + in_.off), nl);
+            in_.skip(nl);
+            *nameOut = std::move(name);
+        } else {
+            in_.skip(nl);
+            if (nameOut) nameOut->clear();
+        }
         Value root = payload(Compound);
         if (in_.remaining() != 0)
             throw std::runtime_error("trailing bytes after NBT root");
         return root;
     }
+
+    // Validate a serialized file-style NBT root using the same structural,
+    // depth, element-count, and cumulative allocation rules as readFileRoot,
+    // but without building the Value tree. Persistence uses this before
+    // committing bytes so it cannot write a record that its own loader must
+    // reject at the allocation budget.
+    void validateFileRoot() {
+        const Tag tag = static_cast<Tag>(in_.u8());
+        if (tag != Compound) throw std::runtime_error("file root not compound");
+        const auto rootNameLength = in_.u16();
+        in_.skip(rootNameLength);
+        validatePayload(Compound);
+        if (in_.remaining() != 0)
+            throw std::runtime_error("trailing bytes after NBT root");
+    }
 private:
+    void chargeAllocation(std::size_t amount) {
+        if (usedAllocation_ > allocationBudget_ ||
+            amount > allocationBudget_ - usedAllocation_)
+            throw std::length_error("NBT allocation budget exceeded");
+        usedAllocation_ += amount;
+    }
+
+    void validatePayload(Tag tag, std::size_t depth = 0) {
+        if (depth > kMaxNbtDepth)
+            throw std::runtime_error("nbt nesting depth exceeded");
+        switch (tag) {
+        case Byte: (void)in_.i8(); break;
+        case Short: (void)in_.i16(); break;
+        case Int: (void)in_.i32(); break;
+        case Long: (void)in_.i64(); break;
+        case Float: (void)in_.f32(); break;
+        case Double: (void)in_.f64(); break;
+        case ByteArray: {
+            const auto length = in_.i32();
+            if (length < 0 ||
+                static_cast<std::size_t>(length) > kMaxNbtElements)
+                throw std::runtime_error("bad NBT byte array length");
+            const auto count = static_cast<std::size_t>(length);
+            chargeAllocation(count);
+            in_.skip(count);
+            break;
+        }
+        case String: {
+            const auto length = in_.u16();
+            if (length != 0) chargeAllocation(
+                static_cast<std::size_t>(length) + 1);
+            in_.skip(length);
+            break;
+        }
+        case List: {
+            const Tag element = static_cast<Tag>(in_.u8());
+            const auto length = in_.i32();
+            if (!isValidTag(element) || length < 0 ||
+                static_cast<std::size_t>(length) > kMaxNbtElements ||
+                (length != 0 && element == End))
+                throw std::runtime_error("bad NBT list");
+            const auto count = static_cast<std::size_t>(length);
+            if (count > std::numeric_limits<std::size_t>::max() /
+                            sizeof(Value))
+                throw std::length_error("NBT list allocation size overflow");
+            chargeAllocation(count * sizeof(Value));
+            for (std::int32_t index = 0; index < length; ++index)
+                validatePayload(element, depth + 1);
+            break;
+        }
+        case Compound: {
+            using CompoundEntry = std::pair<std::string, Value>;
+            std::size_t fields = 0;
+            std::size_t capacity = 0;
+            for (;;) {
+                const Tag element = static_cast<Tag>(in_.u8());
+                if (element == End) break;
+                if (!isValidTag(element))
+                    throw std::runtime_error("bad NBT tag");
+                if (++fields > kMaxNbtElements)
+                    throw std::runtime_error("too many NBT compound fields");
+                const auto nameLength = in_.u16();
+                if (fields - 1 == capacity) {
+                    const std::vector<CompoundEntry> emptyCompound;
+                    const auto maximumCapacity = emptyCompound.max_size();
+                    const auto nextCapacity = capacity == 0
+                        ? std::size_t{1}
+                        : (capacity > maximumCapacity / 2
+                               ? maximumCapacity : capacity * 2);
+                    if (nextCapacity <= capacity)
+                        throw std::length_error(
+                            "NBT compound allocation size overflow");
+                    chargeAllocation(nextCapacity * sizeof(CompoundEntry));
+                    capacity = nextCapacity;
+                }
+                if (nameLength != 0)
+                    chargeAllocation(static_cast<std::size_t>(nameLength) + 1);
+                in_.skip(nameLength);
+                validatePayload(element, depth + 1);
+            }
+            break;
+        }
+        case IntArray:
+        case LongArray: {
+            const auto length = in_.i32();
+            if (length < 0 ||
+                static_cast<std::size_t>(length) > kMaxNbtElements)
+                throw std::runtime_error(tag == IntArray
+                    ? "bad NBT int array length"
+                    : "bad NBT long array length");
+            const auto count = static_cast<std::size_t>(length);
+            const std::size_t elementSize =
+                tag == IntArray ? sizeof(std::int32_t) : sizeof(std::int64_t);
+            if (count > std::numeric_limits<std::size_t>::max() / elementSize)
+                throw std::length_error(tag == IntArray
+                    ? "NBT int-array allocation size overflow"
+                    : "NBT long-array allocation size overflow");
+            const auto byteCount = count * elementSize;
+            chargeAllocation(byteCount);
+            in_.skip(byteCount);
+            break;
+        }
+        case End:
+        default:
+            throw std::runtime_error("bad nbt tag in file");
+        }
+    }
+
     Value payload(Tag t, std::size_t depth = 0) {
         if (depth > kMaxNbtDepth) throw std::runtime_error("nbt nesting depth exceeded");
         Value v; v.tag = t;
@@ -189,14 +443,18 @@ private:
             const auto n = in_.i32();
             if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
                 throw std::runtime_error("bad NBT byte array length");
+            chargeAllocation(static_cast<std::size_t>(n));
             v.byteArray = in_.bytes(static_cast<std::size_t>(n));
             break;
         }
         case String: {
             const auto n = in_.u16();
-            const auto bytes = in_.bytes(n);
-            if (!bytes.empty())
-                v.str.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+            if (n != 0) {
+                chargeAllocation(static_cast<std::size_t>(n) + 1);
+                in_.need(n);
+                v.str.assign(reinterpret_cast<const char*>(in_.p + in_.off), n);
+                in_.skip(n);
+            }
             break;
         }
         case List: {
@@ -205,8 +463,12 @@ private:
             if (!isValidTag(et) || n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements ||
                 (n != 0 && et == End))
                 throw std::runtime_error("bad NBT list");
+            const auto count = static_cast<std::size_t>(n);
+            if (count > std::numeric_limits<std::size_t>::max() / sizeof(Value))
+                throw std::length_error("NBT list allocation size overflow");
+            chargeAllocation(count * sizeof(Value));
             v.listElement = et;
-            v.list.reserve(static_cast<std::size_t>(n));
+            v.list.reserve(count);
             for (std::int32_t i = 0; i < n; ++i) v.list.push_back(payload(et, depth + 1));
             break;
         }
@@ -218,10 +480,38 @@ private:
                 if (!isValidTag(et)) throw std::runtime_error("bad NBT tag");
                 if (++fields > kMaxNbtElements) throw std::runtime_error("too many NBT compound fields");
                 const std::uint16_t nl = in_.u16();
-                const auto nameBytes = in_.bytes(nl);
+                using CompoundEntry = std::pair<std::string, Value>;
+                if (v.comp.size() == v.comp.capacity()) {
+                    const auto currentCapacity = v.comp.capacity();
+                    const auto maximumCapacity = v.comp.max_size();
+                    const auto nextCapacity = currentCapacity == 0
+                        ? std::size_t{1}
+                        : (currentCapacity > maximumCapacity / 2
+                               ? maximumCapacity
+                               : currentCapacity * 2);
+                    if (nextCapacity <= currentCapacity ||
+                        nextCapacity >
+                            std::numeric_limits<std::size_t>::max() /
+                                sizeof(CompoundEntry))
+                        throw std::length_error(
+                            "NBT compound allocation size overflow");
+                    // Account each actual vector buffer before reserve(). The
+                    // old buffers are included because reallocation allocates
+                    // the replacement before releasing the prior storage.
+                    chargeAllocation(nextCapacity * sizeof(CompoundEntry));
+                    v.comp.reserve(nextCapacity);
+                }
+                if (static_cast<std::size_t>(nl) >
+                    std::numeric_limits<std::size_t>::max() / 2)
+                    throw std::length_error("NBT compound name is too large");
                 std::string name;
-                if (!nameBytes.empty())
-                    name.assign(reinterpret_cast<const char*>(nameBytes.data()), nameBytes.size());
+                if (nl != 0) {
+                    chargeAllocation(static_cast<std::size_t>(nl) + 1);
+                    in_.need(nl);
+                    name.assign(reinterpret_cast<const char*>(in_.p + in_.off),
+                                nl);
+                    in_.skip(nl);
+                }
                 v.comp.emplace_back(std::move(name), payload(et, depth + 1));
             }
             break;
@@ -230,7 +520,12 @@ private:
             const auto n = in_.i32();
             if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
                 throw std::runtime_error("bad NBT int array length");
-            v.intArray.reserve(static_cast<std::size_t>(n));
+            const auto count = static_cast<std::size_t>(n);
+            if (count > std::numeric_limits<std::size_t>::max() /
+                            sizeof(std::int32_t))
+                throw std::length_error("NBT int-array allocation size overflow");
+            chargeAllocation(count * sizeof(std::int32_t));
+            v.intArray.reserve(count);
             for (std::int32_t i = 0; i < n; ++i) v.intArray.push_back(in_.i32());
             break;
         }
@@ -238,7 +533,12 @@ private:
             const auto n = in_.i32();
             if (n < 0 || static_cast<std::size_t>(n) > kMaxNbtElements)
                 throw std::runtime_error("bad NBT long array length");
-            v.longArray.reserve(static_cast<std::size_t>(n));
+            const auto count = static_cast<std::size_t>(n);
+            if (count > std::numeric_limits<std::size_t>::max() /
+                            sizeof(std::int64_t))
+                throw std::length_error("NBT long-array allocation size overflow");
+            chargeAllocation(count * sizeof(std::int64_t));
+            v.longArray.reserve(count);
             for (std::int32_t i = 0; i < n; ++i) v.longArray.push_back(in_.i64());
             break;
         }
@@ -247,6 +547,8 @@ private:
         return v;
     }
     ReadBuffer& in_;
+    const std::size_t allocationBudget_;
+    std::size_t usedAllocation_ = 0;
 };
 
 } // namespace cppfm::nbt

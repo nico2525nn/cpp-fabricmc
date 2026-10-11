@@ -2,6 +2,11 @@
 // a small semantic fallback set when a checkout has no vanilla tag resources.
 // Merges into RecipeManager tags and exposes getItems(tag) for datapack functions.
 #pragma once
+#include <algorithm>
+#include <fstream>
+#include <iterator>
+#include <optional>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -11,14 +16,22 @@
 #include "../core/Json.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/BlockStates.hpp"
+#include "MobEffects.hpp"
 
 namespace cppfm {
 
 class TagManager {
 public:
     using IdSet = std::unordered_set<std::uint32_t>;
+    struct NamespacedTagReference {
+        std::string source;
+        std::string target;
+        bool required = true;
+    };
+
     std::unordered_map<std::string, IdSet> itemTags;
     std::unordered_map<std::string, IdSet> blockTags;
+    std::unordered_map<std::string, IdSet> statusEffectTags;
     std::unordered_map<std::string, std::unordered_set<std::string>> biomeTags;
 
     void loadDirectory(const std::string& base) {
@@ -26,6 +39,7 @@ public:
         std::error_code ec;
         itemTags.clear();
         blockTags.clear();
+        statusEffectTags.clear();
         biomeTags.clear();
         pendingRefs_.clear();
         std::string root = base;
@@ -33,14 +47,121 @@ public:
         // also try assets/data/tags directly
         loadTagsFrom(root, "item", itemTags, true);
         loadTagsFrom(root, "block", blockTags, false);
+        loadTagsFrom(root, "mob_effect", statusEffectTags, false, true);
+        loadTagsFrom(root, "status_effect", statusEffectTags, false, true);
         loadBiomeTags(root);
         if (itemTags.empty()) ensureDefaults();
         if (biomeTags.empty()) ensureBiomeDefaults();
     }
 
+    // Merge the registry tags supported by this server from a Java 1.21 data
+    // pack root (`data/<namespace>/tags/...`). This is distinct from the
+    // built-in assets layout (`tags/item/...`) handled by loadDirectory().
+    void mergeDataPackDirectory(const std::string& dataRoot) {
+        mergeDataPackDirectories({dataRoot});
+    }
+
+    void mergeDataPackDirectories(const std::vector<std::string>& dataRoots) {
+        namespace fs = std::filesystem;
+        using Reference = NamespacedTagReference;
+        auto mergedItemTags = itemTags;
+        auto mergedBlockTags = blockTags;
+        auto mergedStatusEffectTags = statusEffectTags;
+        auto mergedBiomeTags = biomeTags;
+        std::vector<Reference> itemReferences;
+        std::vector<Reference> blockReferences;
+        std::vector<Reference> statusEffectReferences;
+        std::vector<Reference> biomeReferences;
+        for (const auto& dataRoot : dataRoots) {
+            std::error_code error;
+            if (!fs::exists(dataRoot, error)) {
+                if (error)
+                    throw fs::filesystem_error("inspect datapack data root",
+                                               dataRoot, error);
+                continue;
+            }
+            if (!fs::is_directory(dataRoot, error) || error)
+                throw fs::filesystem_error("inspect datapack data root",
+                    dataRoot, error ? error : std::make_error_code(
+                        std::errc::not_a_directory));
+            std::vector<fs::directory_entry> namespaces;
+            fs::directory_iterator it(dataRoot, error), end;
+            if (error)
+                throw fs::filesystem_error("scan datapack data root",
+                                           dataRoot, error);
+            while (it != end) {
+                std::error_code statusError;
+                if (it->is_directory(statusError) && !statusError)
+                    namespaces.push_back(*it);
+                it.increment(error);
+                if (error)
+                    throw fs::filesystem_error("scan datapack data root",
+                                               dataRoot, error);
+            }
+            std::sort(namespaces.begin(), namespaces.end(),
+                [](const fs::directory_entry& lhs,
+                   const fs::directory_entry& rhs) {
+                    return lhs.path().filename().generic_string() <
+                           rhs.path().filename().generic_string();
+                });
+            for (const auto& nameSpace : namespaces) {
+                const auto tags = nameSpace.path() / "tags";
+                const auto name = nameSpace.path().filename().string();
+                mergeNamespacedTagsFrom(tags / "item", name, mergedItemTags,
+                    itemReferences, [this](const std::string& id) {
+                        const auto resolved = resolveId(id, true);
+                        return !resolved
+                            ? std::vector<std::uint32_t>{}
+                            : std::vector<std::uint32_t>{*resolved};
+                    });
+                mergeNamespacedTagsFrom(tags / "block", name, mergedBlockTags,
+                    blockReferences, [this](const std::string& id) {
+                        const auto resolved = resolveId(id, false);
+                        return !resolved
+                            ? std::vector<std::uint32_t>{}
+                            : std::vector<std::uint32_t>{*resolved};
+                    });
+                mergeNamespacedTagsFrom(
+                    tags / "mob_effect", name, mergedStatusEffectTags,
+                    statusEffectReferences, [this](const std::string& id) {
+                        const auto resolved = resolveId(id, false, true);
+                        return !resolved
+                            ? std::vector<std::uint32_t>{}
+                            : std::vector<std::uint32_t>{*resolved};
+                    });
+                mergeNamespacedTagsFrom(
+                    tags / "status_effect", name, mergedStatusEffectTags,
+                    statusEffectReferences, [this](const std::string& id) {
+                        const auto resolved = resolveId(id, false, true);
+                        return !resolved
+                            ? std::vector<std::uint32_t>{}
+                            : std::vector<std::uint32_t>{*resolved};
+                    });
+                mergeNamespacedTagsFrom(
+                    tags / "worldgen" / "biome", name, mergedBiomeTags,
+                    biomeReferences, [](const std::string& id) {
+                        return std::vector<std::string>{id};
+                    });
+            }
+        }
+        resolveNamespacedTagReferences(mergedItemTags, itemReferences);
+        resolveNamespacedTagReferences(mergedBlockTags, blockReferences);
+        resolveNamespacedTagReferences(mergedStatusEffectTags,
+                                       statusEffectReferences);
+        resolveNamespacedTagReferences(mergedBiomeTags, biomeReferences);
+        itemTags.swap(mergedItemTags);
+        blockTags.swap(mergedBlockTags);
+        statusEffectTags.swap(mergedStatusEffectTags);
+        biomeTags.swap(mergedBiomeTags);
+    }
+
     const IdSet* getItemTag(const std::string& name) const {
         auto it = itemTags.find(name);
         return it == itemTags.end() ? nullptr : &it->second;
+    }
+    const IdSet* getStatusEffectTag(const std::string& name) const {
+        const auto found = statusEffectTags.find(name);
+        return found == statusEffectTags.end() ? nullptr : &found->second;
     }
     std::vector<std::uint32_t> getItems(const std::string& tag) const {
         auto it = itemTags.find(tag);
@@ -60,8 +181,159 @@ public:
 
 private:
     std::unordered_map<std::string, std::vector<std::string>> pendingRefs_;
+
+    static std::string canonicalResourceId(std::string id) {
+        if (id.find(':') == std::string::npos)
+            id = "minecraft:" + id;
+        return id;
+    }
+
+    template<class TagValue, class ResolveValue>
+    void mergeNamespacedTagsFrom(
+        const std::filesystem::path& directory, const std::string& nameSpace,
+        std::unordered_map<std::string, std::unordered_set<TagValue>>& output,
+        std::vector<NamespacedTagReference>& references,
+        ResolveValue resolveValue) {
+        namespace fs = std::filesystem;
+        std::error_code error;
+        if (!fs::exists(directory, error)) {
+            if (error)
+                throw fs::filesystem_error("inspect datapack tag directory",
+                                           directory, error);
+            return;
+        }
+        if (!fs::is_directory(directory, error) || error)
+            throw fs::filesystem_error("inspect datapack tag directory",
+                                       directory,
+                                       error ? error : std::make_error_code(
+                                           std::errc::not_a_directory));
+
+        std::vector<fs::path> files;
+        fs::recursive_directory_iterator it(directory, error), end;
+        if (error)
+            throw fs::filesystem_error("scan datapack tag directory",
+                                       directory, error);
+        while (it != end) {
+            std::error_code statusError;
+            if (it->is_regular_file(statusError) && !statusError &&
+                it->path().extension() == ".json")
+                files.push_back(it->path());
+            it.increment(error);
+            if (error)
+                throw fs::filesystem_error("scan datapack tag directory",
+                                           directory, error);
+        }
+        std::sort(files.begin(), files.end());
+
+        for (const auto& filePath : files) {
+            std::ifstream input(filePath, std::ios::binary);
+            if (!input)
+                throw fs::filesystem_error("open datapack tag",
+                    filePath, std::make_error_code(std::errc::io_error));
+            const std::string text(std::istreambuf_iterator<char>(input), {});
+            if (input.bad())
+                throw fs::filesystem_error("read datapack tag",
+                    filePath, std::make_error_code(std::errc::io_error));
+
+            try {
+                const auto value = json::Value::parse(text);
+                if (!value.isObj())
+                    throw std::invalid_argument("tag root must be an object");
+                std::error_code relativeError;
+                auto relative = fs::relative(
+                    filePath, directory, relativeError).generic_string();
+                if (relativeError)
+                    throw fs::filesystem_error("resolve datapack tag path",
+                        filePath, directory, relativeError);
+                if (relative.size() <= 5 ||
+                    relative.substr(relative.size() - 5) != ".json")
+                    throw std::invalid_argument("tag filename must end in .json");
+                relative.resize(relative.size() - 5);
+                const auto tagName = nameSpace + ":" + relative;
+                const auto* replaceValue = value.find("replace");
+                if (replaceValue && !replaceValue->isBool())
+                    throw std::invalid_argument("replace must be a boolean");
+                if (replaceValue && replaceValue->boolean) {
+                    output[tagName].clear();
+                    std::erase_if(references,
+                        [&tagName](const NamespacedTagReference& reference) {
+                            return reference.source == tagName;
+                        });
+                }
+
+                auto& tagValues = output[tagName];
+                const auto* values = value.find("values");
+                if (!values || !values->isArr())
+                    throw std::invalid_argument("values must be an array");
+                for (const auto& entry : values->arr) {
+                    std::string id;
+                    bool required = true;
+                    if (entry.isStr()) {
+                        id = entry.asStr();
+                    } else if (entry.isObj()) {
+                        const auto* idValue = entry.find("id");
+                        if (!idValue || !idValue->isStr())
+                            throw std::invalid_argument(
+                                "tag entry object requires a string id");
+                        id = idValue->asStr();
+                        if (const auto* requiredValue = entry.find("required")) {
+                            if (!requiredValue->isBool())
+                                throw std::invalid_argument(
+                                    "tag entry required must be a boolean");
+                            required = requiredValue->boolean;
+                        }
+                    } else {
+                        throw std::invalid_argument(
+                            "tag entry must be a string or object");
+                    }
+                    if (id.empty())
+                        throw std::invalid_argument("tag entry id is empty");
+                    if (id.front() == '#') {
+                        references.push_back({tagName,
+                            canonicalResourceId(id.substr(1)), required});
+                        continue;
+                    }
+                    auto resolvedValues = resolveValue(
+                        canonicalResourceId(std::move(id)));
+                    if (resolvedValues.empty() && required)
+                        throw std::invalid_argument(
+                            "required tag value is not present in the registry");
+                    for (const auto& resolved : resolvedValues)
+                        tagValues.insert(resolved);
+                }
+            } catch (const std::exception& exception) {
+                throw std::runtime_error("invalid datapack tag " +
+                    filePath.string() + ": " + exception.what());
+            }
+        }
+    }
+
+    template<class TagValue>
+    static void resolveNamespacedTagReferences(
+        std::unordered_map<std::string, std::unordered_set<TagValue>>& tags,
+        const std::vector<NamespacedTagReference>& references) {
+        for (std::size_t pass = 0; pass <= tags.size(); ++pass) {
+            bool changed = false;
+            for (const auto& reference : references) {
+                const auto source = tags.find(reference.source);
+                const auto target = tags.find(reference.target);
+                if (source == tags.end() || target == tags.end()) continue;
+                for (const auto& value : target->second)
+                    changed = source->second.insert(value).second || changed;
+            }
+            if (!changed) break;
+        }
+        for (const auto& reference : references) {
+            if (reference.required && !tags.contains(reference.target))
+                throw std::runtime_error("required tag reference " +
+                    reference.source + " -> " + reference.target +
+                    " does not exist");
+        }
+    }
+
     void loadTagsFrom(const std::string& root, const std::string& sub,
-                      std::unordered_map<std::string, IdSet>& out, bool isItem) {
+                      std::unordered_map<std::string, IdSet>& out, bool isItem,
+                      bool isStatusEffect = false) {
         namespace fs = std::filesystem;
         std::string dir = root + "/" + sub;
         std::error_code ec;
@@ -93,8 +365,9 @@ private:
                             if (it != out.end()) for (auto id: it->second) set.insert(id);
                             else pendingRefs_[tagName].push_back(ref);
                         } else {
-                            uint32_t id = resolveId(idStr, isItem);
-                            if (id) set.insert(id);
+                            const auto id = resolveId(idStr, isItem,
+                                                      isStatusEffect);
+                            if (id) set.insert(*id);
                         }
                     }
                 }
@@ -118,16 +391,24 @@ private:
             }
         }
         pendingRefs_.clear();
-        if (isItem) ensureItemDefaults(out); else ensureBlockDefaults(out);
+        if (isItem) ensureItemDefaults(out);
+        else if (!isStatusEffect) ensureBlockDefaults(out);
     }
-    uint32_t resolveId(const std::string& name, bool isItem) const {
+    std::optional<std::uint32_t> resolveId(const std::string& name,
+                                           bool isItem,
+                                           bool isStatusEffect = false) const {
         if (isItem) {
             auto it = gen::itemIdByName().find(name);
-            return it!=gen::itemIdByName().end()? it->second : 0;
+            if (it != gen::itemIdByName().end()) return it->second;
+        } else if (isStatusEffect) {
+            const auto it = effects::byName().find(name);
+            if (it != effects::byName().end()) return it->second;
         } else {
             auto it = gen::blockNameToState().find(name);
-            return it!=gen::blockNameToState().end()? static_cast<uint32_t>(it->second) : 0;
+            if (it != gen::blockNameToState().end())
+                return static_cast<std::uint32_t>(it->second);
         }
+        return std::nullopt;
     }
     void ensureDefaults() {
         ensureItemDefaults(itemTags);

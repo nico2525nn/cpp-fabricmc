@@ -96,13 +96,17 @@ void BlockTickScheduler::tick(std::int64_t now) {
                         IBlockBehavior* behavior;
                     };
                     std::vector<RandomTickTarget> targets;
+                    const auto geometry = world_.verticalGeometry();
                     for (const auto k : simKeys) {
                         auto [cx, cz] = chunkKeyDecode(k);
                         world_.withChunk(cx, cz, [&](const Chunk& chunk) {
-                            for (int section = 0; section < kSectionsPerChunk; ++section) {
-                                const std::int32_t sectionMinY = kMinY + section * 16;
+                            for (int slice = 0; slice < geometry.sectionCount(); ++slice) {
+                                const int worldSection = geometry.minSection() + slice;
+                                const int storageSection =
+                                    geometry.storageSection(worldSection);
+                                const std::int32_t sectionMinY = worldSection * 16;
                                 const std::size_t sectionBase =
-                                    static_cast<std::size_t>(section) * 4096;
+                                    static_cast<std::size_t>(storageSection) * 4096;
                                 // Sampling is cheaper than scanning every
                                 // 16^3 cell just to discover whether this
                                 // section has a random-ticking block.  Empty
@@ -111,8 +115,8 @@ void BlockTickScheduler::tick(std::int64_t now) {
                                     const int lx = nextRandom() % 16;
                                     const int lz = nextRandom() % 16;
                                     const int ly = nextRandom() % 16;
-                                    const std::uint16_t st = chunk.blocks[
-                                        sectionBase + static_cast<std::size_t>(ly * 256 + lz * 16 + lx)];
+                                    const std::uint16_t st = chunk.blockAt(
+                                        sectionBase + static_cast<std::size_t>(ly * 256 + lz * 16 + lx));
                                     auto* beh = behaviorForState(st);
                                     if (!beh) continue;
                                     targets.push_back({cx * 16 + lx,
@@ -185,13 +189,13 @@ static bool isBambooBlock(std::uint16_t st) {
 }
 static int bambooFindBaseY(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     int by = y;
-    while (by > kMinY && isBambooBlock(w.getBlock(x, by-1, z))) --by;
+    while (by > w.minY() && isBambooBlock(w.getBlock(x, by-1, z))) --by;
     return by;
 }
 static int bambooCountHeight(const World& w, std::int32_t x, std::int32_t y, std::int32_t z) {
     int base = bambooFindBaseY(w,x,y,z);
     int h=0;
-    for(int yy=base; yy<kMaxY && isBambooBlock(w.getBlock(x,yy,z)); ++yy) ++h;
+    for(int yy=base; yy<w.maxY() && isBambooBlock(w.getBlock(x,yy,z)); ++yy) ++h;
     return h;
 }
 static std::string bambooLeavesFor(int h, int distFromTop) {
@@ -578,7 +582,7 @@ static void trySpawnCreakingForHeart(World& w, std::int32_t hx, std::int32_t hy,
         int sx = hx + dx;
         int sz = hz + dz;
         int sy = hy + dy;
-        if (sy < kMinY || sy >= kMaxY) continue;
+        if (sy < w.minY() || sy >= w.maxY()) continue;
         uint16_t at = w.getBlock(sx, sy, sz);
         uint16_t below = w.getBlock(sx, sy-1, sz);
         uint16_t above = w.getBlock(sx, sy+1, sz);

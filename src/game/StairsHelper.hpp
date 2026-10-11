@@ -1,154 +1,183 @@
 #pragma once
-// helper, wire-unchanged. Yarn StairsBlock#getStairsShape + isDifferentOrientation strict (front+opposite only, no 4-dir side loop).
-#include "GameServer.hpp"
+
+#include "World.hpp"
 #include "../generated/BlockStates.hpp"
+
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace cppfm {
 
-inline bool isStairsBlock(const gen::BlockDef* d){
-    if(!d) return false;
-    std::string n(d->name);
-    return n.find("_stairs")!=std::string::npos;
+inline bool isStairsBlock(const gen::BlockDef* block) {
+    return block && std::string_view(block->name).find("_stairs") !=
+                        std::string_view::npos;
 }
-inline std::string getPropStr(std::uint16_t state, const char* key){
-    for(auto&[k,v]: gen::propsOf(state)) if(k==key) return std::string(v);
-    return "";
+
+inline std::string getPropStr(std::uint16_t state, const char* key) {
+    for (const auto& [name, value] : gen::propsOf(state))
+        if (name == key) return std::string(value);
+    return {};
 }
-inline bool isDifferentOrientation(World& w, int x,int y,int z, const std::string& stateFacing, const std::string& dir){
-    int nx=x, nz=z;
-    if(dir=="north") nz-=1;
-    else if(dir=="south") nz+=1;
-    else if(dir=="east") nx+=1;
-    else if(dir=="west") nx-=1;
-    else return true;
-    std::uint16_t ns = w.getBlock(nx,y,nz);
-    const gen::BlockDef* nd = gen::blockByState(ns);
-    if(!isStairsBlock(nd)) return true;
-    std::string nf = getPropStr(ns,"facing");
-    auto axisOf2 = [](const std::string& f)->char{
-        if(f=="north"||f=="south") return 'z';
-        if(f=="east"||f=="west") return 'x';
-        return 'y';
-    };
-    if(axisOf2(nf) != axisOf2(stateFacing)) return true;
-    auto opposite2 = [](const std::string& f)->std::string{
-        if(f=="north") return "south";
-        if(f=="south") return "north";
-        if(f=="east") return "west";
-        if(f=="west") return "east";
-        return f;
-    };
-    if(nf == opposite2(stateFacing)) return true;
-    if(nf == stateFacing) return false;
+
+namespace stairs_detail {
+
+inline char axisOf(std::string_view facing) {
+    if (facing == "north" || facing == "south") return 'z';
+    if (facing == "east" || facing == "west") return 'x';
+    return 'y';
+}
+
+inline std::string opposite(std::string_view facing) {
+    if (facing == "north") return "south";
+    if (facing == "south") return "north";
+    if (facing == "east") return "west";
+    if (facing == "west") return "east";
+    if (facing == "up") return "down";
+    if (facing == "down") return "up";
+    return std::string(facing);
+}
+
+inline std::string rotateCounterClockwise(std::string_view facing) {
+    if (facing == "north") return "west";
+    if (facing == "west") return "south";
+    if (facing == "south") return "east";
+    if (facing == "east") return "north";
+    return std::string(facing);
+}
+
+inline bool horizontalOffset(std::string_view direction, int& dx, int& dz) {
+    dx = 0;
+    dz = 0;
+    if (direction == "north") dz = -1;
+    else if (direction == "south") dz = 1;
+    else if (direction == "east") dx = 1;
+    else if (direction == "west") dx = -1;
+    else return false;
     return true;
 }
-inline std::string computeStairsShape(World& w, int x,int y,int z, const std::string& facing, const std::string& half){
-    auto axisOf = [](const std::string& f)->char{
-        if(f=="north"||f=="south") return 'z';
-        if(f=="east"||f=="west") return 'x';
-        return 'y';
-    };
-    auto rotateCCW = [](const std::string& f)->std::string{
-        if(f=="north") return "west";
-        if(f=="west") return "south";
-        if(f=="south") return "east";
-        if(f=="east") return "north";
-        return f;
-    };
-    auto opposite = [](const std::string& f)->std::string{
-        if(f=="north") return "south";
-        if(f=="south") return "north";
-        if(f=="east") return "west";
-        if(f=="west") return "east";
-        if(f=="up") return "down";
-        if(f=="down") return "up";
-        return f;
-    };
-    {
-        int nx=x, nz=z;
-        if(facing=="north") nz-=1; else if(facing=="south") nz+=1;
-        else if(facing=="east") nx+=1; else if(facing=="west") nx-=1;
-        std::uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                std::string checkDir = opposite(nf);
-                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
-                    if(nf == rotateCCW(facing)) return "outer_left";
-                    else return "outer_right";
-                }
+
+} // namespace stairs_detail
+
+inline bool isDifferentOrientation(World& world, int x, int y, int z,
+                                   const std::string& stateFacing,
+                                   const std::string& direction) {
+    int dx = 0;
+    int dz = 0;
+    if (!stairs_detail::horizontalOffset(direction, dx, dz)) return true;
+
+    const auto neighborState = world.getBlock(x + dx, y, z + dz);
+    const auto* neighbor = gen::blockByState(neighborState);
+    if (!isStairsBlock(neighbor)) return true;
+
+    const auto neighborFacing = getPropStr(neighborState, "facing");
+    if (stairs_detail::axisOf(neighborFacing) !=
+        stairs_detail::axisOf(stateFacing))
+        return true;
+    if (neighborFacing == stairs_detail::opposite(stateFacing)) return true;
+    if (neighborFacing == stateFacing) return false;
+    return true;
+}
+
+inline std::string computeStairsShape(World& world, int x, int y, int z,
+                                      const std::string& facing,
+                                      const std::string& half) {
+    int dx = 0;
+    int dz = 0;
+    if (stairs_detail::horizontalOffset(facing, dx, dz)) {
+        const auto frontState = world.getBlock(x + dx, y, z + dz);
+        const auto* front = gen::blockByState(frontState);
+        if (isStairsBlock(front)) {
+            const auto neighborFacing = getPropStr(frontState, "facing");
+            const auto neighborHalf = getPropStr(frontState, "half");
+            if (neighborHalf == half &&
+                stairs_detail::axisOf(neighborFacing) !=
+                    stairs_detail::axisOf(facing) &&
+                isDifferentOrientation(world, x, y, z, facing,
+                                      stairs_detail::opposite(neighborFacing))) {
+                return neighborFacing ==
+                               stairs_detail::rotateCounterClockwise(facing)
+                    ? "outer_left" : "outer_right";
             }
         }
     }
-    {
-        int nx=x, nz=z;
-        std::string opp = opposite(facing);
-        if(opp=="north") nz-=1; else if(opp=="south") nz+=1;
-        else if(opp=="east") nx+=1; else if(opp=="west") nx-=1;
-        std::uint16_t ns = w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd = gen::blockByState(ns);
-        if(isStairsBlock(nd)){
-            std::string nf = getPropStr(ns,"facing");
-            std::string nh = getPropStr(ns,"half");
-            if(nh==half && axisOf(nf)!=axisOf(facing)){
-                std::string checkDir = nf;
-                if(isDifferentOrientation(w,x,y,z,facing,checkDir)){
-                    if(nf == rotateCCW(facing)) return "inner_left";
-                    else return "inner_right";
-                }
+
+    const auto backFacing = stairs_detail::opposite(facing);
+    if (stairs_detail::horizontalOffset(backFacing, dx, dz)) {
+        const auto backState = world.getBlock(x + dx, y, z + dz);
+        const auto* back = gen::blockByState(backState);
+        if (isStairsBlock(back)) {
+            const auto neighborFacing = getPropStr(backState, "facing");
+            const auto neighborHalf = getPropStr(backState, "half");
+            if (neighborHalf == half &&
+                stairs_detail::axisOf(neighborFacing) !=
+                    stairs_detail::axisOf(facing) &&
+                isDifferentOrientation(world, x, y, z, facing,
+                                      neighborFacing)) {
+                return neighborFacing ==
+                               stairs_detail::rotateCounterClockwise(facing)
+                    ? "inner_left" : "inner_right";
             }
         }
     }
+
     return "straight";
 }
-inline void updateNeighborStairsShapes(World& w, GameServer& srv, int x,int y,int z){
-    auto updateNeighbor = [&](int nx, int nz){
-        uint16_t ns=w.getBlock(nx,y,nz);
-        const gen::BlockDef* nd=gen::blockByState(ns);
-        if(!isStairsBlock(nd)) return;
-        std::string nf=getPropStr(ns,"facing");
-        std::string nh=getPropStr(ns,"half");
-        std::string shape=computeStairsShape(w,nx,y,nz,nf,nh);
-        std::string curShape=getPropStr(ns,"shape");
-        if(curShape==shape) return;
-        std::vector<std::pair<std::string_view,std::string_view>> props;
-        for(auto&[k,v]: gen::propsOf(ns)) if(k!="shape") props.emplace_back(k,v);
-        props.emplace_back("shape", shape);
-        uint16_t nst=static_cast<uint16_t>(gen::stateWithProps(*nd, props));
-        w.setBlock(nx,y,nz,nst);
-        srv.broadcastBlockChange(nx,y,nz,nst);
+
+template <typename EmitBlockUpdate>
+inline void updateNeighborStairsShapes(World& world, int x, int y, int z,
+                                       EmitBlockUpdate&& emitBlockUpdate) {
+    const auto updateNeighbor = [&](int neighborX, int neighborZ) {
+        const auto state = world.getBlock(neighborX, y, neighborZ);
+        const auto* definition = gen::blockByState(state);
+        if (!isStairsBlock(definition)) return;
+
+        const auto facing = getPropStr(state, "facing");
+        const auto half = getPropStr(state, "half");
+        const auto shape = computeStairsShape(
+            world, neighborX, y, neighborZ, facing, half);
+        if (getPropStr(state, "shape") == shape) return;
+
+        std::vector<std::pair<std::string_view, std::string_view>> properties;
+        for (const auto& [name, value] : gen::propsOf(state))
+            if (name != "shape") properties.emplace_back(name, value);
+        properties.emplace_back("shape", shape);
+
+        const auto nextState = static_cast<std::uint16_t>(
+            gen::stateWithProps(*definition, properties));
+        if (!world.setBlock(neighborX, y, neighborZ, nextState)) return;
+
+        // The emitter receives the dimension from the same World whose state
+        // was mutated, preventing an implicit Overworld fallback.
+        emitBlockUpdate(world.dimensionId(), neighborX, y, neighborZ,
+                        nextState);
     };
-    uint16_t placed = w.getBlock(x,y,z);
-    const gen::BlockDef* pd = gen::blockByState(placed);
-    if(!isStairsBlock(pd)){
-        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
-        for(int i=0;i<4;++i){
-            updateNeighbor(x+DX4[i], z+DZ4[i]);
-        }
+
+    const auto placedState = world.getBlock(x, y, z);
+    const auto* placed = gen::blockByState(placedState);
+    if (!isStairsBlock(placed)) {
+        updateNeighbor(x + 1, z);
+        updateNeighbor(x - 1, z);
+        updateNeighbor(x, z + 1);
+        updateNeighbor(x, z - 1);
         return;
     }
-    std::string pf=getPropStr(placed,"facing");
-    int fdx=0,fdz=0,bdx=0,bdz=0;
-    if(pf=="north"){ fdz=-1; bdz=1; }
-    else if(pf=="south"){ fdz=1; bdz=-1; }
-    else if(pf=="east"){ fdx=1; bdx=-1; }
-    else if(pf=="west"){ fdx=-1; bdx=1; }
-    else {
-        static const int DX4[4]={1,-1,0,0}, DZ4[4]={0,0,1,-1};
-        for(int i=0;i<4;++i){
-            updateNeighbor(x+DX4[i], z+DZ4[i]);
-        }
+
+    const auto facing = getPropStr(placedState, "facing");
+    int dx = 0;
+    int dz = 0;
+    if (!stairs_detail::horizontalOffset(facing, dx, dz)) {
+        updateNeighbor(x + 1, z);
+        updateNeighbor(x - 1, z);
+        updateNeighbor(x, z + 1);
+        updateNeighbor(x, z - 1);
         return;
     }
-    const int DX2[2]={fdx,bdx};
-    const int DZ2[2]={fdz,bdz};
-    for(int i=0;i<2;++i){
-        updateNeighbor(x+DX2[i], z+DZ2[i]);
-    }
+
+    updateNeighbor(x + dx, z + dz);
+    updateNeighbor(x - dx, z - dz);
 }
 
 } // namespace cppfm

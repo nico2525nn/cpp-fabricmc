@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 #include "../core/ByteBuffer.hpp"
 #include "Arguments.hpp"
@@ -128,6 +129,12 @@ public:
 
         for (const auto& child : children) {
             const std::size_t mark = reader.cursor();
+            std::optional<ArgValue> previousArgument;
+            if (child->kind == Kind::Argument) {
+                const auto previous = ctx.args.find(child->name);
+                if (previous != ctx.args.end())
+                    previousArgument = previous->second;
+            }
             try {
                 if (child->kind == Kind::Literal) {
                     const std::string word = reader.readUnquotedString();
@@ -146,6 +153,13 @@ public:
                 reader.setCursor(mark);
             } catch (const std::exception&) {
                 reader.setCursor(mark);
+            }
+            if (child->kind == Kind::Argument) {
+                if (previousArgument)
+                    ctx.args.insert_or_assign(child->name,
+                                              std::move(*previousArgument));
+                else
+                    ctx.args.erase(child->name);
             }
         }
         reader.setCursor(wsMark);
