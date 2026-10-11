@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 #include "BlockEntities.hpp"
 #include "Items.hpp"
@@ -67,7 +68,9 @@ class Menu {
 public:
     MenuType type = MenuType::Chest;
     std::int32_t windowId = 0;
-    std::int64_t blockKey = -1;                  // packed pos, -1 for crafting
+    std::optional<std::int64_t> blockKey;        // absent for non-block menus
+    std::string blockNameAtOpen;
+    std::optional<BlockEntity::Kind> blockEntityKindAtOpen;
 
     // backing stores ---------------------------------------------------------
     ItemStack* container = nullptr;              // chest slots (27) | furnace(3) etc.

@@ -850,14 +850,18 @@ bool FleeSunGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     int col=4;
     withoutMobStateLock(m, [&] {
         world->withChunk(chunkX, chunkZ,[&](const Chunk& c){
-            for(int ry=kSectionsPerChunk*16-1; ry>=0; --ry)
-                if(c.blocks[Chunk::index(ry>>4, ry&15,
-                                        blockZ&15, blockX&15)]!=0){
-                    col=ry+1;break;
+            const auto geometry = world->verticalGeometry();
+            for (int y = geometry.maxY() - 1; y >= geometry.minY; --y) {
+                const int storageY = y - kMinY;
+                if(c.blockAt(Chunk::index(storageY >> 4, storageY & 15,
+                                          blockZ&15, blockX&15))!=0){
+                    col = y - geometry.minY + 1;
+                    break;
                 }
+            }
         });
     });
-    m.y = kMinY + col + 1.0;
+    m.y = world->minY() + col + 1.0;
     return true;
 }
 
@@ -879,7 +883,8 @@ bool LeapAtTargetGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t) {
     // apply leap
     m.x += vx; m.z += vz; m.y += vy;
     // gravity will be handled by tick loop groundSnap next tick; clamp y
-    if (m.y > kMinY + 320) m.y = kMinY + 320;
+    if (World* world = dimensionWorld(ctx, m))
+        m.y = std::min(m.y, static_cast<double>(world->maxY() - 1));
     m.yaw = static_cast<float>(std::atan2(dz,dx)*180/3.14159 -90);
     if (ctx.srv) {
         const auto dimension = canonicalDimension(m.dimension);
@@ -1512,7 +1517,8 @@ bool EvokerFangGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now) {
 static bool nowIn(AiContext& ctx, std::int64_t cd){ return ctx.srv && ctx.srv->tickNoForTest() < cd; }
 bool DrownedSwimGoal::shouldStart(MobEntity& m, AiContext& ctx){
     if(m.kind!=MobKind::Drowned) return false;
-    if(!dimensionWorld(ctx, m)) return false;
+    World* world = dimensionWorld(ctx, m);
+    if(!world) return false;
     if(ctx.srv && ctx.srv->tickNoForTest()%5!=0) return false;
     uint16_t st=dimensionWorld(ctx, m)->getBlock((int)std::floor(m.x),(int)std::floor(m.y),(int)std::floor(m.z));
     auto* bd=gen::blockByState(st); if(!bd) return false;
@@ -1643,18 +1649,20 @@ bool EndermanTeleportGoal::shouldStart(MobEntity& m, AiContext& ctx){
 bool EndermanTeleportGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(m.kind!=MobKind::Enderman) return false;
     if(now - m.lastTeleportTick < 30) return false;
-    if(!dimensionWorld(ctx, m)) return false;
+    World* world = dimensionWorld(ctx, m);
+    if(!world) return false;
+    const auto geometry = world->verticalGeometry();
     for(int attempt=0; attempt<16; ++attempt){
         double nx = m.x + (nextRandom()/(double)RAND_MAX*64 -32);
         double nz = m.z + (nextRandom()/(double)RAND_MAX*64 -32);
         double ny = m.y + (nextRandom()/(double)RAND_MAX*32 -16);
         int ix=(int)std::floor(nx), iz=(int)std::floor(nz), iy=(int)std::floor(ny);
-        World* world = dimensionWorld(ctx, m);
         if (!withoutMobStateLock(m, [&] {
                 world->generateChunkIfMissing(ix>>4, iz>>4);
             })) return false;
         for(int dy=-4; dy<=4; ++dy){
-            int tryY=iy+dy; if(tryY<kMinY || tryY>kMinY+320) continue;
+            int tryY=iy+dy;
+            if (tryY < geometry.minY + 1 || tryY >= geometry.maxY() - 1) continue;
             uint16_t a1=dimensionWorld(ctx, m)->getBlock(ix,tryY,iz); uint16_t a2=dimensionWorld(ctx, m)->getBlock(ix,tryY+1,iz); uint16_t below=dimensionWorld(ctx, m)->getBlock(ix,tryY-1,iz);
             if(a1==0 && a2==0 && below!=0){
                 const double ox=m.x, oy=m.y, oz=m.z;
@@ -1804,7 +1812,8 @@ bool MagmaCubeJumpGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
     if(now < m.slimeJumpCooldown) return false;
     if(nextRandom()%30!=0) return false;
     m.y += 0.45 * (m.slimeSize+1)*0.5;
-    if(m.y < kMinY+1) m.y = kMinY+1;
+    if (World* world = dimensionWorld(ctx, m))
+        m.y = std::max(m.y, static_cast<double>(world->minY() + 1));
     if(ctx.srv){
         const auto dimension = canonicalDimension(m.dimension);
         const auto entityId = m.entityId;
@@ -2470,7 +2479,8 @@ bool StriderLavaWalkGoal::tick(MobEntity& m, AiContext& ctx, std::int64_t now){
             double d=std::sqrt(dx*dx+dz*dz)+1e-6;
             m.x+=dx/d*0.09; m.z+=dz/d*0.09;
         }
-        m.y = std::max(m.y, (double)kMinY+2);
+        if (World* world = dimensionWorld(ctx, m))
+            m.y = std::max(m.y, static_cast<double>(world->minY() + 2));
     }
     if (World* world=dimensionWorld(ctx, m)) {
         const int chunkX=static_cast<int>(m.x)>>4, chunkZ=static_cast<int>(m.z)>>4;

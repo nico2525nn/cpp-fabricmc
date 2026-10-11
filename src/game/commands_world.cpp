@@ -1,58 +1,318 @@
 #include "CommandModule.hpp"
+#include "BlockEntityDrops.hpp"
+#include "BlockStateTraits.hpp"
+#include "BlockPredicate.hpp"
+#include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
+#include <cmath>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <optional>
+#include <span>
+#include <string_view>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace cppfm {
+namespace {
 
-void GameServer::initWorldCommands() {
-    initWorldCommandsPart01();
-    initWorldCommandsPart02();
-    initWorldCommandsPart03();
-    initWorldCommandsPart04();
-    initWorldCommandsPart05();
-    initWorldCommandsPart06();
-    initWorldCommandsPart07();
-    initWorldCommandsPart08();
-    initWorldCommandsPart09();
-    auto locate = CommandNode::literal("locate");
-    initWorldCommandsPart10(locate);
-    initWorldCommandsPart11(locate);
-    initWorldCommandsPart12(locate);
-    commands_.root->then(locate);
-    initWorldCommandsPart13();
-    initWorldCommandsPart14();
-    initWorldCommandsPart15();
-    initWorldCommandsPart16();
-    initWorldCommandsPart17();
-    initWorldCommandsPart18();
-    initWorldCommandsPart19();
-    initWorldCommandsPart20();
-    initWorldCommandsPart21();
+using PlannedBlock = World::BlockUpdate;
+
+using block_predicate::ParsedBlockArgument;
+using block_predicate::ParsedBlockPredicate;
+using block_predicate::blockMatchesPredicate;
+using block_predicate::parseBlockArgument;
+using block_predicate::parseBlockPredicate;
+using block_predicate::validateBlockPredicate;
+
+bool appendPlannedBlock(std::vector<PlannedBlock>& plan,
+                        std::int64_t x, std::int64_t y, std::int64_t z,
+                        std::uint16_t state) {
+    constexpr auto minCoordinate = static_cast<std::int64_t>(
+        std::numeric_limits<std::int32_t>::min());
+    constexpr auto maxCoordinate = static_cast<std::int64_t>(
+        std::numeric_limits<std::int32_t>::max());
+    if (x < minCoordinate || x > maxCoordinate ||
+        y < minCoordinate || y > maxCoordinate ||
+        z < minCoordinate || z > maxCoordinate)
+        return false;
+    plan.push_back({static_cast<std::int32_t>(x),
+                    static_cast<std::int32_t>(y),
+                    static_cast<std::int32_t>(z), state});
+    return true;
 }
 
-void GameServer::initWorldCommandsPart01() {
-    auto& d = commands_;
-    {
-        auto time = CommandNode::literal("time");
-        auto set = CommandNode::literal("set");
-        auto named = CommandNode::argument("named", args::stringWord());
-        named->executable = true;
-        named->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
-            return std::vector<std::string>{"day", "noon", "night", "midnight"};
+bool appendNamedBlock(std::vector<PlannedBlock>& plan,
+                      std::int64_t x, std::int64_t y, std::int64_t z,
+                      std::string_view name) {
+    const auto* definition = gen::blockByName(name);
+    if (!definition) return false;
+    return appendPlannedBlock(
+        plan, x, y, z, static_cast<std::uint16_t>(definition->defaultState));
+}
+
+std::optional<std::int32_t> floorToBlockCoordinate(double value) {
+    if (!std::isfinite(value)) return std::nullopt;
+    const double floored = std::floor(value);
+    if (floored < std::numeric_limits<std::int32_t>::min() ||
+        floored > std::numeric_limits<std::int32_t>::max())
+        return std::nullopt;
+    return static_cast<std::int32_t>(floored);
+}
+
+bool omittedFeaturePosition(const brigadier::CommandSource& commandSource,
+                            Player* player, std::int32_t& x, std::int32_t& y,
+                            std::int32_t& z) {
+    if (!player) {
+        const auto blockX = floorToBlockCoordinate(commandSource.srcX);
+        const auto blockY = floorToBlockCoordinate(commandSource.srcY);
+        const auto blockZ = floorToBlockCoordinate(commandSource.srcZ);
+        if (!blockX || !blockY || !blockZ) return false;
+        x = *blockX;
+        y = *blockY;
+        z = *blockZ;
+        return true;
+    }
+    std::lock_guard lock(player->stateMtx);
+    const auto blockX = floorToBlockCoordinate(player->x);
+    const auto blockY = floorToBlockCoordinate(player->y);
+    const auto blockZ = floorToBlockCoordinate(player->z);
+    if (!blockX || !blockY || !blockZ) return false;
+    x = *blockX;
+    y = *blockY;
+    z = *blockZ;
+    return true;
+}
+
+bool planFeature(std::string_view feature, std::int32_t x, std::int32_t y,
+                 std::int32_t z, std::vector<PlannedBlock>& plan) {
+    const bool birch = feature == "minecraft:birch";
+    if (feature == "minecraft:tree" || feature == "minecraft:oak" || birch) {
+        const std::string_view log = birch ? "minecraft:birch_log"
+                                           : "minecraft:oak_log";
+        const std::string_view leaves = birch ? "minecraft:birch_leaves"
+                                               : "minecraft:oak_leaves";
+        plan.reserve(54);
+        for (int dy = 0; dy < 5; ++dy)
+            if (!appendNamedBlock(plan, x, static_cast<std::int64_t>(y) + dy,
+                                  z, log))
+                return false;
+        for (int dx = -2; dx <= 2; ++dx)
+            for (int dz = -2; dz <= 2; ++dz)
+                for (int dy = 5; dy <= 6; ++dy) {
+                    if (dx == 0 && dz == 0 && dy == 5) continue;
+                    if (!appendNamedBlock(
+                            plan, static_cast<std::int64_t>(x) + dx,
+                            static_cast<std::int64_t>(y) + dy,
+                            static_cast<std::int64_t>(z) + dz,
+                            leaves))
+                        return false;
+                }
+        return true;
+    }
+    if (feature == "minecraft:ore_diamond" ||
+        feature == "minecraft:diamond_ore") {
+        return appendNamedBlock(plan, x, y, z, "minecraft:diamond_ore");
+    }
+    if (feature == "minecraft:flower_plain") {
+        constexpr std::array<std::array<std::int32_t, 3>, 5> offsets{{
+            {{0, 0, 0}}, {{1, 0, 0}}, {{-1, 0, 0}},
+            {{0, 0, 1}}, {{0, 0, -1}},
+        }};
+        constexpr std::array<std::string_view, 5> flowers{{
+            "minecraft:dandelion", "minecraft:poppy", "minecraft:azure_bluet",
+            "minecraft:allium", "minecraft:cornflower",
+        }};
+        plan.reserve(offsets.size());
+        for (std::size_t i = 0; i < offsets.size(); ++i)
+            if (!appendNamedBlock(
+                    plan, static_cast<std::int64_t>(x) + offsets[i][0],
+                    static_cast<std::int64_t>(y) + offsets[i][1],
+                    static_cast<std::int64_t>(z) + offsets[i][2], flowers[i]))
+                return false;
+        return true;
+    }
+    return false;
+}
+
+bool isTreeFeature(std::string_view feature) {
+    return feature == "minecraft:tree" || feature == "minecraft:oak" ||
+           feature == "minecraft:birch";
+}
+
+bool featureHasValidSoil(std::uint16_t state) {
+    const auto* soil = gen::blockByState(state);
+    if (!soil) return false;
+    static constexpr std::array<std::string_view, 7> kSupportedSoils{
+        "minecraft:dirt", "minecraft:coarse_dirt", "minecraft:grass_block",
+        "minecraft:podzol", "minecraft:mycelium", "minecraft:rooted_dirt",
+        "minecraft:moss_block",
+    };
+    return std::find(kSupportedSoils.begin(), kSupportedSoils.end(),
+                     soil->name) != kSupportedSoils.end();
+}
+
+bool featureCanReplace(std::string_view feature, std::uint16_t state) {
+    const auto* existing = gen::blockByState(state);
+    if (!existing) return false;
+    const auto name = existing->name;
+
+    if (feature == "minecraft:ore_diamond" ||
+        feature == "minecraft:diamond_ore") {
+        return name == "minecraft:stone" || name == "minecraft:granite" ||
+               name == "minecraft:diorite" || name == "minecraft:andesite" ||
+               name == "minecraft:tuff" || name == "minecraft:deepslate";
+    }
+
+    const bool tree = isTreeFeature(feature);
+    if (!tree && feature != "minecraft:flower_plain") return false;
+    if (isAirBlockState(state)) return true;
+    if (!tree) return false;
+
+    // The generated block catalog does not yet expose vanilla tags. Mirror
+    // 1.21.4's replaceable_by_trees members used by these simple tree plans;
+    // ordinary terrain blocks must never be replaced as a side effect.
+    static constexpr std::array<std::string_view, 19> kTreeReplaceable{
+        "minecraft:dandelion", "minecraft:poppy", "minecraft:blue_orchid",
+        "minecraft:allium", "minecraft:azure_bluet", "minecraft:red_tulip",
+        "minecraft:orange_tulip", "minecraft:white_tulip",
+        "minecraft:pink_tulip", "minecraft:oxeye_daisy",
+        "minecraft:cornflower", "minecraft:lily_of_the_valley",
+        "minecraft:short_grass", "minecraft:tall_grass", "minecraft:fern",
+        "minecraft:dead_bush", "minecraft:vine", "minecraft:glow_lichen",
+        "minecraft:water",
+    };
+    return name.ends_with("_leaves") ||
+           std::find(kTreeReplaceable.begin(), kTreeReplaceable.end(), name) !=
+               kTreeReplaceable.end() ||
+           name == "minecraft:sunflower" || name == "minecraft:lilac" ||
+           name == "minecraft:rose_bush" || name == "minecraft:peony" ||
+           name == "minecraft:large_fern" ||
+           name == "minecraft:hanging_roots" ||
+           name == "minecraft:pitcher_plant" ||
+           name == "minecraft:seagrass" ||
+           name == "minecraft:tall_seagrass" ||
+           name == "minecraft:warped_roots" ||
+           name == "minecraft:nether_sprouts" ||
+           name == "minecraft:crimson_roots";
+}
+
+bool applyPlannedBlocks(GameServer& server, World& world,
+                        std::int8_t dimension,
+                        const BlockEntityStore& blockEntities,
+                        std::string_view feature,
+                        const World::BlockPosI& origin,
+                        std::span<const PlannedBlock> plan) {
+    const auto geometry = world.verticalGeometry();
+    std::vector<std::pair<std::int32_t, std::int32_t>> chunks;
+    std::unordered_set<std::int64_t> seenChunks;
+    chunks.reserve(plan.size());
+    seenChunks.reserve(plan.size());
+    for (const auto& block : plan) {
+        if (!geometry.containsY(block.y)) return false;
+        const auto cx = block.x >> 4;
+        const auto cz = block.z >> 4;
+        if (seenChunks.insert(chunkKey(cx, cz)).second)
+            chunks.emplace_back(cx, cz);
+    }
+    // Loading publishes persisted block-entity extras. Do it before checking
+    // for conflicts so an unloaded chest cannot be silently replaced by the
+    // feature's later batch edit.
+    for (const auto& [cx, cz] : chunks)
+        if (!world.generateChunkIfMissing(cx, cz)) return false;
+    if (isTreeFeature(feature) || feature == "minecraft:flower_plain") {
+        const auto validateSoilAt = [&](std::int32_t x, std::int32_t y,
+                                        std::int32_t z) {
+            const auto soilY = static_cast<std::int64_t>(y) - 1;
+            if (soilY < std::numeric_limits<std::int32_t>::min() ||
+                soilY > std::numeric_limits<std::int32_t>::max() ||
+                !geometry.containsY(static_cast<std::int32_t>(soilY)))
+                return false;
+            return featureHasValidSoil(world.getBlock(
+                x, static_cast<std::int32_t>(soilY), z));
         };
-        named->action = [this](CommandContext& c) {
-            const std::string v = c.arg("named").asStr();
-            std::int64_t t = 1000;
-            if (v == "day") t = 1000;
-            else if (v == "noon") t = 6000;
-            else if (v == "night") t = 13000;
-            else if (v == "midnight") t = 18000;
-            else throw std::runtime_error("unknown time of day");
-            setTimeOfDay(t);
-            broadcastSystemText((msg::kGray + "Time set to " + v));
-            return 1;
+        if (isTreeFeature(feature) &&
+            !validateSoilAt(origin.x, origin.y, origin.z))
+            return false;
+        if (feature == "minecraft:flower_plain" &&
+            !std::all_of(plan.begin(), plan.end(), [&](const auto& block) {
+                return validateSoilAt(block.x, block.y, block.z);
+            }))
+            return false;
+    }
+    for (const auto& block : plan) {
+        if (blockEntities.containsAt(block.x, block.y, block.z)) return false;
+        if (!featureCanReplace(feature,
+                               world.getBlock(block.x, block.y, block.z)))
+            return false;
+    }
+    if (!world.setBlockBatch(plan)) return false;
+    for (const auto& block : plan)
+        server.broadcastBlockChangeFor(dimension, block.x, block.y, block.z,
+                                       block.state);
+    return true;
+}
+
+} // namespace
+
+void GameServer::initWorldCommands() {
+    auto time = CommandNode::literal("time");
+    addTimeSetSubcommands(time);
+    addTimeQueryAndAddSubcommands(time);
+    commands_.root->then(time);
+
+    initGameRuleCommand();
+    initForceLoadCommand();
+    initSetBlockCommand();
+    initWeatherCommand();
+
+    auto worldBorder = CommandNode::literal("worldborder");
+    addWorldBorderSizeSubcommand(worldBorder);
+    addWorldBorderManagementSubcommands(worldBorder);
+    commands_.root->then(worldBorder);
+
+    initDifficultyCommand();
+    initFillCommand();
+    initCloneCommand();
+    auto locate = CommandNode::literal("locate");
+    initLocateStructureCommand(locate);
+    initLocateBiomeCommand(locate);
+    initLocatePoiCommand(locate);
+    commands_.root->then(locate);
+    initPlaceCommand();
+    initSpreadPlayersCommand();
+    initEnchantCommand();
+    initSetWorldSpawnCommand();
+    initDefaultGameModeCommand();
+    initJigsawGenerateCommand();
+}
+
+void GameServer::addTimeSetSubcommands(const brigadier::NodePtr& time) {
+    auto set = CommandNode::literal("set");
+        // Named values are literals, not a greedy string argument. A string
+        // parser also accepts numeric input, so registering it before the
+        // integer branch made `/time set 6000` select the named-value handler
+        // and fail without trying the valid numeric sibling.
+        const auto addNamedTime = [this, &set](const char* name,
+                                                std::int64_t ticks) {
+            auto named = CommandNode::literal(name);
+            named->executable = true;
+            named->action = [this, name, ticks](CommandContext&) {
+                setTimeOfDay(ticks);
+                broadcastSystemText(msg::kGray + "Time set to " + name);
+                return 1;
+            };
+            set->then(named);
         };
+        addNamedTime("day", 1000);
+        addNamedTime("noon", 6000);
+        addNamedTime("night", 13000);
+        addNamedTime("midnight", 18000);
         auto ticks = CommandNode::argument("ticks", args::integer(0, 24000));
         ticks->executable = true;
         ticks->action = [this](CommandContext& c) {
@@ -62,13 +322,11 @@ void GameServer::initWorldCommandsPart01() {
                          std::to_string(c.arg("ticks").asInt()));
             return 1;
         };
-        set->then(named); set->then(ticks);
-        time->then(set);
-        d.root->then(time);
-    }
+    set->then(ticks);
+    time->then(set);
 }
 
-void GameServer::initWorldCommandsPart02() {
+void GameServer::initGameRuleCommand() {
     auto& d = commands_;
     {
         auto gr = CommandNode::literal("gamerule");
@@ -115,7 +373,7 @@ void GameServer::initWorldCommandsPart02() {
     }
 }
 
-void GameServer::initWorldCommandsPart03() {
+void GameServer::initForceLoadCommand() {
     auto& d = commands_;
     {
         auto fl = CommandNode::literal("forceload");
@@ -197,7 +455,7 @@ void GameServer::initWorldCommandsPart03() {
     }
 }
 
-void GameServer::initWorldCommandsPart04() {
+void GameServer::initSetBlockCommand() {
     auto& d = commands_;
     {
         auto sb = CommandNode::literal("setblock");
@@ -216,56 +474,26 @@ void GameServer::initWorldCommandsPart04() {
         block->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
             const auto p = c.arg("pos").asBlockPos();
-            std::string raw = c.arg("block").asStr();
-            // parse block state string: name[props]{nbt}
-            std::string name = raw;
-            std::string propsStr;
-            auto b1 = raw.find('[');
-            auto b2 = raw.find('{');
-            size_t nameEnd = std::string::npos;
-            if (b1 != std::string::npos && b2 != std::string::npos) nameEnd = std::min(b1,b2);
-            else if (b1 != std::string::npos) nameEnd = b1;
-            else if (b2 != std::string::npos) nameEnd = b2;
-            if (nameEnd != std::string::npos) {
-                name = raw.substr(0, nameEnd);
-                if (b1 != std::string::npos) {
-                    size_t e = raw.find(']', b1);
-                    if (e != std::string::npos) propsStr = raw.substr(b1+1, e-b1-1);
-                }
-            }
-            if (name.find(':') == std::string::npos) name = "minecraft:" + name;
-            const gen::BlockDef* def = gen::blockByName(name);
-            if (!def) throw std::runtime_error("unknown block: " + name);
-            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
-            if (!propsStr.empty()) {
-                std::vector<std::pair<std::string,std::string>> props;
-                size_t pos2=0;
-                while(pos2<propsStr.size()){
-                    size_t eq=propsStr.find('=',pos2);
-                    if(eq==std::string::npos) break;
-                    size_t comma=propsStr.find(',',eq);
-                    std::string k=propsStr.substr(pos2, eq-pos2);
-                    std::string v=propsStr.substr(eq+1, (comma==std::string::npos?propsStr.size():comma)-eq-1);
-                    // trim
-                    auto trim=[](std::string s){ size_t a=s.find_first_not_of(" \t"); size_t b=s.find_last_not_of(" \t"); return a==std::string::npos?s:s.substr(a,b-a+1); };
-                    k=trim(k); v=trim(v);
-                    props.emplace_back(std::move(k), std::move(v));
-                    if(comma==std::string::npos) break;
-                    pos2=comma+1;
-                }
-                if(!props.empty()){
-                    std::vector<std::pair<std::string_view,std::string_view>> sv;
-                    sv.reserve(props.size());
-                    for(auto &pr: props) sv.emplace_back(pr.first, pr.second);
-                    uint32_t cand = gen::stateWithProps(*def, sv);
-                    if(cand!=0) state = static_cast<std::uint16_t>(cand);
-                }
+            const auto parsed = parseBlockArgument(c.arg("block").asStr());
+            if (parsed.hasBlockEntityNbt) {
+                sendFeedback(src,
+                    "Block-entity NBT is not supported by /setblock");
+                return 0;
             }
             const auto dimension = commandDimension(c.source);
             World& targetWorld = worldFor(dimension);
-            targetWorld.generateChunkIfMissing(p.x >> 4, p.z >> 4);
-            targetWorld.setBlock(p.x, p.y, p.z, state);
-            broadcastBlockChangeFor(dimension, p.x, p.y, p.z, state);
+            if (!targetWorld.verticalGeometry().containsY(p.y)) {
+                sendFeedback(src, "Cannot set a block outside the world's build height");
+                return 0;
+            }
+            if (!targetWorld.setBlock(p.x, p.y, p.z, parsed.state)) {
+                sendFeedback(src, "Failed to set the block at " +
+                             std::to_string(p.x) + ", " +
+                             std::to_string(p.y) + ", " +
+                             std::to_string(p.z));
+                return 0;
+            }
+            broadcastBlockChangeFor(dimension, p.x, p.y, p.z, parsed.state);
             sendFeedback(src, "Changed the block at " + std::to_string(p.x) +
                          ", " + std::to_string(p.y) + ", " +
                          std::to_string(p.z));
@@ -277,53 +505,79 @@ void GameServer::initWorldCommandsPart04() {
     }
 }
 
-void GameServer::initWorldCommandsPart05() {
-    auto& d = commands_;
-    {
-        auto weather = CommandNode::literal("weather");
-        auto kind = CommandNode::argument("kind", args::stringWord());
-        kind->executable = true;
-        kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
-            return std::vector<std::string>{"clear", "rain", "thunder"};
-        };
-        kind->action = [this](CommandContext& c) {
-            const std::string k = c.arg("kind").asStr();
-            if (k == "clear") setWeather(Weather::Clear, 6000 * 20);
-            else setWeather(Weather::Rain,
-                            (k == "thunder" ? 3000 : 6000) * 20LL);
-            broadcastSystemText((msg::kGray + "Weather set to " + k));
-            return 1;
-        };
-        weather->then(kind);
-        d.root->then(weather);
-    }
+void GameServer::initWeatherCommand() {
+    auto weather = CommandNode::literal("weather");
+    auto kind = CommandNode::argument("weatherKind", args::stringWord());
+    kind->executable = true;
+    kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
+        return std::vector<std::string>{"clear", "rain", "thunder"};
+    };
+    kind->action = [this](CommandContext& c) {
+        const auto weatherName = c.arg("weatherKind").asStr();
+        if (weatherName != "clear" && weatherName != "rain" &&
+            weatherName != "thunder")
+            throw std::runtime_error(
+                "Unknown weather '" + weatherName +
+                "' (expected clear, rain or thunder)");
+        const auto duration = weatherName == "clear"
+            ? 6000LL * 20 : (weatherName == "thunder" ? 3000LL : 6000LL) * 20;
+        setWeather(weatherName == "clear" ? Weather::Clear : Weather::Rain,
+                   duration);
+        broadcastSystemText(msg::kGray + "Weather set to " + weatherName);
+        return 1;
+    };
+
+    auto duration = CommandNode::argument(
+        "weatherDuration", args::integer(0, 1000000));
+    duration->executable = true;
+    duration->action = [this](CommandContext& c) {
+        Player* src = static_cast<Player*>(c.source.player);
+        const auto weatherName = c.arg("weatherKind").asStr();
+        if (weatherName != "clear" && weatherName != "rain" &&
+            weatherName != "thunder")
+            throw std::runtime_error(
+                "Unknown weather '" + weatherName +
+                "' (expected clear, rain or thunder)");
+        const auto durationTicks =
+            static_cast<std::int64_t>(c.arg("weatherDuration").asInt()) * 20;
+        setWeather(weatherName == "clear" ? Weather::Clear : Weather::Rain,
+                   durationTicks);
+        sendFeedback(src, "Set weather to " + weatherName + " for " +
+                         std::to_string(c.arg("weatherDuration").asInt()) +
+                         "s");
+        return 1;
+    };
+    kind->then(duration);
+    weather->then(kind);
+    commands_.root->then(weather);
 }
 
-void GameServer::initWorldCommandsPart06() {
-    auto& d = commands_;
-    {
-        auto wb = CommandNode::literal("worldborder");
-        auto size = CommandNode::literal("size");
-        auto sz = CommandNode::argument("diameter", args::floatArg(1.f, 1000000.f));
-        sz->executable = true;
-        sz->action = [this](CommandContext& c) {
-            worldBorderDiameter_ = c.arg("diameter").asDouble();
-            if (auto* persistence = persistenceFor(0))
-                persistence->setWorldBorder(worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
-            broadcastWorldBorder();
-            // also send Center and LerpSize for spec compliance
-            for (auto& p : playersSnapshot()) {
-                WriteBuffer cc; cc.f64(worldBorderCenterX_); cc.f64(worldBorderCenterZ_);
-                p->conn->trySendPacket(proto::pl::sc::WorldBorderCenter, cc);
-            }
-            return 1;
-        };
-        wb->then(size);
-        d.root->then(wb);
-    }
+void GameServer::addWorldBorderSizeSubcommand(
+    const brigadier::NodePtr& wb) {
+    auto size = CommandNode::literal("size");
+    auto diameter = CommandNode::argument(
+        "diameter", args::floatArg(1.f, 1000000.f));
+    diameter->executable = true;
+    diameter->action = [this](CommandContext& context) {
+        worldBorderDiameter_ = context.arg("diameter").asDouble();
+        if (auto* persistence = persistenceFor(0))
+            persistence->setWorldBorder(
+                worldBorderDiameter_, worldBorderCenterX_, worldBorderCenterZ_);
+        broadcastWorldBorder();
+        for (auto& player : playersSnapshot()) {
+            WriteBuffer center;
+            center.f64(worldBorderCenterX_);
+            center.f64(worldBorderCenterZ_);
+            player->conn->trySendPacket(
+                proto::pl::sc::WorldBorderCenter, center);
+        }
+        return 1;
+    };
+    size->then(diameter);
+    wb->then(size);
 }
 
-void GameServer::initWorldCommandsPart07() {
+void GameServer::initDifficultyCommand() {
     auto& d = commands_;
     {
         auto diff = CommandNode::literal("difficulty");
@@ -353,84 +607,397 @@ void GameServer::initWorldCommandsPart07() {
     }
 }
 
-void GameServer::initWorldCommandsPart08() {
+void GameServer::initFillCommand() {
     auto& d = commands_;
     {
         auto fill = CommandNode::literal("fill");
         auto from = CommandNode::argument("from", args::blockPos());
         auto to = CommandNode::argument("to", args::blockPos());
         auto block = CommandNode::argument("block", args::blockStateArg());
-        block->suggestions = [this](brigadier::StringReader&, brigadier::ParseCtx&) {
+        const auto blockSuggestions = [](brigadier::StringReader&,
+                                         brigadier::ParseCtx&) {
             std::vector<std::string> v;
-            v.reserve(gen::kBlocks.size() + 4);
+            v.reserve(gen::kBlocks.size());
             for (auto& e : gen::kBlocks) v.emplace_back(std::string(e.name));
             return v;
         };
-        block->executable = true;
-        block->action = [this](CommandContext& c) {
+        block->suggestions = blockSuggestions;
+        auto executeFill = [this](CommandContext& c, std::string modeName,
+                                  std::optional<std::string> filterName) {
             Player* src = static_cast<Player*>(c.source.player);
-            auto p1 = c.arg("from").asBlockPos();
-            auto p2 = c.arg("to").asBlockPos();
-            std::string raw = c.arg("block").asStr();
-            std::string name = raw;
-            std::string propsStr;
-            auto b1 = raw.find('[');
-            auto b2 = raw.find('{');
-            size_t nameEnd = std::string::npos;
-            if (b1 != std::string::npos && b2 != std::string::npos) nameEnd = std::min(b1,b2);
-            else if (b1 != std::string::npos) nameEnd = b1;
-            else if (b2 != std::string::npos) nameEnd = b2;
-            if (nameEnd != std::string::npos) {
-                name = raw.substr(0, nameEnd);
-                if (b1 != std::string::npos) {
-                    size_t e = raw.find(']', b1);
-                    if (e != std::string::npos) propsStr = raw.substr(b1+1, e-b1-1);
-                }
+            LootContext playerLootContext;
+            const LootContext* lootContext = nullptr;
+            if (src) {
+                std::lock_guard playerLock(src->stateMtx);
+                playerLootContext.hasEntityContext = true;
+                playerLootContext.entityOnFire = src->fireTicks > 0;
+                lootContext = &playerLootContext;
             }
-            if (name.find(':') == std::string::npos) name = "minecraft:" + name;
-            const gen::BlockDef* def = gen::blockByName(name);
-            if (!def) throw std::runtime_error("unknown block: " + name);
-            std::uint16_t state = static_cast<std::uint16_t>(def->defaultState);
-            if (!propsStr.empty()) {
-                std::vector<std::pair<std::string,std::string>> tmp;
-                size_t pos2=0;
-                while(pos2<propsStr.size()){
-                    size_t eq=propsStr.find('=',pos2);
-                    if(eq==std::string::npos) break;
-                    size_t comma=propsStr.find(',',eq);
-                    std::string k=propsStr.substr(pos2, eq-pos2);
-                    std::string v=propsStr.substr(eq+1, (comma==std::string::npos?propsStr.size():comma)-eq-1);
-                    auto trim=[](std::string s){ size_t a=s.find_first_not_of(" \t"); size_t b=s.find_last_not_of(" \t"); return a==std::string::npos?s:s.substr(a,b-a+1); };
-                    k=trim(k); v=trim(v);
-                    tmp.emplace_back(k,v);
-                    if(comma==std::string::npos) break;
-                    pos2=comma+1;
-                }
-                if(!tmp.empty()){
-                    std::vector<std::pair<std::string_view,std::string_view>> sv;
-                    for(auto &pr: tmp) sv.emplace_back(pr.first, pr.second);
-                    uint32_t cand = gen::stateWithProps(*def, sv);
-                    if(cand!=0) state = static_cast<std::uint16_t>(cand);
-                }
+            if (modeName.empty()) modeName = "replace";
+            if (modeName != "replace" && modeName != "destroy" &&
+                modeName != "keep" && modeName != "hollow" &&
+                modeName != "outline") {
+                sendFeedback(src, "Unknown /fill mode: " + modeName);
+                return 0;
             }
-            int minX = std::min(p1.x, p2.x), maxX = std::max(p1.x, p2.x);
-            int minY = std::min(p1.y, p2.y), maxY = std::max(p1.y, p2.y);
-            int minZ = std::min(p1.z, p2.z), maxZ = std::max(p1.z, p2.z);
-            long long vol = static_cast<long long>(maxX - minX + 1) * (maxY - minY + 1) * (maxZ - minZ + 1);
-            if (vol > 32768) throw std::runtime_error("fill volume too large (max 32768, got " + std::to_string(vol) + ")");
+            if (filterName && modeName != "replace") {
+                sendFeedback(src,
+                    "A block filter is only valid with the replace mode");
+                return 0;
+            }
+            const auto replacement = parseBlockArgument(
+                c.arg("block").asStr());
+            if (replacement.hasBlockEntityNbt) {
+                sendFeedback(src,
+                    "Block-entity NBT is not supported by /fill");
+                return 0;
+            }
+            std::optional<ParsedBlockPredicate> filterPredicate;
+            if (filterName) {
+                filterPredicate = parseBlockPredicate(*filterName);
+                validateBlockPredicate(*filterPredicate, tagManager_);
+            }
+
+            const auto p1 = c.arg("from").asBlockPos();
+            const auto p2 = c.arg("to").asBlockPos();
+            const auto minX = std::min(p1.x, p2.x);
+            const auto maxX = std::max(p1.x, p2.x);
+            const auto minY = std::min(p1.y, p2.y);
+            const auto maxY = std::max(p1.y, p2.y);
+            const auto minZ = std::min(p1.z, p2.z);
+            const auto maxZ = std::max(p1.z, p2.z);
+            constexpr std::int64_t maxVolume = 32768;
+            const auto widthX = static_cast<std::int64_t>(maxX) - minX + 1;
+            const auto widthY = static_cast<std::int64_t>(maxY) - minY + 1;
+            const auto widthZ = static_cast<std::int64_t>(maxZ) - minZ + 1;
+            if (widthX > maxVolume || widthY > maxVolume ||
+                widthZ > maxVolume)
+                throw std::runtime_error("fill volume too large (max 32768)");
+            const std::int64_t volume = widthX * widthY * widthZ;
+            if (volume > maxVolume)
+                throw std::runtime_error("fill volume too large (max 32768, got " +
+                                         std::to_string(volume) + ")");
             const auto dimension = commandDimension(c.source);
             World& targetWorld = worldFor(dimension);
-            int filled = 0;
-            for (int y = minY; y <= maxY; ++y)
-                for (int z = minZ; z <= maxZ; ++z)
-                    for (int x = minX; x <= maxX; ++x) {
-                        targetWorld.setBlock(x, y, z, state);
-                        broadcastBlockChangeFor(dimension, x, y, z, state);
-                        ++filled;
+            const auto geometry = targetWorld.verticalGeometry();
+            if (!geometry.containsY(minY) || !geometry.containsY(maxY)) {
+                sendFeedback(src, "Cannot fill outside the world's build height");
+                return 0;
+            }
+
+            for (std::int64_t chunkX = minX >> 4;
+                 chunkX <= (maxX >> 4); ++chunkX) {
+                for (std::int64_t chunkZ = minZ >> 4;
+                     chunkZ <= (maxZ >> 4); ++chunkZ) {
+                    if (!targetWorld.generateChunkIfMissing(
+                            static_cast<std::int32_t>(chunkX),
+                            static_cast<std::int32_t>(chunkZ))) {
+                        sendFeedback(src,
+                            "Could not fill blocks; a chunk could not be loaded");
+                        return 0;
                     }
-            sendFeedback(src, "Filled " + std::to_string(filled) + " blocks with " + name);
-            return filled;
+                }
+            }
+
+            std::vector<World::BlockUpdate> updates;
+            std::vector<std::uint16_t> replacedStates;
+            updates.reserve(static_cast<std::size_t>(volume));
+            replacedStates.reserve(static_cast<std::size_t>(volume));
+            for (std::int64_t y = minY; y <= maxY; ++y)
+                for (std::int64_t z = minZ; z <= maxZ; ++z)
+                    for (std::int64_t x = minX; x <= maxX; ++x) {
+                        const auto blockX = static_cast<std::int32_t>(x);
+                        const auto blockY = static_cast<std::int32_t>(y);
+                        const auto blockZ = static_cast<std::int32_t>(z);
+                        const auto previous = targetWorld.getBlock(
+                            blockX, blockY, blockZ);
+                        if (modeName == "keep" &&
+                            !isAirBlockState(previous)) continue;
+                        if (filterPredicate && !blockMatchesPredicate(
+                                *filterPredicate, previous, tagManager_))
+                            continue;
+                        const bool boundary = blockX == minX ||
+                            blockX == maxX || blockY == minY ||
+                            blockY == maxY || blockZ == minZ ||
+                            blockZ == maxZ;
+                        if (modeName == "outline" && !boundary) continue;
+                        const auto nextState = static_cast<std::uint16_t>(
+                            modeName == "hollow" && !boundary
+                                ? 0 : replacement.state);
+                        if (previous == nextState) continue;
+                        updates.push_back(
+                            {blockX, blockY, blockZ, nextState});
+                        replacedStates.push_back(previous);
+                    }
+
+            struct PlannedDrop {
+                std::int32_t x;
+                std::int32_t y;
+                std::int32_t z;
+                ItemStack stack;
+            };
+            std::vector<PlannedDrop> destroyDrops;
+            // Vanilla's destroy mode removes blocks regardless of
+            // doTileDrops, but only plans and spawns their loot while the
+            // gamerule is enabled. Capture the rule once so every block in
+            // this atomic fill observes the same drop policy.
+            const bool collectDestroyDrops = modeName == "destroy" &&
+                gameRules().getBool("doTileDrops");
+            if (collectDestroyDrops) {
+                const auto& blockEntities = blockEntitiesFor(dimension);
+                static const std::unordered_map<std::string, std::string>
+                    blockDropOverrides{
+                        {"minecraft:grass_block", "minecraft:dirt"},
+                        {"minecraft:stone", "minecraft:cobblestone"},
+                    };
+                std::unordered_map<
+                    std::int64_t,
+                    std::unordered_map<std::int64_t, nbt::Value>>
+                    serializedEntitiesByChunk;
+                const auto findSerializedEntity = [&blockEntities,
+                                                   &serializedEntitiesByChunk](
+                    const World::BlockUpdate& block) -> const nbt::Value* {
+                    const auto chunk = chunkKey(block.x >> 4, block.z >> 4);
+                    auto cached = serializedEntitiesByChunk.find(chunk);
+                    if (cached == serializedEntitiesByChunk.end()) {
+                        nbt::Value list = nbt::Value::makeList(nbt::Compound);
+                        blockEntities.writeChunkNbt(block.x >> 4,
+                                                    block.z >> 4, list);
+                        std::unordered_map<std::int64_t, nbt::Value> entries;
+                        entries.reserve(list.list.size());
+                        for (auto& entity : list.list) {
+                            const auto* x = entity.get("x");
+                            const auto* y = entity.get("y");
+                            const auto* z = entity.get("z");
+                            if (!x || !y || !z || x->tag != nbt::Int ||
+                                y->tag != nbt::Int || z->tag != nbt::Int)
+                                continue;
+                            entries.try_emplace(posKey(x->i, y->i, z->i),
+                                                std::move(entity));
+                        }
+                        cached = serializedEntitiesByChunk.emplace(
+                            chunk, std::move(entries)).first;
+                    }
+                    const auto entity = cached->second.find(
+                        posKey(block.x, block.y, block.z));
+                    return entity == cached->second.end()
+                        ? nullptr : &entity->second;
+                };
+                const auto rejectUnsafeDrop = [&]() {
+                    sendFeedback(src,
+                        "Cannot use /fill destroy: block-entity data or item components cannot be represented safely as drops");
+                    return 0;
+                };
+                for (std::size_t i = 0; i < updates.size(); ++i) {
+                    const auto& update = updates[i];
+                    const auto oldState = replacedStates[i];
+                    const auto* oldBlock = gen::blockByState(oldState);
+                    const auto appendDrop = [&](const ItemStack& stack) {
+                        if (!stack.empty())
+                            destroyDrops.push_back(
+                                {update.x, update.y, update.z, stack});
+                    };
+                    bool shulkerContentsPackaged = false;
+
+                    if (blockEntities.containsAt(update.x, update.y,
+                                                 update.z)) {
+                        // Snapshot serialized data before taking the entity
+                        // state lock below. Shulker drops package that NBT as
+                        // an item component; serializing the containing chunk
+                        // while holding this entity's non-recursive mutex
+                        // would deadlock on the same owner.
+                        const auto* savedEntity =
+                            findSerializedEntity(update);
+                        const auto entity = blockEntities.getAt(
+                            update.x, update.y, update.z);
+                        // Unknown serialized owners (including decorated
+                        // pots, whose one-stack/sherd payload is not a
+                        // LootableContainer inventory) remain opaque. Never
+                        // erase one through /fill destroy until its distinct
+                        // item-drop semantics have an explicit transaction.
+                        if (!entity || !savedEntity)
+                            return rejectUnsafeDrop();
+                        std::lock_guard entityLock(*entity->stateMtx);
+                        const auto* pendingLoot =
+                            savedEntity->get("LootTable");
+                        if (pendingLoot &&
+                            entity->kind != BlockEntity::Kind::ShulkerBox &&
+                            !pendingLootBlockEntityMatchesKind(
+                                *savedEntity, entity->kind))
+                            return rejectUnsafeDrop();
+                        const ItemStack* slots = nullptr;
+                        std::size_t slotCount = 0;
+                        const auto appendPendingLoot = [&]() {
+                            if (slotCount == 0) return false;
+                            const auto plan = planPendingContainerLootDrops(
+                                *savedEntity, lootTables_, lootContext,
+                                slotCount);
+                            if (plan.status !=
+                                PendingLootDropPlanStatus::Ready)
+                                return false;
+                            for (const auto& stack : plan.items)
+                                appendDrop(stack);
+                            return true;
+                        };
+                        switch (entity->kind) {
+                        case BlockEntity::Kind::Chest:
+                        case BlockEntity::Kind::Barrel:
+                            slots = entity->chest.slots;
+                            slotCount = ChestData::kSlots;
+                            if (pendingLoot && !appendPendingLoot())
+                                return rejectUnsafeDrop();
+                            break;
+                        case BlockEntity::Kind::Furnace:
+                            slots = entity->furnace.slots;
+                            slotCount = std::size(entity->furnace.slots);
+                            break;
+                        case BlockEntity::Kind::Hopper:
+                        case BlockEntity::Kind::Dispenser:
+                        case BlockEntity::Kind::Dropper:
+                            slots = entity->generic.slots;
+                            slotCount = entity->kind ==
+                                    BlockEntity::Kind::Hopper
+                                ? 5 : 9;
+                            if (pendingLoot && !appendPendingLoot())
+                                return rejectUnsafeDrop();
+                            break;
+                        case BlockEntity::Kind::Brewing:
+                            slots = entity->brewing.slots;
+                            slotCount = BrewingData::kSlots;
+                            break;
+                        case BlockEntity::Kind::Crafter:
+                            slots = entity->crafter.slots;
+                            slotCount = CrafterData::kSlots;
+                            if (pendingLoot && !appendPendingLoot())
+                                return rejectUnsafeDrop();
+                            break;
+                        case BlockEntity::Kind::ShulkerBox:
+                            {
+                                const bool hasTypedContents = std::any_of(
+                                    std::begin(entity->chest.slots),
+                                    std::end(entity->chest.slots),
+                                    [](const ItemStack& stack) {
+                                        return !stack.empty();
+                                    });
+                                const auto* savedItems = savedEntity
+                                    ? savedEntity->get("Items") : nullptr;
+                                const bool hasPendingLoot = savedEntity &&
+                                    savedEntity->get("LootTable") != nullptr;
+                                const bool hasSavedContents = savedItems &&
+                                    savedItems->tag == nbt::List &&
+                                    !savedItems->list.empty();
+                                const bool hasCustomName = savedEntity &&
+                                    savedEntity->get("CustomName") != nullptr;
+                                if (hasTypedContents || hasSavedContents ||
+                                    hasCustomName || hasPendingLoot) {
+                                    if (!savedItems ||
+                                        savedItems->tag != nbt::List ||
+                                        (!savedItems->list.empty() &&
+                                         savedItems->listElement !=
+                                             nbt::Compound) ||
+                                        ((hasTypedContents || hasSavedContents) &&
+                                         savedItems->list.empty()) || !oldBlock)
+                                        return rejectUnsafeDrop();
+                                    auto shulker = makeShulkerBoxDropItem(
+                                        oldBlock->name, *savedEntity);
+                                    if (!shulker) return rejectUnsafeDrop();
+                                    appendDrop(*shulker);
+                                    shulkerContentsPackaged = true;
+                                }
+                            }
+                            break;
+                        case BlockEntity::Kind::MovingPiston:
+                            return rejectUnsafeDrop();
+                        case BlockEntity::Kind::Sign:
+                            break;
+                        }
+                        for (std::size_t slot = 0; slot < slotCount; ++slot)
+                            appendDrop(slots[slot]);
+                    }
+
+                    if (!oldBlock || oldState == 0) continue;
+                    if (shulkerContentsPackaged) continue;
+                    const std::string oldName(oldBlock->name);
+                    if (!lootContext && lootTables_.blockTableRequiresEntityContext(
+                                            oldName))
+                        return rejectUnsafeDrop();
+                    auto drops = lootTables_.evaluateWithContext(
+                        oldName, ItemStack::air(), lootContext);
+                    if (drops.empty() &&
+                        lootTables_.findBlockTable(oldName) == nullptr &&
+                        oldName != "minecraft:glass") {
+                        const auto override = blockDropOverrides.find(oldName);
+                        const auto& dropName = override == blockDropOverrides.end()
+                            ? oldName : override->second;
+                        const auto item = gen::itemIdByName().find(dropName);
+                        if (item != gen::itemIdByName().end())
+                            drops.push_back(ItemStack::of(item->second));
+                    }
+                    for (const auto& drop : drops) appendDrop(drop);
+                }
+
+                // Resolve and validate every drop before changing the world.
+                // Unsupported opaque item data must not turn a destroy into
+                // silent inventory loss after the blocks have already gone.
+                try {
+                    for (const auto& drop : destroyDrops) {
+                        WriteBuffer encoded;
+                        drop.stack.write(encoded);
+                    }
+                } catch (const std::exception&) {
+                    return rejectUnsafeDrop();
+                }
+            }
+
+            if (!updates.empty() && !targetWorld.setBlockBatch(updates)) {
+                sendFeedback(src,
+                             "Could not fill blocks; the world rejected the edit");
+                return 0;
+            }
+            for (const auto& update : updates)
+                broadcastBlockChangeFor(dimension, update.x, update.y,
+                                        update.z, update.state);
+
+            for (const auto& drop : destroyDrops)
+                spawnItemDropFor(dimension, drop.x + 0.5, drop.y + 0.25,
+                    drop.z + 0.5, drop.stack,
+                    (nextRandom() / static_cast<double>(RAND_MAX) - 0.5) * 0.15,
+                    0.12,
+                    (nextRandom() / static_cast<double>(RAND_MAX) - 0.5) * 0.15);
+
+            if (updates.empty()) {
+                sendFeedback(src, "No blocks were filled");
+                return 0;
+            }
+            sendFeedback(src, "Filled " + std::to_string(updates.size()) +
+                             " blocks with " + replacement.name);
+            return static_cast<int>(updates.size());
         };
+
+        block->executable = true;
+        block->action = [executeFill](CommandContext& c) {
+            return executeFill(c, "replace", std::nullopt);
+        };
+        auto mode = CommandNode::argument("fillMode", args::stringWord());
+        mode->suggestions = [](brigadier::StringReader&,
+                               brigadier::ParseCtx&) {
+            return std::vector<std::string>{
+                "replace", "destroy", "keep", "hollow", "outline"};
+        };
+        mode->executable = true;
+        mode->action = [executeFill](CommandContext& c) {
+            return executeFill(c, c.arg("fillMode").asStr(), std::nullopt);
+        };
+        auto filter = CommandNode::argument(
+            "replaceFilter", args::blockPredicateArg());
+        filter->executable = true;
+        filter->suggestions = blockSuggestions;
+        filter->action = [executeFill](CommandContext& c) {
+            return executeFill(c, c.arg("fillMode").asStr(),
+                                c.arg("replaceFilter").asStr());
+        };
+        mode->then(filter);
+        block->then(mode);
         to->then(block);
         from->then(to);
         fill->then(from);
@@ -438,123 +1005,9 @@ void GameServer::initWorldCommandsPart08() {
     }
 }
 
-void GameServer::initWorldCommandsPart09() {
-    auto& d = commands_;
-    {
-        auto clone = CommandNode::literal("clone");
-        auto from = CommandNode::argument("from", args::blockPos());
-        auto to = CommandNode::argument("to", args::blockPos());
-        auto target = CommandNode::argument("target", args::blockPos());
-        auto doClone = [&](CommandContext& c, bool masked, bool filtered, std::string filter, bool move) -> int {
-            const auto dimension = commandDimension(c.source);
-            World& targetWorld = worldFor(dimension);
-            auto f=c.arg("from").asBlockPos(); auto t=c.arg("to").asBlockPos(); auto dst=c.arg("target").asBlockPos();
-            int minX=std::min(f.x,t.x), maxX=std::max(f.x,t.x);
-            int minY=std::min(f.y,t.y), maxY=std::max(f.y,t.y);
-            int minZ=std::min(f.z,t.z), maxZ=std::max(f.z,t.z);
-            long long vol=(long long)(maxX-minX+1)*(maxY-minY+1)*(maxZ-minZ+1);
-            if(vol>32768) throw std::runtime_error("Volume too large "+std::to_string(vol));
-            std::uint16_t filterState=0;
-            const gen::BlockDef* fdef=nullptr;
-            if(filtered){
-                std::string fname=filter;
-                auto br=fname.find('['); if(br!=std::string::npos) fname=fname.substr(0,br);
-                if(fname.find(':')==std::string::npos) fname="minecraft:"+fname;
-                fdef=gen::blockByName(fname);
-                if(fdef) filterState=(uint16_t)fdef->defaultState;
-            }
-            int count=0;
-            // copy to tmp to handle overlap
-            struct Entry{int x,y,z; uint16_t st;};
-            std::vector<Entry> tmp; tmp.reserve((size_t)vol);
-            for(int y=minY;y<=maxY;++y) for(int z=minZ;z<=maxZ;++z) for(int x=minX;x<=maxX;++x){
-                uint16_t st=targetWorld.getBlock(x,y,z);
-                if(masked && st==0) continue;
-                if(filtered){
-                    if(fdef){
-                        auto* existingDef=gen::blockByState(st);
-                        std::string have=existingDef ?
-                            std::string(existingDef->name) : "minecraft:air";
-                        if(have!=std::string(fdef->name)) continue;
-                    } else if(st!=filterState) continue;
-                }
-                tmp.push_back({x,y,z,st});
-            }
-            for(auto &e: tmp){
-                int dx=dst.x+(e.x-minX), dy=dst.y+(e.y-minY), dz=dst.z+(e.z-minZ);
-                targetWorld.setBlock(dx,dy,dz,e.st);
-                broadcastBlockChangeFor(dimension, dx,dy,dz,e.st);
-                ++count;
-            }
-            if(move){
-                for(auto &e: tmp){
-                    targetWorld.setBlock(e.x,e.y,e.z,0);
-                    broadcastBlockChangeFor(dimension, e.x,e.y,e.z,0);
-                }
-            }
-            Player* src=static_cast<Player*>(c.source.player);
-            sendFeedback(src,"Cloned "+std::to_string(count)+" blocks");
-            return count;
-        };
-        // base replace/masked/filtered as direct executables
-        auto makeLeaf = [&](const std::string& mode, bool masked, bool filtered) -> NodePtr {
-            auto lit = CommandNode::literal(mode);
-            if(filtered){
-                auto filterArg = CommandNode::argument("filter", args::blockPredicateArg());
-                filterArg->executable=true;
-                filterArg->action=[this,doClone](CommandContext& c){
-                    std::string f=c.arg("filter").asStr();
-                    return doClone(c,false,true,f,false);
-                };
-                // filtered also supports force/move/normal suffix
-                for(auto smode: {"force","move","normal"}){
-                    auto smLit = CommandNode::literal(smode);
-                    smLit->executable=true;
-                    smLit->action=[this,doClone](CommandContext& c){
-                        std::string f=c.arg("filter").asStr();
-                        bool isMove2 = c.input.find(" move")!=std::string::npos;
-                        return doClone(c,false,true,f,isMove2);
-                    };
-                    filterArg->then(smLit);
-                }
-                lit->then(filterArg);
-                return lit;
-            } else {
-                lit->executable=true;
-                lit->action=[this,doClone,masked](CommandContext& c){ return doClone(c,masked,false,"",false); };
-                for(auto smode: {"force","move","normal"}){
-                    auto smLit = CommandNode::literal(smode);
-                    smLit->executable=true;
-                    bool isMove = std::string(smode)=="move";
-                    smLit->action=[this,doClone,masked,isMove](CommandContext& c){ return doClone(c,masked,false,"",isMove); };
-                    lit->then(smLit);
-                }
-                return lit;
-            }
-        };
-        // target without mode (default replace)
-        target->executable=true;
-        target->action=[this,doClone](CommandContext& c){ return doClone(c,false,false,"",false); };
-        // add mode children to target
-        target->then(makeLeaf("replace",false,false));
-        target->then(makeLeaf("masked",true,false));
-        target->then(makeLeaf("filtered",false,true));
-        // also allow suffix force/move/normal directly without mode? handled via mode's children Clone move as shorthand: clone <from> <to>
-        // <target> move -> treated as replace move We'll add a direct move under target as alias
-        {
-            auto moveLit = CommandNode::literal("move");
-            moveLit->executable=true;
-            moveLit->action=[this,doClone](CommandContext& c){ return doClone(c,false,false,"",true); };
-            target->then(moveLit);
-        }
-        to->then(target);
-        from->then(to);
-        clone->then(from);
-        d.root->then(clone);
-    }
-}
 
-void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
+void GameServer::initLocateStructureCommand(
+    const brigadier::NodePtr& locate) {
         {
             auto structureLit = CommandNode::literal("structure");
             auto structArg = CommandNode::argument("locateStructureId", args::resourceLocation());
@@ -677,7 +1130,8 @@ void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
                     bestY = locateWorld.surfaceFeetYIfLoaded(bestX, bestZ)
                                 .value_or(locateWorld.isFlat() ? -60
                                                                : locateWorld.seaLevel());
-                    if (bestY < kMinY || bestY >= kMaxY) bestY = 64;
+                    if (bestY < locateWorld.minY() ||
+                        bestY >= locateWorld.maxY()) bestY = 64;
                 }
                 if(!found || bestDist==INT32_MAX){
                     sendFeedback(src, "Could not find structure "+req+" nearby (searched "+std::to_string(maxRadius*16)+" blocks)");
@@ -696,7 +1150,7 @@ void GameServer::initWorldCommandsPart10(const brigadier::NodePtr& locate) {
         }
 }
 
-void GameServer::initWorldCommandsPart11(const brigadier::NodePtr& locate) {
+void GameServer::initLocateBiomeCommand(const brigadier::NodePtr& locate) {
         {
             auto biomeLit = CommandNode::literal("biome");
             auto biomeArg = CommandNode::argument("locateBiomeId", args::resourceLocation());
@@ -759,7 +1213,7 @@ void GameServer::initWorldCommandsPart11(const brigadier::NodePtr& locate) {
         }
 }
 
-void GameServer::initWorldCommandsPart12(const brigadier::NodePtr& locate) {
+void GameServer::initLocatePoiCommand(const brigadier::NodePtr& locate) {
         {
             auto poiLit = CommandNode::literal("poi");
             auto poiArg = CommandNode::argument("locatePoiId", args::resourceLocation());
@@ -775,199 +1229,127 @@ void GameServer::initWorldCommandsPart12(const brigadier::NodePtr& locate) {
         }
 }
 
-void GameServer::initWorldCommandsPart13() {
+void GameServer::initPlaceCommand() {
     auto& d = commands_;
-        {
-            auto place = CommandNode::literal("place");
-            // place feature <feature> [pos]
-            {
-                auto featureLit = CommandNode::literal("feature");
-                auto featArg = CommandNode::argument("placeFeatureId", args::resourceLocation());
-                featArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
-                    return std::vector<std::string>{"minecraft:tree","minecraft:oak","minecraft:birch","minecraft:ore_diamond","minecraft:flower_plain"};
-                };
-                featArg->executable = true;
-                featArg->action = [this](CommandContext& c){
-                    Player* src = static_cast<Player*>(c.source.player);
-                    std::string fid = c.arg("placeFeatureId").asStr();
-                    if(fid.find(':')==std::string::npos) fid="minecraft:"+fid;
-                    int x = src ? (int)src->x : 0;
-                    int y = src ? (int)src->y + 1 : 64;
-                    int z = src ? (int)src->z : 0;
-                    const auto dimension = commandDimension(c.source);
-                    World& targetWorld = worldFor(dimension);
-                    // simple decoration: place oak tree or ore vein
-                    if(fid=="minecraft:tree" || fid=="minecraft:oak" || fid.find("tree")!=std::string::npos){
-                        auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
-                        auto leaves = ((uint16_t)gen::blockByName("minecraft:oak_leaves")->defaultState);
-                        for(int dy=0; dy<5; ++dy){ targetWorld.setBlock(x,y+dy,z,log); broadcastBlockChangeFor(dimension,x,y+dy,z,log); }
-                        for(int dx=-2; dx<=2; ++dx) for(int dz=-2; dz<=2; ++dz) for(int dy=5; dy<=6; ++dy){
-                            if(dx==0 && dz==0 && dy==5) continue;
-                            targetWorld.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChangeFor(dimension,x+dx,y+dy,z+dz,leaves);
-                        }
-                    } else if(fid.find("ore")!=std::string::npos){
-                        auto ore = ((uint16_t)gen::blockByName("minecraft:diamond_ore")->defaultState);
-                        targetWorld.setBlock(x,y,z,ore); broadcastBlockChangeFor(dimension,x,y,z,ore);
-                        targetWorld.setBlock(x+1,y,z,ore); broadcastBlockChangeFor(dimension,x+1,y,z,ore);
-                    } else {
-                        auto stone = ((uint16_t)gen::blockByName("minecraft:stone")->defaultState);
-                        targetWorld.setBlock(x,y,z,stone); broadcastBlockChangeFor(dimension,x,y,z,stone);
-                    }
-                    sendFeedback(src, "Placed feature "+fid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
-                    return 1;
-                };
-                // optional pos
-                auto featPos = CommandNode::argument("placeFeaturePos", args::blockPos());
-                featPos->executable = true;
-                featPos->action = [this](CommandContext& c){
-                    Player* src = static_cast<Player*>(c.source.player);
-                    std::string fid = c.arg("placeFeatureId").asStr();
-                    if(fid.find(':')==std::string::npos) fid="minecraft:"+fid;
-                    auto p = c.arg("placeFeaturePos").asBlockPos();
-                    int x=p.x, y=p.y, z=p.z;
-                    const auto dimension = commandDimension(c.source);
-                    World& targetWorld = worldFor(dimension);
-                    if(fid=="minecraft:tree" || fid=="minecraft:oak" || fid.find("tree")!=std::string::npos){
-                        auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
-                        auto leaves = ((uint16_t)gen::blockByName("minecraft:oak_leaves")->defaultState);
-                        for(int dy=0; dy<5; ++dy){ targetWorld.setBlock(x,y+dy,z,log); broadcastBlockChangeFor(dimension,x,y+dy,z,log); }
-                        for(int dx=-2; dx<=2; ++dx) for(int dz=-2; dz<=2; ++dz) for(int dy=5; dy<=6; ++dy){
-                            if(dx==0 && dz==0 && dy==5) continue;
-                            targetWorld.setBlock(x+dx,y+dy,z+dz,leaves); broadcastBlockChangeFor(dimension,x+dx,y+dy,z+dz,leaves);
-                        }
-                    } else if(fid.find("ore")!=std::string::npos){
-                        auto ore = ((uint16_t)gen::blockByName("minecraft:diamond_ore")->defaultState);
-                        targetWorld.setBlock(x,y,z,ore); broadcastBlockChangeFor(dimension,x,y,z,ore);
-                    } else {
-                        auto stone = ((uint16_t)gen::blockByName("minecraft:stone")->defaultState);
-                        targetWorld.setBlock(x,y,z,stone); broadcastBlockChangeFor(dimension,x,y,z,stone);
-                    }
-                    sendFeedback(src, "Placed feature "+fid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
-                    return 1;
-                };
-                featArg->then(featPos);
-                featureLit->then(featArg);
-                place->then(featureLit);
-            }
-            // place structure <structure> [pos]
-            {
-                auto structLit = CommandNode::literal("structure");
-                auto structArg = CommandNode::argument("placeStructureId", args::resourceLocation());
-                structArg->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&){
-                    return std::vector<std::string>{
-                        "minecraft:village","minecraft:desert_pyramid","minecraft:trial_chambers","minecraft:mansion","minecraft:monument","minecraft:igloo","minecraft:swamp_hut"
-                    };
-                };
-                structArg->executable = true;
-                structArg->action = [this](CommandContext& c){
-                    Player* src = static_cast<Player*>(c.source.player);
-                    std::string sid = c.arg("placeStructureId").asStr();
-                    if(sid.find(':')==std::string::npos) sid="minecraft:"+sid;
-                    int x = src ? (int)src->x : 0;
-                    int y = src ? (int)src->y : 64;
-                    int z = src ? (int)src->z : 0;
-                    const auto dimension = commandDimension(c.source);
-                    World& targetWorld = worldFor(dimension);
-                    // generate small representative via World setBlock
-                    auto placeAt = [&](int ox,int oy,int oz, const std::string& id){
-                        if(id.find("trial_chambers")!=std::string::npos || id.find("trial")!=std::string::npos){
-                            // use trial chambers piece-like: 10x10 tuff chamber at ~oy
-                            auto tuff = ((uint16_t)gen::blockByName("minecraft:tuff_bricks")->defaultState);
-                            auto tuff2 = ((uint16_t)gen::blockByName("minecraft:tuff")->defaultState);
-                            for(int dx=0; dx<10; ++dx) for(int dz=0; dz<10; ++dz){
-                                targetWorld.setBlock(ox+dx, oy, oz+dz, tuff); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, tuff);
-                                targetWorld.setBlock(ox+dx, oy+5, oz+dz, tuff); broadcastBlockChangeFor(dimension,ox+dx, oy+5, oz+dz, tuff);
-                                if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ targetWorld.setBlock(ox+dx, oy+dy, oz+dz, tuff2); broadcastBlockChangeFor(dimension,ox+dx, oy+dy, oz+dz, tuff2); }
-                            }
-                            auto spawner = ((uint16_t)gen::blockByName("minecraft:trial_spawner")->defaultState);
-                            targetWorld.setBlock(ox+5, oy+1, oz+5, spawner); broadcastBlockChangeFor(dimension,ox+5, oy+1, oz+5, spawner);
-                        } else if(id.find("village")!=std::string::npos){
-                            auto planks = ((uint16_t)gen::blockByName("minecraft:oak_planks")->defaultState);
-                            auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
-                            for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){
-                                targetWorld.setBlock(ox+dx, oy, oz+dz, planks); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, planks);
-                                if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ targetWorld.setBlock(ox+dx, oy+dy, oz+dz, (dy==3?log:planks)); broadcastBlockChangeFor(dimension,ox+dx, oy+dy, oz+dz,(dy==3?log:planks)); }
-                            }
-                        } else if(id.find("desert_pyramid")!=std::string::npos || id.find("pyramid")!=std::string::npos){
-                            auto sandstone = ((uint16_t)gen::blockByName("minecraft:sandstone")->defaultState);
-                            for(int step=0; step<5; ++step){ int r=4-step; int yy=oy+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ targetWorld.setBlock(ox+dx+2, yy, oz+dz+2, sandstone); broadcastBlockChangeFor(dimension,ox+dx+2, yy, oz+dz+2, sandstone);} }
-                        } else {
-                            auto stone = ((uint16_t)gen::blockByName("minecraft:stone_bricks")->defaultState);
-                            for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ targetWorld.setBlock(ox+dx, oy, oz+dz, stone); broadcastBlockChangeFor(dimension,ox+dx, oy, oz+dz, stone); }
-                        }
-                    };
-                    placeAt(x,y,z,sid);
-                    sendFeedback(src, "Placed structure "+sid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
-                    return 1;
-                };
-                auto structPos = CommandNode::argument("placeStructurePos", args::blockPos());
-                structPos->executable = true;
-                structPos->action = [this](CommandContext& c){
-                    Player* src = static_cast<Player*>(c.source.player);
-                    std::string sid = c.arg("placeStructureId").asStr();
-                    if(sid.find(':')==std::string::npos) sid="minecraft:"+sid;
-                    auto p = c.arg("placeStructurePos").asBlockPos();
-                    int x=p.x, y=p.y, z=p.z;
-                    const auto dimension = commandDimension(c.source);
-                    World& targetWorld = worldFor(dimension);
-                    if(sid.find("trial_chambers")!=std::string::npos || sid.find("trial")!=std::string::npos){
-                        auto tuff = ((uint16_t)gen::blockByName("minecraft:tuff_bricks")->defaultState);
-                        auto tuff2 = ((uint16_t)gen::blockByName("minecraft:tuff")->defaultState);
-                        for(int dx=0; dx<10; ++dx) for(int dz=0; dz<10; ++dz){
-                            targetWorld.setBlock(x+dx, y, z+dz, tuff); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, tuff);
-                            targetWorld.setBlock(x+dx, y+5, z+dz, tuff); broadcastBlockChangeFor(dimension,x+dx, y+5, z+dz, tuff);
-                            if(dx==0||dx==9||dz==0||dz==9) for(int dy=1; dy<5; ++dy){ targetWorld.setBlock(x+dx, y+dy, z+dz, tuff2); broadcastBlockChangeFor(dimension,x+dx, y+dy, z+dz, tuff2); }
-                        }
-                        auto spawner = ((uint16_t)gen::blockByName("minecraft:trial_spawner")->defaultState);
-                        targetWorld.setBlock(x+5, y+1, z+5, spawner); broadcastBlockChangeFor(dimension,x+5, y+1, z+5, spawner);
-                    } else if(sid.find("village")!=std::string::npos){
-                        auto planks = ((uint16_t)gen::blockByName("minecraft:oak_planks")->defaultState);
-                        auto log = ((uint16_t)gen::blockByName("minecraft:oak_log")->defaultState);
-                        for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){
-                            targetWorld.setBlock(x+dx, y, z+dz, planks); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, planks);
-                            if(dx==0||dx==4||dz==0||dz==4) for(int dy=1; dy<=3; ++dy){ targetWorld.setBlock(x+dx, y+dy, z+dz, (dy==3?log:planks)); broadcastBlockChangeFor(dimension,x+dx, y+dy, z+dz,(dy==3?log:planks)); }
-                        }
-                    } else if(sid.find("desert_pyramid")!=std::string::npos || sid.find("pyramid")!=std::string::npos){
-                        auto sandstone = ((uint16_t)gen::blockByName("minecraft:sandstone")->defaultState);
-                        for(int step=0; step<5; ++step){ int r=4-step; int yy=y+1+step; for(int dz=-r; dz<=r; ++dz) for(int dx=-r; dx<=r; ++dx){ targetWorld.setBlock(x+dx+2, yy, z+dz+2, sandstone); broadcastBlockChangeFor(dimension,x+dx+2, yy, z+dz+2, sandstone);} }
-                    } else {
-                        auto stone = ((uint16_t)gen::blockByName("minecraft:stone_bricks")->defaultState);
-                        for(int dx=0; dx<5; ++dx) for(int dz=0; dz<5; ++dz){ targetWorld.setBlock(x+dx, y, z+dz, stone); broadcastBlockChangeFor(dimension,x+dx, y, z+dz, stone); }
-                    }
-                    sendFeedback(src, "Placed structure "+sid+" at ["+std::to_string(x)+", "+std::to_string(y)+", "+std::to_string(z)+"]");
-                    return 1;
-                };
-                structArg->then(structPos);
-                structLit->then(structArg);
-                place->then(structLit);
-            }
-            // The command shape is present for dispatcher compatibility.  The
-            // pool/template graph needed for vanilla jigsaw placement is not
-            // available in this implementation.
-            {
-                auto jigsawLit = CommandNode::literal("jigsaw");
-                auto poolArg = CommandNode::argument("jigsawPool", args::resourceLocation());
-                auto targetArg = CommandNode::argument("jigsawTarget", args::resourceLocation());
-                auto depthArg = CommandNode::argument("jigsawDepth", args::integer(1, 7));
-                depthArg->executable = true;
-                depthArg->action = [this](CommandContext& c){
-                    Player* src = static_cast<Player*>(c.source.player);
-                    std::string pool = c.arg("jigsawPool").asStr();
-                    std::string target = c.arg("jigsawTarget").asStr();
-                    (void)c.arg("jigsawDepth").asInt();
-                    sendFeedback(src, "Jigsaw place not yet implemented (pool="+pool+" target="+target+") — use /place structure instead");
-                    return 0;
-                };
-                targetArg->then(depthArg);
-                poolArg->then(targetArg);
-                jigsawLit->then(poolArg);
-                place->then(jigsawLit);
-            }
-            d.root->then(place);
+    auto place = CommandNode::literal("place");
+    auto featureAction = [this](CommandContext& c,
+                                const std::optional<World::BlockPosI>& position) {
+        Player* source = static_cast<Player*>(c.source.player);
+        std::string feature = c.arg("placeFeatureId").asStr();
+        if (feature.find(':') == std::string::npos)
+            feature = "minecraft:" + feature;
+
+        World::BlockPosI target;
+        if (position) {
+            target = *position;
+        } else if (!omittedFeaturePosition(c.source, source, target.x, target.y,
+                                           target.z)) {
+            sendFeedback(source, "Cannot determine a valid feature position");
+            return 0;
         }
+
+        const auto dimension = commandDimension(c.source);
+        World& targetWorld = worldFor(dimension);
+        std::vector<PlannedBlock> plan;
+        if (!planFeature(feature, target.x, target.y, target.z, plan)) {
+            sendFeedback(source, "Cannot plan feature at the requested coordinates");
+            return 0;
+        }
+        const auto geometry = targetWorld.verticalGeometry();
+        for (const auto& block : plan) {
+            if (!geometry.containsY(block.y)) {
+                sendFeedback(source,
+                             "Cannot place feature outside the world's build height");
+                return 0;
+            }
+        }
+        if (!applyPlannedBlocks(*this, targetWorld, dimension,
+                                blockEntitiesFor(dimension), feature, target,
+                                plan)) {
+            sendFeedback(source, "Could not place feature; the world rejected the edit");
+            return 0;
+        }
+        sendFeedback(source, "Placed feature " + feature + " at [" +
+                         std::to_string(target.x) + ", " +
+                         std::to_string(target.y) + ", " +
+                         std::to_string(target.z) + "]");
+        return 1;
+    };
+    auto featureLiteral = CommandNode::literal("feature");
+    auto featureArgument = CommandNode::argument("placeFeatureId",
+                                                  args::resourceLocation());
+    featureArgument->suggestions = [](brigadier::StringReader&,
+                                      brigadier::ParseCtx&) {
+        return std::vector<std::string>{
+            "minecraft:tree", "minecraft:oak", "minecraft:birch",
+            "minecraft:ore_diamond", "minecraft:flower_plain"};
+    };
+    featureArgument->executable = true;
+    featureArgument->action = [featureAction](CommandContext& c) {
+        return featureAction(c, std::nullopt);
+    };
+    auto featurePosition = CommandNode::argument("placeFeaturePos",
+                                                  args::blockPos());
+    featurePosition->executable = true;
+    featurePosition->action = [featureAction](CommandContext& c) {
+        const auto p = c.arg("placeFeaturePos").asBlockPos();
+        return featureAction(c, World::BlockPosI{p.x, p.y, p.z});
+    };
+    featureArgument->then(featurePosition);
+    featureLiteral->then(featureArgument);
+    place->then(featureLiteral);
+
+    auto structureAction = [](CommandContext& c) {
+        Player* source = static_cast<Player*>(c.source.player);
+        sendFeedback(source,
+                     "Vanilla structure templates are unavailable for /place structure");
+        return 0;
+    };
+    auto structureLiteral = CommandNode::literal("structure");
+    auto structureArgument = CommandNode::argument(
+        "placeStructureId", args::resourceLocation());
+    structureArgument->executable = true;
+    structureArgument->action = [structureAction](CommandContext& c) {
+        return structureAction(c);
+    };
+    auto structurePosition = CommandNode::argument("placeStructurePos",
+                                                   args::blockPos());
+    structurePosition->executable = true;
+    structurePosition->action = [structureAction](CommandContext& c) {
+        return structureAction(c);
+    };
+    structureArgument->then(structurePosition);
+    structureLiteral->then(structureArgument);
+    place->then(structureLiteral);
+
+    // The command shape is present for dispatcher compatibility. The
+    // structure-pool/template graph needed for vanilla jigsaw placement is not
+    // available in this implementation.
+    auto jigsawLiteral = CommandNode::literal("jigsaw");
+    auto poolArgument = CommandNode::argument("jigsawPool",
+                                               args::resourceLocation());
+    auto targetArgument = CommandNode::argument("jigsawTarget",
+                                                 args::resourceLocation());
+    auto depthArgument = CommandNode::argument("jigsawDepth",
+                                                args::integer(1, 7));
+    depthArgument->executable = true;
+    depthArgument->action = [this](CommandContext& c) {
+        Player* source = static_cast<Player*>(c.source.player);
+        const auto pool = c.arg("jigsawPool").asStr();
+        const auto target = c.arg("jigsawTarget").asStr();
+        (void)c.arg("jigsawDepth").asInt();
+        sendFeedback(source, "Jigsaw place not yet implemented (pool=" + pool +
+                     " target=" + target + ") — use /place structure instead");
+        return 0;
+    };
+    targetArgument->then(depthArgument);
+    poolArgument->then(targetArgument);
+    jigsawLiteral->then(poolArgument);
+    place->then(jigsawLiteral);
+    d.root->then(place);
 }
 
-void GameServer::initWorldCommandsPart14() {
+void GameServer::initSpreadPlayersCommand() {
     auto& d = commands_;
         {
             auto sp = CommandNode::literal("spreadplayers");
@@ -1035,7 +1417,8 @@ void GameServer::initWorldCommandsPart14() {
                 auto findY = [&](double x, double z)->double{
                     int ix=(int)std::floor(x), iz=(int)std::floor(z);
                     // scan from top down for solid
-                    for(int y=kMaxY; y>=kMinY; --y){
+                    for(int y=targetWorld.maxY() - 1;
+                        y>=targetWorld.minY(); --y){
                         uint16_t st = targetWorld.getBlock(ix,y,iz);
                         uint16_t above = targetWorld.getBlock(ix,y+1,iz);
                         uint16_t above2 = targetWorld.getBlock(ix,y+2,iz);
@@ -1066,15 +1449,7 @@ void GameServer::initWorldCommandsPart14() {
                     placed.push_back(pos);
                     double y=findY(pos.x,pos.z);
                     for(auto* p: groups[gi].members){
-                        p->x=pos.x; p->y=y; p->z=pos.z;
-                        p->fallDist=0;
-                        WriteBuffer tp;
-                        tp.varint(++teleportCounterForTest_);
-                        tp.f64(p->x); tp.f64(p->y); tp.f64(p->z);
-                        tp.f64(0); tp.f64(0); tp.f64(0);
-                        tp.f32(p->yaw); tp.f32(p->pitch);
-                        tp.u32(0);
-                        p->conn->trySendPacket(proto::pl::sc::PlayerPosition, tp);
+                        teleportPlayer(*p, pos.x, y, pos.z);
                     }
                 }
                 int total = (int)players.size();
@@ -1092,7 +1467,7 @@ void GameServer::initWorldCommandsPart14() {
         }
 }
 
-void GameServer::initWorldCommandsPart15() {
+void GameServer::initEnchantCommand() {
     auto& d = commands_;
     {
         auto enchant = CommandNode::literal("enchant");
@@ -1123,7 +1498,6 @@ void GameServer::initWorldCommandsPart15() {
                 if(held.empty()) continue;
                 ItemStack::addEnchant(held, enchName, level);
                 resendInventory(*t);
-                syncEquipmentOnChange(*t);
                 ++enchanted;
             }
             if(enchanted==0) throw std::runtime_error("No target held an item to enchant");
@@ -1146,7 +1520,6 @@ void GameServer::initWorldCommandsPart15() {
                 if(held.empty()) continue;
                 ItemStack::addEnchant(held, enchName, level);
                 resendInventory(*t);
-                syncEquipmentOnChange(*t);
                 ++enchanted;
             }
             if(enchanted==0) throw std::runtime_error("No target held an item to enchant");
@@ -1160,12 +1533,10 @@ void GameServer::initWorldCommandsPart15() {
     }
 }
 
-void GameServer::initWorldCommandsPart16() {
-    auto& d = commands_;
-    {
-        // /time query <daytime|gametime|day> + /time add <value> (/time set already exists.)
-        auto time = CommandNode::literal("time");
-        auto query = CommandNode::literal("query");
+void GameServer::addTimeQueryAndAddSubcommands(
+    const brigadier::NodePtr& time) {
+    // /time query <daytime|gametime|day> and /time add <value>.
+    auto query = CommandNode::literal("query");
         for (const char* q : {"daytime", "gametime", "day"}) {
             auto qlit = CommandNode::literal(q);
             qlit->executable = true;
@@ -1178,8 +1549,8 @@ void GameServer::initWorldCommandsPart16() {
             };
             query->then(qlit);
         }
-        time->then(query);
-        auto add = CommandNode::literal("add");
+    time->then(query);
+    auto add = CommandNode::literal("add");
         auto amt = CommandNode::argument("timeAdd", args::timeArg());
         amt->executable = true;
         amt->action = [this](CommandContext& c) {
@@ -1191,46 +1562,14 @@ void GameServer::initWorldCommandsPart16() {
             sendFeedback(src, "Set the time to " + std::to_string(dayTime()));
             return 1;
         };
-        add->then(amt);
-        time->then(add);
-        d.root->then(time);
-    }
+    add->then(amt);
+    time->then(add);
 }
 
-void GameServer::initWorldCommandsPart17() {
-    auto& d = commands_;
-    {
-        // /weather <kind> [durationSeconds] — duration form (bare-kind form already exists).
-        auto weather = CommandNode::literal("weather");
-        auto kind = CommandNode::argument("weatherKind", args::stringWord());
-        kind->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
-            return std::vector<std::string>{"clear", "rain", "thunder"};
-        };
-        auto dur = CommandNode::argument("weatherDuration", args::integer(0, 1000000));
-        dur->executable = true;
-        dur->action = [this](CommandContext& c) {
-            Player* src = static_cast<Player*>(c.source.player);
-            const std::string k = c.arg("weatherKind").asStr();
-            if (k != "clear" && k != "rain" && k != "thunder")
-                throw std::runtime_error("Unknown weather '" + k + "' (expected clear, rain or thunder)");
-            const int secs = c.arg("weatherDuration").asInt();
-            if (k == "clear") setWeather(Weather::Clear, (std::int64_t)secs * 20);
-            else setWeather(Weather::Rain, (std::int64_t)secs * 20);
-            sendFeedback(src, "Set weather to " + k + " for " + std::to_string(secs) + "s");
-            return 1;
-        };
-        kind->then(dur);
-        weather->then(kind);
-        d.root->then(weather);
-    }
-}
-
-void GameServer::initWorldCommandsPart18() {
-    auto& d = commands_;
-    {
-        // /worldborder get|set|center|add (/worldborder size already exists).
-        auto wb = CommandNode::literal("worldborder");
-        auto get = CommandNode::literal("get");
+void GameServer::addWorldBorderManagementSubcommands(
+    const brigadier::NodePtr& wb) {
+    // /worldborder get|set|center|add.
+    auto get = CommandNode::literal("get");
         get->executable = true;
         get->action = [this](CommandContext& c) {
             Player* src = static_cast<Player*>(c.source.player);
@@ -1285,12 +1624,10 @@ void GameServer::initWorldCommandsPart18() {
             return 1;
         };
         add->then(delta);
-        wb->then(add);
-        d.root->then(wb);
-    }
+    wb->then(add);
 }
 
-void GameServer::initWorldCommandsPart19() {
+void GameServer::initSetWorldSpawnCommand() {
     auto& d = commands_;
     {
         // /setworldspawn [<pos>] [<angle>] (Yarn SetWorldSpawn).
@@ -1361,7 +1698,7 @@ void GameServer::initWorldCommandsPart19() {
     }
 }
 
-void GameServer::initWorldCommandsPart20() {
+void GameServer::initDefaultGameModeCommand() {
     auto& d = commands_;
     {
         // /defaultgamemode <survival|creative|adventure|spectator>
@@ -1374,6 +1711,10 @@ void GameServer::initWorldCommandsPart20() {
             for (auto& ch : m) ch = static_cast<char>(::tolower(static_cast<unsigned char>(ch)));
             if (m != "survival" && m != "creative" && m != "adventure" && m != "spectator")
                 throw std::runtime_error("Unknown gamemode '" + m + "'");
+            const std::uint8_t mode = m == "survival" ? 0 : m == "creative" ? 1 :
+                                      m == "adventure" ? 2 : 3;
+            setDefaultGameMode(mode);
+            saveLevelData();
             sendFeedback(src, "Set default gamemode to " + m);
             return 1;
         };
@@ -1382,7 +1723,7 @@ void GameServer::initWorldCommandsPart20() {
     }
 }
 
-void GameServer::initWorldCommandsPart21() {
+void GameServer::initJigsawGenerateCommand() {
     auto& d = commands_;
     {
         // Keep the vanilla command shape, but report the unsupported template

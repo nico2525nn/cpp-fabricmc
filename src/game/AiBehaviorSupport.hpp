@@ -126,16 +126,17 @@ inline void groundSnap(AiContext& ctx, MobEntity& mob) {
         world->generateChunkIfMissing(chunkX, chunkZ);
     });
 
-    int columnHeight = 4;
+    const auto geometry = world->verticalGeometry();
+    int surface = geometry.minY + 4;
     withoutMobStateLock(mob, [&] {
         world->withChunk(chunkX, chunkZ, [&](const Chunk& chunk) {
-            for (int relativeY = kSectionsPerChunk * 16 - 1;
-                 relativeY >= 0; --relativeY) {
-                if (chunk.blocks[Chunk::index(
-                        relativeY >> 4, relativeY & 15,
+            for (int y = geometry.maxY() - 1; y >= geometry.minY; --y) {
+                const int storageY = geometry.storageY(y);
+                if (chunk.blockAt(Chunk::index(
+                        storageY >> 4, storageY & 15,
                         static_cast<std::int32_t>(z) & 15,
-                        static_cast<std::int32_t>(x) & 15)] != 0) {
-                    columnHeight = relativeY + 1;
+                        static_cast<std::int32_t>(x) & 15)) != 0) {
+                    surface = y + 1;
                     break;
                 }
             }
@@ -147,7 +148,7 @@ inline void groundSnap(AiContext& ctx, MobEntity& mob) {
     // never overwrite that newer state with a stale height.
     if (canonicalDimension(mob.dimension) == dimension &&
         std::abs(mob.x - x) < 1e-9 && std::abs(mob.z - z) < 1e-9) {
-        mob.y = kMinY + columnHeight + 1.0;
+        mob.y = surface + 1.0;
     }
 }
 

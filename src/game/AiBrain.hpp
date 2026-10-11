@@ -82,8 +82,10 @@ struct AiContext {
     // Damage can arrive from a session/network callback while the game tick
     // is evaluating goals.  Keep the small cross-thread memory fields atomic;
     // the rest of the context remains tick-owned state.
-    std::atomic<std::int32_t> lastHurtByEntityId{-1};
+    std::atomic<std::int32_t> lastPlayerHurtByEntityId{-1};
     std::atomic<std::int64_t> lastHurtTick{-1000};
+    std::atomic<std::int64_t> lastPlayerHurtTick{-1000};
+    std::atomic<std::int32_t> lastPlayerHurtLootingLevel{0};
     bool dangerDetectedRecently = false;
     // active path
     std::vector<ai::PathNode> path;

@@ -396,6 +396,10 @@ void TestClient::handleIncoming(std::uint8_t pid, std::vector<std::uint8_t> body
             }
             confirmTeleport(tid);
             sendPlayerLoadedOnce();
+        } else if (p.id == proto::pl::sc::ChunkBatchFinished) {
+            WriteBuffer response;
+            response.f32(8.0f);
+            sendPacketNoexcept(proto::pl::cs::ChunkBatchReceived, response);
         } else if (p.id == proto::pl::sc::KeepAlive) {
             // already responded by caller for sync path; safe to re-respond here
         }

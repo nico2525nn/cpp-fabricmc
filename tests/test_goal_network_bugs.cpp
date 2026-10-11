@@ -8,6 +8,8 @@
 #include "../src/net/PacketBatcher.hpp"
 #include "../src/net/RateLimiter.hpp"
 #include "../src/proto/Ids.hpp"
+#include "../src/game/PacketOrder.hpp"
+#include "../src/game/PlayerTrackingSequencer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -16,6 +18,7 @@
 #include <cstdio>
 #include <functional>
 #include <limits>
+#include <latch>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -156,6 +159,247 @@ void testVarints() {
         encryptedHighPayload.data(), encryptedHighPayload.size(), highDecoder, highConsumed);
     check(highDecoded == 0 && highConsumed == encryptedHighPayload.size(),
           "encrypted VarInt accepts vanilla fifth-byte payload truncation");
+}
+
+void testChunkPacketOrderingClassification() {
+    check(requiresChunkPacketOrdering(proto::pl::sc::LevelChunkWithLight),
+          "chunk snapshots use the ordered chunk output lane");
+    check(requiresChunkPacketOrdering(proto::pl::sc::UpdateLight),
+          "UpdateLight cannot overtake a pending chunk snapshot");
+    check(requiresChunkPacketOrdering(proto::pl::sc::BlockUpdate) &&
+              requiresChunkPacketOrdering(proto::pl::sc::BlockEntityData) &&
+              requiresChunkPacketOrdering(proto::pl::sc::BundleDelimiter) &&
+              requiresChunkPacketOrdering(proto::pl::sc::MultiBlockChange),
+          "block, entity, bundle, and section deltas share the chunk output lane");
+    check(!requiresChunkPacketOrdering(proto::pl::sc::KeepAlive) &&
+              !requiresChunkPacketOrdering(proto::pl::sc::SystemChat),
+          "keepalive and chat remain eligible to overtake bulk chunk streaming");
+}
+
+void testPlayerTrackingPublicationOrdering() {
+    PlayerTrackingSequencer sequencer;
+    std::latch staleSnapshotCaptured(1);
+    std::latch allowStaleEnqueue(1);
+    std::latch transferStarted(1);
+    std::int8_t dimension = 0;
+    bool inPlay = true;
+    bool trackingSpawnPublished = true;
+    std::vector<std::string> publications;
+
+    std::thread joiningClient([&] {
+        sequencer.serialize([&] {
+            const auto snapshotDimension = dimension;
+            const auto snapshotWasPublished = trackingSpawnPublished;
+            staleSnapshotCaptured.count_down();
+            allowStaleEnqueue.wait();
+            if (inPlay && snapshotWasPublished)
+                publications.push_back(
+                    "spawn:" + std::to_string(snapshotDimension));
+        });
+    });
+    staleSnapshotCaptured.wait();
+
+    std::thread dimensionTransfer([&] {
+        transferStarted.count_down();
+        sequencer.serialize([&] {
+            inPlay = false;
+            trackingSpawnPublished = false;
+            dimension = -1;
+            publications.push_back("remove:0");
+        });
+    });
+    transferStarted.wait();
+    allowStaleEnqueue.count_down();
+    joiningClient.join();
+    dimensionTransfer.join();
+
+    // A source-dimension spawn captured before transfer must be enqueued before
+    // removal. A later join sees the hidden transfer and cannot resurrect it.
+    sequencer.serialize([&] {
+        if (inPlay && trackingSpawnPublished)
+            publications.push_back(
+                "spawn:" + std::to_string(dimension));
+    });
+    const bool staleSpawnPrecedesRemoval = publications ==
+        std::vector<std::string>{"spawn:0", "remove:0"};
+    sequencer.serialize([&] {
+        inPlay = true;
+        trackingSpawnPublished = true;
+        publications.push_back("spawn:-1");
+    });
+    check(staleSpawnPrecedesRemoval &&
+              publications == std::vector<std::string>{
+                  "spawn:0", "remove:0", "spawn:-1"},
+          "player spawn snapshots cannot enqueue after dimension removal");
+}
+
+void testPlayerListPublicationOrdering() {
+    PlayerTrackingSequencer sequencer;
+    std::latch joinSnapshotCaptured(1);
+    std::latch allowJoinAdd(1);
+    std::latch disconnectStarted(1);
+    bool existingPlayerListed = true;
+    bool newViewerAdmitted = false;
+    std::vector<std::string> newViewerPlayerList;
+
+    // Model a new viewer taking its existing-player snapshot, queuing Add,
+    // then joining the recipient roster for later PlayerInfoRemove packets.
+    std::thread joiningNewViewer([&] {
+        sequencer.serialize([&] {
+            const bool includeExistingPlayer = existingPlayerListed;
+            joinSnapshotCaptured.count_down();
+            allowJoinAdd.wait();
+            if (includeExistingPlayer)
+                newViewerPlayerList.push_back("PlayerInfoUpdate/Add:existing-player");
+            newViewerAdmitted = true;
+        });
+    });
+    joinSnapshotCaptured.wait();
+
+    std::thread disconnectingExistingPlayer([&] {
+        disconnectStarted.count_down();
+        sequencer.serialize([&] {
+            existingPlayerListed = false;
+            if (newViewerAdmitted)
+                newViewerPlayerList.push_back("PlayerInfoRemove:existing-player");
+        });
+    });
+    disconnectStarted.wait();
+    allowJoinAdd.count_down();
+    joiningNewViewer.join();
+    disconnectingExistingPlayer.join();
+
+    // A viewer joining after the removal snapshots the updated roster and
+    // must not receive a stale Add for the departed player.
+    std::vector<std::string> laterViewerPlayerList;
+    sequencer.serialize([&] {
+        if (existingPlayerListed)
+            laterViewerPlayerList.push_back("PlayerInfoUpdate/Add:existing-player");
+    });
+
+    check(newViewerAdmitted && newViewerPlayerList == std::vector<std::string>{
+              "PlayerInfoUpdate/Add:existing-player",
+              "PlayerInfoRemove:existing-player"} &&
+              laterViewerPlayerList.empty(),
+          "delayed new-viewer PlayerInfo Add precedes disconnect Remove, and later joins omit departed players");
+}
+
+bool createTestSocketPair(platform::socket_t (&sockets)[2]) {
+#ifdef _WIN32
+    if (!platform::initializeSockets()) return false;
+    const auto listener = platform::createTcpSocket();
+    if (!platform::isValid(listener)) return false;
+
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = 0;
+    if (platform::bindSocket(listener,
+            reinterpret_cast<const sockaddr*>(&address), sizeof(address)) != 0 ||
+        platform::listenSocket(listener, 1) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+    platform::socket_length_t addressLength = sizeof(address);
+    if (::getsockname(listener, reinterpret_cast<sockaddr*>(&address),
+                      &addressLength) != 0) {
+        platform::closeSocket(listener);
+        return false;
+    }
+
+    const auto client = platform::createTcpSocket();
+    if (!platform::isValid(client) ||
+        ::connect(client, reinterpret_cast<const sockaddr*>(&address),
+                  sizeof(address)) != 0) {
+        if (platform::isValid(client)) platform::closeSocket(client);
+        platform::closeSocket(listener);
+        return false;
+    }
+    const auto server = platform::acceptSocket(listener, nullptr, nullptr);
+    platform::closeSocket(listener);
+    if (!platform::isValid(server)) {
+        platform::closeSocket(client);
+        return false;
+    }
+    sockets[0] = client;
+    sockets[1] = server;
+    return true;
+#else
+    return ::socketpair(AF_UNIX, SOCK_STREAM, 0, sockets) == 0;
+#endif
+}
+
+void testChunkSnapshotAndLightQueueOrder() {
+    platform::socket_t sockets[2]{platform::invalid_socket,
+                                   platform::invalid_socket};
+    if (!createTestSocketPair(sockets)) {
+        check(false, "local stream socket pair available for chunk/light ordering regression");
+        return;
+    }
+    int sendBufferSize = 1024;
+    (void)platform::setSocketOption(
+        sockets[0], SOL_SOCKET, SO_SNDBUF, &sendBufferSize,
+        static_cast<platform::socket_length_t>(sizeof(sendBufferSize)));
+    Connection sender(sockets[0]);
+    Connection receiver(sockets[1]);
+    WriteBuffer body;
+    body.data.assign(64u * 1024u, 0x5A);
+    const std::vector<std::uint8_t> queuedIds{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+        proto::pl::sc::KeepAlive,
+    };
+    ++activeSimulationDispatchDepth;
+    bool queued = true;
+    try {
+        for (const auto id : queuedIds) {
+            if (requiresChunkPacketOrdering(id))
+                sender.sendPacketLowPriority(id, body);
+            else
+                sender.sendPacket(id, body);
+        }
+    } catch (...) {
+        queued = false;
+    }
+    --activeSimulationDispatchDepth;
+
+    std::vector<std::uint8_t> received;
+    bool readAll = queued;
+    if (queued) {
+        for (std::size_t i = 0; i < queuedIds.size(); ++i) {
+            try {
+                const auto frame = receiver.readFrameWithTimeout(
+                    std::chrono::seconds(3));
+                if (frame.empty()) {
+                    readAll = false;
+                    break;
+                }
+                received.push_back(frame.front());
+            } catch (...) {
+                readAll = false;
+                break;
+            }
+        }
+    }
+    std::vector<std::uint8_t> orderedChunkPackets;
+    for (const auto id : received)
+        if (requiresChunkPacketOrdering(id)) orderedChunkPackets.push_back(id);
+    const std::vector<std::uint8_t> expectedChunkOrder{
+        proto::pl::sc::LevelChunkWithLight,
+        proto::pl::sc::UpdateLight,
+        proto::pl::sc::BundleDelimiter,
+        proto::pl::sc::MultiBlockChange,
+        proto::pl::sc::BlockEntityData,
+        proto::pl::sc::BlockUpdate,
+    };
+    check(readAll && orderedChunkPackets == expectedChunkOrder,
+          "chunk snapshot, UpdateLight, and deltas retain enqueue order on plaintext connections");
+    sender.close();
+    receiver.close();
 }
 
 void testFixedWidthAndPositionVectors() {
@@ -693,6 +937,10 @@ void testProtocolBoundariesAndLimitations() {
 
 int main() {
     testVarints();
+    testChunkPacketOrderingClassification();
+    testPlayerTrackingPublicationOrdering();
+    testPlayerListPublicationOrdering();
+    testChunkSnapshotAndLightQueueOrder();
     testCompressionAndFraming();
     testEncryptionAndLifecycle();
     testLimiterAndAuthEdges();

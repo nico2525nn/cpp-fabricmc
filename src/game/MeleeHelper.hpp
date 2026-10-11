@@ -1,5 +1,6 @@
-// / Melee_attack#Critical_hit / Blocking, Yarn PlayerEntity.attack (cooldown 84.8%+, T=20/attack_speed), wiki
-// Thorns/Density/Breach/Wind_Burst/Riptide. Wire policy: pure math here; GameServer_session onUseEntity + CombatManager consume it.
+// Yarn PlayerEntity.attack (84.8% cooldown, T=20/attack_speed), plus the
+// item-tier combat values and enchantment formulas used by the session path.
+// Packet emission and authoritative state changes remain in the server layer.
 // E-06/E-07/E-08 lock (DamageCalculator single formula caps 30/20, EPF weights) is NOT touched.
 #pragma once
 #include <string>
@@ -40,6 +41,15 @@ inline float axeBaseDamage(const std::string& name) {
 inline bool isSwordItem(const std::string& name) { return name.find("sword") != std::string::npos; }
 inline bool isAxeItem(const std::string& name) { return name.find("_axe") != std::string::npos; }
 inline bool isMaceItem(const std::string& name) { return name.find("mace") != std::string::npos; }
+
+// The item contribution to PlayerEntity's base attack damage is shared by
+// player-versus-player and player-versus-mob hits. Keep the name-based tier
+// lookup in one place so the two target paths cannot quietly drift apart.
+inline float meleeWeaponBaseDamage(const std::string& name) {
+    if (isSwordItem(name)) return swordBaseDamage(name);
+    if (isAxeItem(name)) return axeBaseDamage(name);
+    return 1.f;
+}
 
 // ---- G-07 sweep (Sweeping_Edge wiki): 1 + AD*lv/(lv+1), rounded; lv0 => 1 ----
 inline float sweepingEdgeDamage(float attackDamage, int sweepingLv) {

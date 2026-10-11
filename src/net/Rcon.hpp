@@ -16,6 +16,7 @@
 #include "../core/Json.hpp"
 #include "../platform/Socket.hpp"
 #include "RconConfig.hpp"
+#include "platform/StorageFileOps.hpp"
 
 namespace cppfm {
 
@@ -356,31 +357,61 @@ public:
             root.push(std::move(entry));
         }
         const std::string serialized = root.dump() + "\n";
-        const std::string temporary = path + ".new";
-        std::ofstream f(temporary, std::ios::binary | std::ios::trunc);
-        if (!f) {
-            std::fprintf(stderr, "[Whitelist] could not write %s\n", path.c_str());
+        if (serialized.size() > json::Value::kMaxInputBytes) {
+            std::fprintf(stderr, "[Whitelist] refusing oversized %s\n",
+                         path.c_str());
             return false;
         }
-        f.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
-        f.flush();
-        if (!f) {
+        const std::filesystem::path destination(path);
+        const std::filesystem::path temporary = path + ".new";
+        const auto parent = destination.parent_path();
+        try {
+            if (!parent.empty()) {
+                std::error_code directoryError;
+                if (!storage_file_ops::createDirectoriesDurably(
+                        parent, directoryError))
+                    throw std::filesystem::filesystem_error(
+                        "create durable whitelist directory", parent,
+                        directoryError);
+            }
+            {
+                std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+                if (!file)
+                    throw std::runtime_error(
+                        "could not open whitelist temporary file");
+                file.write(serialized.data(),
+                           static_cast<std::streamsize>(serialized.size()));
+                file.flush();
+                if (!file)
+                    throw std::runtime_error(
+                        "could not write whitelist temporary file");
+                file.close();
+                if (!file)
+                    throw std::runtime_error(
+                        "could not close whitelist temporary file");
+            }
+            if (!storage_file_ops::syncFile(temporary))
+                throw std::runtime_error(
+                    "could not sync whitelist temporary file");
+            std::error_code replaceError;
+            if (!storage_file_ops::replaceFile(temporary, destination,
+                                               replaceError))
+                throw std::system_error(replaceError, "replace whitelist file");
+            if (!storage_file_ops::syncDirectory(parent))
+                throw std::runtime_error("could not sync whitelist directory");
+            return true;
+        } catch (const std::exception& error) {
             std::error_code cleanupError;
             std::filesystem::remove(temporary, cleanupError);
-            std::fprintf(stderr, "[Whitelist] write failed for %s\n", path.c_str());
-            return false;
-        }
-        f.close();
-        std::error_code ec;
-        std::filesystem::rename(temporary, path, ec);
-        if (ec) {
+            std::fprintf(stderr, "[Whitelist] save failed for %s: %s\n",
+                         path.c_str(), error.what());
+        } catch (...) {
             std::error_code cleanupError;
             std::filesystem::remove(temporary, cleanupError);
-            std::fprintf(stderr, "[Whitelist] replace failed for %s: %s\n",
-                         path.c_str(), ec.message().c_str());
-            return false;
+            std::fprintf(stderr, "[Whitelist] save failed for %s\n",
+                         path.c_str());
         }
-        return true;
+        return false;
     }
 
 private:

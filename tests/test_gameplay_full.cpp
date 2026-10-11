@@ -16,6 +16,7 @@
 #include <thread>
 #include <type_traits>
 #include <stdexcept>
+#include <limits>
 
 #include "core/ByteBuffer.hpp"
 #include "core/Json.hpp"
@@ -26,9 +27,12 @@
 #include "game/Items.hpp"
 #include "game/Recipes.hpp"
 #include "game/Entities.hpp"
+#include "game/SessionEntitySupport.hpp"
 #include "game/DamageSource.hpp"
 #include "game/Xp.hpp"
 #include "game/HungerManager.hpp"
+#include "game/DeathProtection.hpp"
+#include "game/FoodComponents.hpp"
 #include "game/EnchantmentHelper.hpp"
 #include "game/MeleeHelper.hpp"
 #include "game/MobBehaviorSpec.hpp"
@@ -206,7 +210,10 @@ static void test_blocks() {
         std::uint32_t pearl = gen::itemIdByName().find("minecraft:ender_pearl")->second;
         rig.place(0, 2, 0, comp);
         rig.world.setBlock(0, 2, 1, stateByName("minecraft:hopper"));
-        BlockEntity& be = rig.bes.create(posKey(0, 2, 1), BlockEntity::Kind::Hopper);
+        auto beOwner = rig.bes.createShared(posKey(0, 2, 1),
+                                           BlockEntity::Kind::Hopper);
+        std::lock_guard entityLock(*beOwner->stateMtx);
+        BlockEntity& be = *beOwner;
         be.generic.slotCount = 5;
         be.generic.slots[0] = ItemStack::of(pearl, 16);
         rig.place(0, 2, -1, wire0);
@@ -242,17 +249,22 @@ static void test_blocks() {
     CHECK_EQ_INT(GameServer::HOPPER_TRANSFER_INTERVAL_TICKS, 8, "hopper transfer interval 8t (vanilla; impl gate GameServer::hoppersTick)");
     {
         BlockEntityStore store;
-        BlockEntity& be = store.create(posKey(3, 2, 1), BlockEntity::Kind::Hopper);
-        CHECK(store.getAt(3, 2, 1) != nullptr && store.getAt(3, 2, 1)->kind == BlockEntity::Kind::Hopper, "hopper block entity kind roundtrip via store");
-        (void)be;
+        auto owner = store.createShared(posKey(3, 2, 1),
+                                        BlockEntity::Kind::Hopper);
+        std::lock_guard entityLock(*owner->stateMtx);
+        CHECK(store.getAt(3, 2, 1) == owner &&
+                  owner->kind == BlockEntity::Kind::Hopper,
+              "hopper block entity kind roundtrip via store");
     }
     {
         // CrafterBlockEntity state must survive the same chunk NBT boundary
         // as vanilla: recipe slots, disabled slot mask, delayed craft state,
         // and the triggered flag are all gameplay-visible.
         BlockEntityStore source;
-        BlockEntity& crafter = source.create(posKey(3, 2, 1),
-                                              BlockEntity::Kind::Crafter);
+        auto crafterOwner = source.createShared(posKey(3, 2, 1),
+                                                BlockEntity::Kind::Crafter);
+        std::lock_guard crafterLock(*crafterOwner->stateMtx);
+        BlockEntity& crafter = *crafterOwner;
         crafter.crafter.slots[0] = ItemStack::of(
             gen::itemIdByName().at("minecraft:oak_log"), 2);
         crafter.crafter.setSlotEnabled(4, false);
@@ -265,7 +277,7 @@ static void test_blocks() {
 
         BlockEntityStore restored;
         restored.readChunkNbt(root);
-        const auto* loaded = restored.getAt(3, 2, 1);
+        const auto loaded = restored.getAt(3, 2, 1);
         CHECK(loaded && loaded->kind == BlockEntity::Kind::Crafter,
               "crafter block entity kind survives chunk NBT");
         CHECK(loaded && loaded->crafter.slots[0].itemId ==
@@ -503,6 +515,83 @@ static void test_mobs() {
     CHECK(bi != 0, "pig breeding carrot exists");
     CHECK(mobStats(MobKind::Zombie).burnsInDaylight, "zombie burns in daylight");
     CHECK(!mobStats(MobKind::Creeper).burnsInDaylight, "creeper not burnsInDaylight");
+}
+
+static void test_horse_temper_and_interaction_rules() {
+    curSection = "HORSE INTERACTION";
+    std::printf("\n[3b] HORSE TEMPER / TAMING / INTERACTION PREDICATES\n");
+
+    MobEntity horse;
+    horse.kind = MobKind::Horse;
+    CHECK(horse.canGainHorseTemper(),
+          "untamed adult horse can gain temper before reaching its cap");
+    CHECK_EQ_INT(horse.addHorseTemper(MobEntity::kHorseGoldenCarrotTemper), 5,
+                 "golden-carrot feed adds five horse temper");
+    CHECK_EQ_INT(horse.horseTemper, 5,
+                 "golden-carrot temper increment is retained by the model");
+
+    horse.horseTemper = 95;
+    CHECK_EQ_INT(horse.addHorseTemper(MobEntity::kHorseGoldenCarrotTemper), 5,
+                 "temper addition clamps at vanilla maximum 100");
+    CHECK_EQ_INT(horse.horseTemper, MobEntity::kMaxHorseTemper,
+                 "horse temper never exceeds vanilla maximum");
+    CHECK(!horse.canGainHorseTemper(),
+          "horse at maximum temper no longer accepts temper-only feed");
+    CHECK_EQ_INT(horse.addHorseTemper(-200), -100,
+                 "temper adjustment clamps at zero without integer underflow");
+    CHECK_EQ_INT(horse.horseTemper, 0, "horse temper is bounded below by zero");
+
+    horse.horseTemper = 5;
+    CHECK(horse.attemptHorseTaming(4) ==
+              MobEntity::HorseTamingAttempt::Tamed && horse.isTamed,
+          "mounted taming succeeds when the 0..99 roll is below temper");
+    horse.isTamed = false;
+    horse.horseTemper = 5;
+    CHECK(horse.attemptHorseTaming(5) ==
+              MobEntity::HorseTamingAttempt::Failed &&
+              horse.horseTemper == 10 && !horse.isTamed,
+          "failed mounted taming adds five temper and leaves horse untamed");
+    CHECK(horse.attemptHorseTaming(0) ==
+              MobEntity::HorseTamingAttempt::Tamed,
+          "next mounted attempt can tame after temper rises");
+    CHECK(horse.attemptHorseTaming(0) ==
+              MobEntity::HorseTamingAttempt::NotApplicable,
+          "already-tamed horse cannot be tamed a second time");
+
+    MobEntity wildHorse;
+    wildHorse.kind = MobKind::Horse;
+    CHECK(!session_entity_detail::canOpenHorseInventory(wildHorse, true),
+          "secondary-use does not open an untamed adult horse inventory");
+    wildHorse.isTamed = true;
+    CHECK(session_entity_detail::canOpenHorseInventory(wildHorse, true),
+          "secondary-use opens a tamed adult horse inventory when unoccupied");
+    CHECK(!session_entity_detail::canOpenHorseInventory(wildHorse, false),
+          "tamed horse inventory still requires secondary-use");
+    wildHorse.riderEntityId = 42;
+    CHECK(!session_entity_detail::canOpenHorseInventory(wildHorse, true),
+          "a ridden horse does not open its inventory through the inherited path");
+    wildHorse.riderEntityId = -1;
+    wildHorse.age = -1;
+    CHECK(!session_entity_detail::canOpenHorseInventory(wildHorse, true),
+          "baby horse cannot open the adult horse inventory");
+
+    MobEntity camel;
+    camel.kind = MobKind::Camel;
+    camel.riderEntityId = 42;
+    CHECK(session_entity_detail::canOpenHorseInventory(camel, true),
+          "adult Camel secondary-use follows its 1.21.4 override even while ridden");
+    CHECK(!session_entity_detail::canOpenHorseInventory(camel, false),
+          "Camel inventory also requires secondary-use");
+    camel.age = -1;
+    CHECK(!session_entity_detail::canOpenHorseInventory(camel, true),
+          "baby Camel cannot open the adult Camel inventory");
+
+    CHECK(!session_entity_detail::canInteractWithNonPlayerMob(3),
+          "spectator interactions with non-player mobs are rejected");
+    CHECK(session_entity_detail::canInteractWithNonPlayerMob(0) &&
+              session_entity_detail::canInteractWithNonPlayerMob(1) &&
+              session_entity_detail::canInteractWithNonPlayerMob(2),
+          "survival, creative, and adventure retain mob interaction access");
 }
 
 static void test_combat() {
@@ -882,8 +971,16 @@ static void test_combat_sweep_crit_shield() {
     CHECK_NEAR(applyCrit(6.f), 9.0, 1e-4, "crit x1.5: 6=>9");
     CHECK_NEAR(applyCrit(10.f), 15.0, 1e-4, "crit x1.5: 10=>15");
     CHECK_NEAR(swordBaseDamage("minecraft:diamond_sword"), 7.0, 1e-4, "diamond sword 7");
-    CHECK_NEAR(swordBaseDamage("minecraft:iron_sword"), 6.0, 1e-4, "iron sword 6 (legacy flat)");
+    CHECK_NEAR(swordBaseDamage("minecraft:iron_sword"), 6.0, 1e-4, "iron sword 6");
     CHECK_NEAR(axeBaseDamage("minecraft:iron_axe"), 9.0, 1e-4, "iron axe 9");
+    CHECK_NEAR(meleeWeaponBaseDamage("minecraft:wooden_sword"), 4.0, 1e-4,
+               "wooden sword uses its tier damage in either attack path");
+    CHECK_NEAR(meleeWeaponBaseDamage("minecraft:netherite_sword"), 8.0, 1e-4,
+               "netherite sword uses its tier damage in either attack path");
+    CHECK_NEAR(meleeWeaponBaseDamage("minecraft:iron_axe"), 9.0, 1e-4,
+               "iron axe uses its tier damage in either attack path");
+    CHECK_NEAR(meleeWeaponBaseDamage("minecraft:stick"), 1.0, 1e-4,
+               "non-sword and non-axe items keep player base damage");
     CHECK(isShieldActive(true, 5, 0), "shield active at 5t");
     CHECK(isShieldActive(true, 10, 0), "shield stays active");
     CHECK(!isShieldActive(true, 4, 0), "shield inactive before 5t");
@@ -1087,18 +1184,16 @@ static void checkFood(const char* name, int food, float sat) {
 }
 static void test_food_potion_brewing() {
     curSection = "FOODPOT";
-    std::printf("\n[plan46 G-14] food 42 + potion 46 + brewing tick 7 cases\n");
-    CHECK_EQ_INT((int)HungerManager::foodTable().size(), 42, "food table 42 entries (vanilla 1.21.4)");
+    std::printf("\n[plan46 G-14] food 40 + potion 46 + brewing tick 7 cases\n");
+    CHECK_EQ_INT((int)HungerManager::foodTable().size(), 40, "food table contains the 40 vanilla FoodComponents (1.21.4)");
     checkFood("minecraft:apple", 4, 2.4f);
     checkFood("minecraft:baked_potato", 5, 6.0f);
     checkFood("minecraft:beetroot", 1, 1.2f);
     checkFood("minecraft:beetroot_soup", 6, 7.2f);
     checkFood("minecraft:bread", 5, 6.0f);
-    checkFood("minecraft:cake", 2, 0.4f);
     checkFood("minecraft:carrot", 3, 3.6f);
     checkFood("minecraft:chorus_fruit", 4, 2.4f);
     checkFood("minecraft:cooked_beef", 8, 12.8f);
-    checkFood("minecraft:steak", 8, 12.8f);
     checkFood("minecraft:cooked_chicken", 6, 7.2f);
     checkFood("minecraft:cooked_cod", 5, 6.0f);
     checkFood("minecraft:cooked_mutton", 6, 9.6f);
@@ -1132,7 +1227,13 @@ static void test_food_potion_brewing() {
     checkFood("minecraft:pufferfish", 1, 0.2f);
     checkFood("minecraft:sweet_berries", 2, 0.4f);
     CHECK(HungerManager::isFoodItem("minecraft:apple"), "isFoodItem apple");
-    CHECK(HungerManager::isFoodItem("minecraft:rabbit_stew"), "isFoodItem stew substring");
+    CHECK(HungerManager::isFoodItem("minecraft:rabbit_stew"), "rabbit stew is an explicitly registered food item");
+    CHECK(!HungerManager::isFoodItem("minecraft:cake"), "cake item is not edible; cake block is handled separately");
+    CHECK(!HungerManager::isFoodItem("example:beef_stew"), "food lookup does not classify modded names by substring");
+    CHECK(HungerManager::canAlwaysEatItem("minecraft:golden_apple"), "golden apples remain consumable at full hunger");
+    CHECK(HungerManager::canAlwaysEatItem("minecraft:chorus_fruit"), "chorus fruit remains consumable at full hunger");
+    CHECK(HungerManager::canAlwaysEatItem("minecraft:honey_bottle"), "honey bottles remain consumable at full hunger");
+    CHECK(!HungerManager::canAlwaysEatItem("minecraft:bread"), "ordinary bread still requires missing hunger");
     CHECK(!HungerManager::isFoodItem("minecraft:stone"), "stone is not food");
     CHECK_EQ_INT((int)PotionBrewing::potionIds().size(), 46, "potion registry 46 entries (water..infested)");
     CHECK_EQ_INT(PotionBrewing::potionIdByName("minecraft:water"), 0, "water id 0");
@@ -1182,7 +1283,8 @@ void GameServer::broadcastBlockChangeFor(std::int8_t, std::int32_t,
                                          std::int32_t, std::int32_t,
                                          std::uint16_t) {}
 void GameServer::broadcastSoundFor(std::int8_t, const char*, double, double,
-                                   double, float, float, const char*) {}
+                                   double, float, float, const char*,
+                                   std::optional<float>) {}
 void GameServer::broadcastPaleOakLeavesParticle(double, double, double) {}
 void GameServer::broadcastPaleOakLeavesParticleFor(std::int8_t, double, double,
                                                    double) {}
@@ -1387,6 +1489,459 @@ static void test_density_coverage() {
     }
 }
 
+static void test_food_component_runtime_data() {
+    curSection = "FOODCOMPONENT";
+    CHECK(effectTickInterval(50, 0) == 50 &&
+              effectTickInterval(50, 1) == 25 &&
+              effectTickInterval(50, 255) == 1,
+          "status-effect tick intervals preserve vanilla cadence and avoid oversized shifts");
+    CHECK(effectPeriodicTickDue(50, 50, 0) &&
+              !effectPeriodicTickDue(49, 50, 0) &&
+              effectPeriodicTickDue(100, 50, 0),
+          "periodic effect cadence follows remaining duration, not server uptime phase");
+    CHECK(effectPeriodicTickDue(25, 50, 1) &&
+              !effectPeriodicTickDue(24, 50, 1) &&
+              !effectPeriodicTickDue(0, 50, 1),
+          "amplifier-scaled periodic effects tick only on positive duration intervals");
+    auto savedFood = nbt::Value::makeCompound();
+    savedFood.set("nutrition", nbt::Value::makeInt(0));
+    savedFood.set("saturation", nbt::Value::makeFloat(0.5F));
+    savedFood.set("can_always_eat", nbt::Value::makeByte(1));
+    const auto encodedFood = item_component_nbt::protocolComponentFromNbt(
+        "minecraft:food", savedFood);
+    auto customFood = ItemStack::ofName("minecraft:diamond");
+    if (encodedFood)
+        customFood.components.emplace_back(encodedFood->id,
+                                           encodedFood->payload);
+    const auto decodedFood = food_components::readFood(customFood);
+    CHECK(decodedFood && decodedFood->nutrition == 0 &&
+              decodedFood->canAlwaysEat &&
+              food_components::canConsumeAtFoodLevel(*decodedFood, 20),
+          "zero-benefit custom FoodComponent remains consumable at full hunger when always edible");
+    CHECK(decodedFood &&
+              std::fabs(food_components::saturationGain(*decodedFood)) <
+                  1e-6F,
+          "FoodComponent saturation modifier is converted without inventing saturation");
+    CHECK(!food_components::canConsumeAtFoodLevel(
+              food_components::Food{5, 0.6F, false}, 20) &&
+              food_components::canConsumeAtFoodLevel(
+                  food_components::Food{5, 0.6F, false}, 19),
+          "ordinary food only consumes below the vanilla full food level");
+    CHECK(std::fabs(food_components::saturationGain(
+                         food_components::Food{4, 0.3F, false}) - 2.4F) <
+                  1e-5F &&
+              food_components::saturationGain(
+                  food_components::Food{100, 1000.0F, false}) == 20.0F,
+          "saturation gain uses nutrition × modifier × 2 and safely caps at the reachable maximum");
+    const auto goldenAppleEffects =
+        food_components::vanillaConsumeEffects("minecraft:golden_apple");
+    CHECK(goldenAppleEffects.operations.size() == 1 &&
+              goldenAppleEffects.operations[0].kind ==
+                  death_protection::Operation::Kind::Apply &&
+              goldenAppleEffects.operations[0].effects.size() == 2 &&
+              goldenAppleEffects.operations[0].effects[0].type ==
+                  effects::Regeneration &&
+              goldenAppleEffects.operations[0].effects[0].amplifier == 1 &&
+              goldenAppleEffects.operations[0].effects[0].durationTicks == 100 &&
+              goldenAppleEffects.operations[0].effects[1].type ==
+                  effects::Absorption &&
+              goldenAppleEffects.operations[0].effects[1].durationTicks == 2400,
+          "vanilla golden apple applies Regeneration II and Absorption I on consume");
+    const auto rottenFleshEffects =
+        food_components::vanillaConsumeEffects("minecraft:rotten_flesh");
+    CHECK(rottenFleshEffects.operations.size() == 1 &&
+              rottenFleshEffects.operations[0].probability == 0.8F &&
+              rottenFleshEffects.operations[0].effects.size() == 1 &&
+              rottenFleshEffects.operations[0].effects[0].type ==
+                  effects::Hunger &&
+              rottenFleshEffects.operations[0].effects[0].durationTicks == 600,
+          "vanilla rotten flesh retains its probabilistic Hunger effect");
+    const auto honeyEffects =
+        food_components::vanillaConsumeEffects("minecraft:honey_bottle");
+    CHECK(honeyEffects.operations.size() == 1 &&
+              honeyEffects.operations[0].kind ==
+                  death_protection::Operation::Kind::Remove &&
+              honeyEffects.operations[0].removedEffects ==
+                  std::vector<std::uint8_t>{effects::Poison},
+          "vanilla honey bottle removes Poison when consumed");
+    auto savedStewEffects = nbt::Value::makeList(nbt::Compound, 1);
+    auto stewEffect = nbt::Value::makeCompound();
+    stewEffect.set("effect", nbt::Value::makeString("minecraft:glowing"));
+    stewEffect.set("duration", nbt::Value::makeInt(120));
+    savedStewEffects.list.push_back(std::move(stewEffect));
+    const auto encodedStewEffects =
+        item_component_nbt::protocolComponentFromNbt(
+            "minecraft:suspicious_stew_effects", savedStewEffects);
+    auto suspiciousStew = ItemStack::ofName("minecraft:suspicious_stew");
+    if (encodedStewEffects)
+        suspiciousStew.components.emplace_back(encodedStewEffects->id,
+                                               encodedStewEffects->payload);
+    const auto stewProgram =
+        food_components::readStewEffects(suspiciousStew);
+    std::vector<EffectInstance> stewActiveEffects;
+    const auto stewChanges = stewProgram
+        ? death_protection::apply(
+              *stewProgram, stewActiveEffects, [] { return 0.0; },
+              [](const std::string&, std::uint8_t) { return false; })
+        : death_protection::EffectChanges{};
+    CHECK(encodedStewEffects &&
+              encodedStewEffects->payload ==
+                  std::vector<std::uint8_t>{1, 24, 120} &&
+              stewProgram &&
+              stewActiveEffects.size() == 1 &&
+              stewActiveEffects[0].type == effects::Glowing &&
+              stewActiveEffects[0].durationTicks == 120 &&
+              stewChanges.updated == std::vector<std::uint8_t>{effects::Glowing},
+          "SuspiciousStewEffectsComponent round-trips and applies its per-item effects");
+    Player boundedHunger;
+    boundedHunger.food = 19;
+    boundedHunger.saturation = 19.0F;
+    HungerManager::addFoodAndSaturation(
+        boundedHunger, std::numeric_limits<int>::max(),
+        std::numeric_limits<float>::max());
+    CHECK(boundedHunger.food == 20 && boundedHunger.saturation == 20.0F,
+          "extreme finite FoodComponent values clamp without signed or floating-point overflow");
+
+    customFood.removedComponents.push_back(food_components::kFood);
+    CHECK(food_components::explicitlyRemoved(
+              customFood, food_components::kFood),
+          "an explicitly removed FoodComponent is distinguishable from a vanilla default");
+
+    auto savedConsumable = nbt::Value::makeCompound();
+    auto consumeEffectList = nbt::Value::makeList(nbt::Compound, 1);
+    auto apply = nbt::Value::makeCompound();
+    apply.set("type", nbt::Value::makeString("minecraft:apply_effects"));
+    auto effectList = nbt::Value::makeList(nbt::Compound, 3);
+    auto speed = nbt::Value::makeCompound();
+    speed.set("id", nbt::Value::makeString("minecraft:speed"));
+    speed.set("amplifier", nbt::Value::makeInt(1));
+    speed.set("duration", nbt::Value::makeInt(40));
+    speed.set("ambient", nbt::Value::makeByte(0));
+    speed.set("show_particles", nbt::Value::makeByte(1));
+    speed.set("show_icon", nbt::Value::makeByte(1));
+    effectList.list.push_back(std::move(speed));
+    auto instantHealth = nbt::Value::makeCompound();
+    instantHealth.set("id", nbt::Value::makeString(
+                                  "minecraft:instant_health"));
+    instantHealth.set("duration", nbt::Value::makeInt(1));
+    effectList.list.push_back(std::move(instantHealth));
+    auto instantDamage = nbt::Value::makeCompound();
+    instantDamage.set("id", nbt::Value::makeString(
+                                  "minecraft:instant_damage"));
+    instantDamage.set("duration", nbt::Value::makeInt(1));
+    effectList.list.push_back(std::move(instantDamage));
+    apply.set("effects", std::move(effectList));
+    consumeEffectList.list.push_back(std::move(apply));
+    savedConsumable.set("on_consume_effects", std::move(consumeEffectList));
+    const auto encodedConsumable =
+        item_component_nbt::protocolComponentFromNbt(
+            "minecraft:consumable", savedConsumable);
+    auto effectItem = ItemStack::ofName("minecraft:diamond");
+    if (encodedConsumable)
+        effectItem.components.emplace_back(encodedConsumable->id,
+                                           encodedConsumable->payload);
+    const auto decodedConsumable = food_components::readConsumable(effectItem);
+    const auto program = decodedConsumable
+        ? death_protection::fromDeathEffects(
+              decodedConsumable->get("on_consume_effects"))
+        : std::nullopt;
+    std::vector<EffectInstance> activeEffects;
+    const auto changes = program
+        ? death_protection::apply(
+              *program, activeEffects, [] { return 0.0; },
+              [](const std::string&, std::uint8_t) { return false; })
+        : death_protection::EffectChanges{};
+    const auto consumablePacketEffects = persistentEntityEffectUpdates(
+        changes.updated, activeEffects);
+    CHECK(encodedConsumable.has_value(),
+          "custom ConsumableComponent encodes its effect program");
+    CHECK(decodedConsumable.has_value(),
+          "custom ConsumableComponent decodes its effect program");
+    CHECK(program.has_value(),
+          "decoded ConsumableComponent effect program is accepted");
+    CHECK(activeEffects.size() == 3,
+          "consumable program applies regular and instant effects to player state");
+    if (activeEffects.size() == 3) {
+        CHECK(activeEffects[0].type == effects::Speed &&
+                  activeEffects[0].amplifier == 1 &&
+                  activeEffects[0].durationTicks == 40,
+              "regular consumable effect keeps its amplifier and duration");
+        CHECK(activeEffects[1].type == effects::InstantHealth &&
+                  activeEffects[2].type == effects::InstantDamage,
+              "instant health and damage operations are retained for application");
+    }
+    CHECK(changes.updated.size() == 3,
+          "all three consumed status effects are reported as applied");
+    CHECK(consumablePacketEffects.size() == 1 &&
+              consumablePacketEffects[0].type == effects::Speed,
+          "instant effects are excluded from persistent EntityEffect packets");
+
+    auto highAmplifierEffects = nbt::Value::makeList(nbt::Compound, 1);
+    auto highAmplifierApply = nbt::Value::makeCompound();
+    highAmplifierApply.set("type", nbt::Value::makeString(
+                                       "minecraft:apply_effects"));
+    auto highAmplifierList = nbt::Value::makeList(nbt::Compound, 1);
+    auto highAmplifierSpeed = nbt::Value::makeCompound();
+    highAmplifierSpeed.set("id", nbt::Value::makeString("minecraft:speed"));
+    highAmplifierSpeed.set("amplifier", nbt::Value::makeInt(255));
+    highAmplifierSpeed.set("duration", nbt::Value::makeInt(40));
+    highAmplifierList.list.push_back(std::move(highAmplifierSpeed));
+    highAmplifierApply.set("effects", std::move(highAmplifierList));
+    highAmplifierEffects.list.push_back(std::move(highAmplifierApply));
+    const auto highAmplifierProgram =
+        death_protection::fromDeathEffects(&highAmplifierEffects);
+    CHECK(highAmplifierProgram &&
+              highAmplifierProgram->operations[0].effects[0].amplifier == 255,
+          "status-effect amplifier retains the full vanilla integer range instead of wrapping at 127");
+
+    const auto honey = ItemStack::ofName("minecraft:honey_bottle");
+    const auto honeyRemainder = food_components::defaultUseRemainder(honey);
+    CHECK(honeyRemainder && honeyRemainder->name() == "minecraft:glass_bottle",
+          "vanilla honey bottle returns its glass-bottle use remainder");
+    auto savedRemainder = ItemStack::ofName("minecraft:bowl").toNbt(-1);
+    const auto encodedRemainder =
+        item_component_nbt::protocolComponentFromNbt(
+            "minecraft:use_remainder", savedRemainder);
+    auto customRemainderItem = ItemStack::ofName("minecraft:diamond");
+    if (encodedRemainder)
+        customRemainderItem.components.emplace_back(encodedRemainder->id,
+                                                    encodedRemainder->payload);
+    const auto remainder =
+        food_components::readUseRemainder(customRemainderItem);
+    CHECK(encodedRemainder && remainder &&
+              remainder->name() == "minecraft:bowl" && remainder->count == 1,
+          "UseRemainderComponent preserves a full returned item stack");
+}
+
+static void test_death_protection_component() {
+    curSection = "DEATHPROTECTION";
+    const auto totem = ItemStack::ofName("minecraft:totem_of_undying");
+    const auto protection = death_protection::fromStack(totem);
+    CHECK(protection && protection->operations.size() == 2,
+          "vanilla totem resolves its default clear-and-apply death effects");
+    if (protection && protection->operations.size() == 2) {
+        CHECK(protection->operations[0].kind ==
+                  death_protection::Operation::Kind::ClearAll,
+              "vanilla totem clears existing status effects first");
+        const auto& applied = protection->operations[1];
+        CHECK(applied.kind == death_protection::Operation::Kind::Apply &&
+                  applied.effects.size() == 3,
+              "vanilla totem applies its three registered status effects");
+        if (applied.effects.size() == 3) {
+            CHECK(applied.effects[0].type == effects::Regeneration &&
+                      applied.effects[0].amplifier == 1 &&
+                      applied.effects[0].durationTicks == 900,
+                  "totem grants Regeneration II for 45 seconds");
+            CHECK(applied.effects[1].type == effects::Absorption &&
+                      applied.effects[1].amplifier == 1 &&
+                      applied.effects[1].durationTicks == 100,
+                  "totem grants Absorption II for 5 seconds");
+            CHECK(applied.effects[2].type == effects::FireResistance &&
+                      applied.effects[2].amplifier == 0 &&
+                      applied.effects[2].durationTicks == 800,
+                  "totem grants Fire Resistance for 40 seconds");
+        }
+        std::vector<EffectInstance> activeEffects{
+            {effects::Poison, 0, 200, false, true, true},
+            {effects::Regeneration, 0, 20, false, true, true}};
+        const auto changes = death_protection::apply(
+            *protection, activeEffects, [] { return 0.5; },
+            [](const std::string&, std::uint8_t) { return false; });
+        CHECK(activeEffects.size() == 3 &&
+                  changes.removed.size() == 2 &&
+                  changes.updated.size() == 3,
+              "death-protection operations remove old effects and report exact additions");
+
+        death_protection::Protection zeroChance;
+        death_protection::Operation neverApply;
+        neverApply.kind = death_protection::Operation::Kind::Apply;
+        neverApply.probability = 0.0F;
+        neverApply.effects = applied.effects;
+        zeroChance.operations.push_back(std::move(neverApply));
+        std::vector<EffectInstance> noEffects;
+        int randomCalls = 0;
+        (void)death_protection::apply(
+            zeroChance, noEffects,
+            [&] { ++randomCalls; return 0.0; },
+            [](const std::string&, std::uint8_t) { return false; });
+        CHECK(noEffects.empty() && randomCalls == 0,
+              "zero-probability death effects never apply or consume RNG");
+
+        death_protection::Protection weakerLonger;
+        death_protection::Operation weakerRegeneration;
+        weakerRegeneration.kind =
+            death_protection::Operation::Kind::Apply;
+        weakerRegeneration.effects.push_back(
+            {effects::Regeneration, 1, 900, false, true, true});
+        weakerLonger.operations.push_back(std::move(weakerRegeneration));
+        std::vector<EffectInstance> strongerShorter{
+            {effects::Regeneration, 2, 10, false, true, true}};
+        const auto weakerChanges = death_protection::apply(
+            weakerLonger, strongerShorter, [] { return 0.0; },
+            [](const std::string&, std::uint8_t) { return false; });
+        CHECK(strongerShorter.size() == 1 &&
+                  strongerShorter[0].amplifier == 2 &&
+                  strongerShorter[0].durationTicks == 10 &&
+                  strongerShorter[0].hiddenEffects.size() == 1 &&
+                  strongerShorter[0].hiddenEffects[0].amplifier == 1 &&
+                  strongerShorter[0].hiddenEffects[0].durationTicks == 900 &&
+                  weakerChanges.updated.empty(),
+              "a weaker long effect is retained without extending the stronger active effect");
+
+        EffectInstance expiringStrong{
+            effects::Regeneration, 2, 1, false, true, true};
+        expiringStrong.hiddenEffects.push_back(
+            {1, 3, false, true, true});
+        tickHiddenEffects(expiringStrong);
+        tickEffectDuration(expiringStrong);
+        const bool promoted = expiringStrong.expired() &&
+            promoteHiddenEffect(expiringStrong);
+        CHECK(promoted && expiringStrong.amplifier == 1 &&
+                  expiringStrong.durationTicks == 2,
+              "a hidden weaker effect resumes with its own ticking duration");
+    }
+
+    auto customOperations = nbt::Value::makeList(nbt::Compound, 3);
+    auto removeTag = nbt::Value::makeCompound();
+    removeTag.set("type", nbt::Value::makeString(
+                              "minecraft:remove_effects"));
+    removeTag.set("effects", nbt::Value::makeString("#example:bad_effects"));
+    customOperations.list.push_back(std::move(removeTag));
+    auto teleport = nbt::Value::makeCompound();
+    teleport.set("type", nbt::Value::makeString(
+                              "minecraft:teleport_randomly"));
+    teleport.set("diameter", nbt::Value::makeFloat(8.0F));
+    customOperations.list.push_back(std::move(teleport));
+    auto playSound = nbt::Value::makeCompound();
+    playSound.set("type", nbt::Value::makeString("minecraft:play_sound"));
+    auto sound = nbt::Value::makeCompound();
+    sound.set("sound_id", nbt::Value::makeString("example:custom_sound"));
+    sound.set("range", nbt::Value::makeFloat(24.0F));
+    playSound.set("sound", std::move(sound));
+    customOperations.list.push_back(std::move(playSound));
+    const auto parsedOperations =
+        death_protection::fromDeathEffects(&customOperations);
+    CHECK(parsedOperations && parsedOperations->operations.size() == 3,
+          "custom death protection parses tag removal, teleport, and sound operations");
+    if (parsedOperations) {
+        std::vector<EffectInstance> effectsToChange{
+            {effects::Poison, 0, 100, false, true, true},
+            {effects::Regeneration, 0, 100, false, true, true}};
+        const auto changes = death_protection::apply(
+            *parsedOperations, effectsToChange, [] { return 0.0; },
+            [](const std::string& tag, std::uint8_t effect) {
+                return tag == "example:bad_effects" &&
+                       effect == effects::Poison;
+            });
+        CHECK(effectsToChange.size() == 1 &&
+                  effectsToChange[0].type == effects::Regeneration &&
+                  changes.removed == std::vector<std::uint8_t>{effects::Poison},
+              "remove_effects resolves tag membership and reports removed effects");
+        CHECK(changes.randomTeleportDiameters == std::vector<float>{8.0F} &&
+                  changes.sounds.size() == 1 &&
+                  changes.sounds[0].id == "example:custom_sound" &&
+                  changes.sounds[0].fixedRange == 24.0F,
+              "teleport and fixed-range sound consume effects are retained for runtime application");
+    }
+
+    auto invalidProbability = nbt::Value::makeList(nbt::Compound, 1);
+    auto malformedApply = nbt::Value::makeCompound();
+    malformedApply.set("type", nbt::Value::makeString(
+                                   "minecraft:apply_effects"));
+    malformedApply.set("effects", nbt::Value::makeList(nbt::Compound));
+    malformedApply.set("probability", nbt::Value::makeFloat(
+                                           std::numeric_limits<float>::quiet_NaN()));
+    invalidProbability.list.push_back(std::move(malformedApply));
+    CHECK(!death_protection::fromDeathEffects(&invalidProbability),
+          "non-finite death-effect probability is rejected instead of applying unconditionally");
+
+    auto bareOperationList = nbt::Value::makeList(nbt::Compound, 1);
+    auto bareClear = nbt::Value::makeCompound();
+    bareClear.set("type", nbt::Value::makeString("clear_all_effects"));
+    bareOperationList.list.push_back(std::move(bareClear));
+    const auto bareOperation =
+        death_protection::fromDeathEffects(&bareOperationList);
+    CHECK(bareOperation && bareOperation->operations.size() == 1 &&
+              bareOperation->operations[0].kind ==
+                  death_protection::Operation::Kind::ClearAll,
+          "bare vanilla consume-effect operation identifiers remain accepted");
+
+    auto invalidOperation = nbt::Value::makeList(nbt::Compound, 1);
+    auto unsupported = nbt::Value::makeCompound();
+    unsupported.set("type", nbt::Value::makeString(
+                                 "example:clear_all_effects"));
+    invalidOperation.list.push_back(std::move(unsupported));
+    CHECK(!death_protection::fromDeathEffects(&invalidOperation),
+          "foreign namespace cannot alias a supported death-effect operation");
+
+    auto instantDeathEffects = nbt::Value::makeList(nbt::Compound, 1);
+    auto instantApply = nbt::Value::makeCompound();
+    instantApply.set("type", nbt::Value::makeString(
+                                  "minecraft:apply_effects"));
+    auto instantEffects = nbt::Value::makeList(nbt::Compound, 2);
+    auto protectionHealth = nbt::Value::makeCompound();
+    protectionHealth.set("id", nbt::Value::makeString(
+                                     "minecraft:instant_health"));
+    protectionHealth.set("amplifier", nbt::Value::makeInt(0));
+    protectionHealth.set("duration", nbt::Value::makeInt(1));
+    instantEffects.list.push_back(std::move(protectionHealth));
+    auto protectionDamage = nbt::Value::makeCompound();
+    protectionDamage.set("id", nbt::Value::makeString(
+                                     "minecraft:instant_damage"));
+    protectionDamage.set("amplifier", nbt::Value::makeInt(0));
+    protectionDamage.set("duration", nbt::Value::makeInt(1));
+    instantEffects.list.push_back(std::move(protectionDamage));
+    instantApply.set("effects", std::move(instantEffects));
+    instantDeathEffects.list.push_back(std::move(instantApply));
+    const auto instantProtection =
+        death_protection::fromDeathEffects(&instantDeathEffects);
+    std::vector<EffectInstance> protectionActiveEffects;
+    const auto instantProtectionChanges = instantProtection
+        ? death_protection::apply(
+              *instantProtection, protectionActiveEffects,
+              [] { return 0.0; },
+              [](const std::string&, std::uint8_t) { return false; })
+        : death_protection::EffectChanges{};
+    const auto protectionPacketEffects = persistentEntityEffectUpdates(
+        instantProtectionChanges.updated, protectionActiveEffects);
+    CHECK(instantProtection.has_value(),
+          "death-protection component accepts instant health/damage effects");
+    CHECK(protectionActiveEffects.size() == 2,
+          "death-protection operations retain both instant effects for application");
+    CHECK(instantProtectionChanges.updated.size() == 2,
+          "death-protection reports both instant effects as applied");
+    CHECK(protectionPacketEffects.empty(),
+          "death-protection instant effects do not create persistent EntityEffect packets");
+
+    auto ordinary = ItemStack::ofName("minecraft:golden_apple");
+    CHECK(!death_protection::fromStack(ordinary),
+          "ordinary items without death_protection do not prevent death");
+    auto disabledTotem = totem;
+    disabledTotem.removedComponents.push_back(
+        death_protection::kComponentId);
+    CHECK(!death_protection::fromStack(disabledTotem),
+          "explicitly removed default death_protection disables vanilla totem protection");
+
+    auto saved = nbt::Value::makeCompound();
+    auto deathEffects = nbt::Value::makeList(nbt::Compound);
+    auto clear = nbt::Value::makeCompound();
+    clear.set("type", nbt::Value::makeString(
+                           "minecraft:clear_all_effects"));
+    deathEffects.list.push_back(std::move(clear));
+    saved.set("death_effects", std::move(deathEffects));
+    const auto encoded = item_component_nbt::protocolComponentFromNbt(
+        "minecraft:death_protection", saved);
+    auto moddedItem = ItemStack::ofName("minecraft:diamond");
+    if (encoded)
+        moddedItem.components.emplace_back(encoded->id, encoded->payload);
+    const auto moddedProtection = death_protection::fromStack(moddedItem);
+    CHECK(encoded && moddedProtection &&
+              moddedProtection->operations.size() == 1 &&
+              moddedProtection->operations[0].kind ==
+                  death_protection::Operation::Kind::ClearAll,
+          "custom death_protection components are decoded for non-totem items");
+}
+
 static void test_known_gaps() {
     curSection = "GAPS";
     std::printf("\n[8] KNOWN GAPS (honest 100//100 gaps — these SHOULD FAIL until fixed)\n");
@@ -1580,6 +2135,7 @@ int main(){
     test_blocks();
     test_recipes();
     test_mobs();
+    test_horse_temper_and_interaction_rules();
     test_combat();
     test_combat_sweep_crit_shield(); // plan44 G-07/G-08/G-09
     test_worldgen();
@@ -1587,6 +2143,8 @@ int main(){
     test_enchants();
     test_mob_behavior(); // plan46 G-06
     test_food_potion_brewing(); // plan46 G-14
+    test_food_component_runtime_data();
+    test_death_protection_component();
     test_time_growth(); // plan46 G-15
     test_density_coverage(); // plan46 G-10
     test_known_gaps();

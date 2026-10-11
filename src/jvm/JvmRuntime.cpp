@@ -2773,7 +2773,6 @@ bool JvmRuntime::nativePlayerSetInventoryItemCount(std::uint64_t handle,
             else item->count = static_cast<std::int16_t>(count);
         }
         impl_->server.resendInventory(*player);
-        impl_->server.syncEquipmentOnChange(*player);
         return true;
     });
 }
@@ -2802,7 +2801,6 @@ bool JvmRuntime::nativePlayerSetInventoryItem(std::uint64_t handle,
             }
         }
         impl_->server.resendInventory(*player);
-        impl_->server.syncEquipmentOnChange(*player);
         return true;
     });
 }

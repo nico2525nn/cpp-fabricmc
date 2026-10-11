@@ -90,18 +90,23 @@ void GameServer::initPlayerCommandsPart01() {
             const int m = applyMode(c.arg("mode").asStr());
             if (m < 0 || !src) throw std::runtime_error("unknown gamemode");
             std::shared_ptr<Connection> connection;
-            WriteBuffer ge;                          // game event 4 = gamemode
-            ge.u8(4); ge.f32(static_cast<float>(m));
+            // Play game_event reason 3 is change_game_mode in protocol 769.
+            WriteBuffer ge;
+            ge.u8(3); ge.f32(static_cast<float>(m));
             std::uint8_t af = 0;
             {
                 std::lock_guard playerLock(src->stateMtx);
-                src->gamemode = static_cast<std::uint8_t>(m);
+                if (src->gamemode != m) {
+                    src->previousGamemode = src->gamemode;
+                    src->gamemode = static_cast<std::uint8_t>(m);
+                }
                 if (m == 1) af |= 0x01 | 0x04 | 0x08;
                 else if (m == 3) af |= 0x02 | 0x04;
                 if (src->isFlying && !(af & 0x04)) src->isFlying = false;
                 if (src->isFlying) af |= 0x02;
                 connection = src->conn;
             }
+            savePlayerData(GameServer::uuidToHex(src->uuid), *src);
             WriteBuffer ab;
             ab.i8(static_cast<std::int8_t>(af));
             ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
@@ -127,18 +132,28 @@ void GameServer::initPlayerCommandsPart01() {
                     std::uint8_t taf = 0;
                     {
                         std::lock_guard playerLock(t->stateMtx);
-                        t->gamemode = static_cast<std::uint8_t>(m);
+                        if (t->gamemode != m) {
+                            t->previousGamemode = t->gamemode;
+                            t->gamemode = static_cast<std::uint8_t>(m);
+                        }
                         if (m == 1) taf |= 0x01 | 0x04 | 0x08;
                         else if (m == 3) taf |= 0x02 | 0x04;
                         if (t->isFlying && !(taf & 0x04)) t->isFlying = false;
                         if (t->isFlying) taf |= 0x02;
                         connection = t->conn;
                     }
+                    savePlayerData(GameServer::uuidToHex(t->uuid), *t);
+                    WriteBuffer gameEvent;
+                    gameEvent.u8(3);
+                    gameEvent.f32(static_cast<float>(m));
                     WriteBuffer ab;
                     ab.i8(static_cast<std::int8_t>(taf));
                     ab.f32(0.05f); ab.f32(m == 1 ? 0.10f : 0.05f);
-                    if (connection)
+                    if (connection) {
+                        connection->trySendPacket(
+                            proto::pl::sc::GameEvent, gameEvent);
                         connection->trySendPacket(proto::pl::sc::Abilities, ab);
+                    }
                     ++count;
                 }
             sendCommandFeedback(src, "Updated gamemode for " + std::to_string(count));
@@ -185,7 +200,9 @@ void GameServer::initPlayerCommandsPart02() {
                 std::string mat = extract("material");
                 if (!pat.empty()) {
                     ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat;
-                    stack.setTrim(tr);
+                    if (!stack.setTrim(tr))
+                        throw std::runtime_error(
+                            "Unknown armor trim pattern or material");
                 }
             }
             int given = 0;
@@ -194,36 +211,26 @@ void GameServer::initPlayerCommandsPart02() {
                     ItemStack toGive = stack;
                     const bool isMap = base=="minecraft:filled_map" || base=="minecraft:map";
                     int mapId = -1;
-                    {
-                        std::lock_guard playerLock(t->stateMtx);
-                        if (isMap) {
-                            mapId = nextMapId_.fetch_add(1);
-                            WriteBuffer tmp; tmp.varint(mapId);
-                            toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
-                            toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
-                            toGive.count = 1;
-                        }
-                        bool placed=false;
-                        for(int i: kMainInventoryOrder){
-                            auto &s = t->inv[i];
-                            if (s.empty()) { s = toGive; placed=true; break; }
-                        }
-                        if(!placed) {
-                            addToInventory(*t, toGive.itemId, 1);
-                            for(int i: kMainInventoryOrder)
-                                if(!t->inv[i].empty() && t->inv[i].itemId==toGive.itemId) {
-                                    t->inv[i]=toGive;
-                                    break;
-                                }
-                        }
+                    if (isMap) {
+                        mapId = nextMapId_.fetch_add(1);
+                        WriteBuffer tmp;
+                        tmp.varint(mapId);
+                        toGive.components.erase(std::remove_if(
+                            toGive.components.begin(), toGive.components.end(),
+                            [](const auto& component) { return component.first == 36; }),
+                            toGive.components.end());
+                        toGive.components.emplace_back(36, std::move(tmp.data));
+                        toGive.count = 1;
                     }
+                    if (!addStackToInventory(*t, toGive, 1)) continue;
                     resendInventory(*t);
                     if (mapId >= 0) sendMapData(*t, mapId);
-                    if (base.find("_helmet")!=std::string::npos||base.find("_chestplate")!=std::string::npos||base.find("_leggings")!=std::string::npos||base.find("_boots")!=std::string::npos)
-                        syncEquipmentOnChange(*t);
                     ++given;
                 }
-            sendCommandFeedback(src, "Given 1 x " + base);
+            if (given > 0)
+                sendCommandFeedback(src, "Given 1 x " + base);
+            else
+                sendCommandFeedback(src, "No item given: target inventory is full");
             return given;
         };
         auto cnt = CommandNode::argument("count", args::integer(1, 576));
@@ -240,6 +247,7 @@ void GameServer::initPlayerCommandsPart02() {
                 throw std::runtime_error("Unknown item: " + base);
             const int n2 = c.arg("count").asInt();
             int given = 0;
+            int totalInserted = 0;
             for (auto& nm : sel.playerNames)
                 if (Player* t = findPlayer(*this, nm)) {
                     std::string compPart = br!=std::string::npos ? raw.substr(br) : "";
@@ -256,33 +264,43 @@ void GameServer::initPlayerCommandsPart02() {
                         };
                         std::string pat = extract("pattern");
                         std::string mat = extract("material");
-                        if (!pat.empty()) { ItemStack::ArmorTrim tr; tr.has=true; tr.pattern=pat; tr.material= mat.empty()?"minecraft:iron":mat; stack.setTrim(tr); }
+                        if (!pat.empty()) {
+                            ItemStack::ArmorTrim tr;
+                            tr.has = true;
+                            tr.pattern = pat;
+                            tr.material = mat.empty() ? "minecraft:iron" : mat;
+                            if (!stack.setTrim(tr))
+                                throw std::runtime_error(
+                                    "Unknown armor trim pattern or material");
+                        }
                     }
                     const bool isMap = (base=="minecraft:filled_map" || base=="minecraft:map");
+                    int inserted = 0;
                     for(int k=0;k<n2;k++){
                         ItemStack toGive = stack;
                         int curMapId = -1;
-                        {
-                            std::lock_guard playerLock(t->stateMtx);
-                            if (isMap) {
-                                curMapId = nextMapId_.fetch_add(1);
-                                WriteBuffer tmp; tmp.varint(curMapId);
-                                toGive.components.erase(std::remove_if(toGive.components.begin(), toGive.components.end(), [](auto &pr){return pr.first==36;}), toGive.components.end());
-                                toGive.components.emplace_back(36, std::vector<uint8_t>(tmp.data.begin(), tmp.data.end()));
-                            }
-                            bool placed=false;
-                            for(int i: kMainInventoryOrder){
-                                auto &s = t->inv[i];
-                                if (s.empty()) { s = toGive; placed=true; break; }
-                            }
-                            if(!placed) addToInventory(*t, toGive.itemId, 1);
+                        if (isMap) {
+                            curMapId = nextMapId_.fetch_add(1);
+                            WriteBuffer tmp;
+                            tmp.varint(curMapId);
+                            toGive.components.erase(std::remove_if(
+                                toGive.components.begin(), toGive.components.end(),
+                                [](const auto& component) { return component.first == 36; }),
+                                toGive.components.end());
+                            toGive.components.emplace_back(36, std::move(tmp.data));
                         }
+                        if (!addStackToInventory(*t, toGive, 1)) break;
+                        ++inserted;
                         if (isMap && curMapId>=0) sendMapData(*t, curMapId);
                     }
-                    resendInventory(*t);
-                    ++given;
+                    if (inserted > 0) {
+                        resendInventory(*t);
+                        ++given;
+                        totalInserted += inserted;
+                    }
                 }
-            sendCommandFeedback(src, "Given " + std::to_string(n2) + " x " + base);
+            sendCommandFeedback(src, "Given " + std::to_string(totalInserted) +
+                                     " x " + base);
             return given;
         };
         item->then(cnt);
@@ -302,23 +320,8 @@ void GameServer::initPlayerCommandsPart03() {
             Player* src = static_cast<Player*>(c.source.player);
             if (!src) return 0;
             const auto v = c.arg("pos").asVec3();
-            PlayerCommandSnapshot state;
-            {
-                std::lock_guard playerLock(src->stateMtx);
-                src->fallDist = 0;
-                src->x = v.x; src->y = v.y; src->z = v.z;
-                state.connection = src->conn;
-                state.yaw = src->yaw;
-                state.pitch = src->pitch;
-            }
-            WriteBuffer tb;
-            tb.varint(++teleportCounterForTest_);
-            tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
-            tb.f64(0); tb.f64(0); tb.f64(0);
-            tb.f32(state.yaw); tb.f32(state.pitch);
-            tb.u32(0);
-            if (state.connection)
-                state.connection->trySendPacket(proto::pl::sc::PlayerPosition, tb);
+            if (!teleportPlayer(*src, v.x, v.y, v.z))
+                throw std::runtime_error("Teleport packet could not be queued");
             sendCommandFeedback(src, "Teleported to " + std::to_string(v.x) + ", " +
                          std::to_string(v.y) + ", " + std::to_string(v.z));
             return 1;
@@ -386,22 +389,19 @@ void GameServer::initPlayerCommandsPart05() {
     auto& d = commands_;
     {
         auto effect = CommandNode::literal("effect");
-        // amplifier byte on the wire (site 1 sends e.amplifier, others the raw arg).
+        // Keep the full command range in the model; the play packet encodes
+        // amplifier as a VarInt, not a signed byte.
         auto storeEffect = [](Player& t, EffectInstance e, int ampWire) {
             std::shared_ptr<Connection> connection;
             std::int32_t entityId = 0;
+            bool visibleChanged = false;
             {
                 std::lock_guard playerLock(t.stateMtx);
-                t.effects.erase(
-                    std::remove_if(t.effects.begin(), t.effects.end(),
-                                   [&](const EffectInstance& x)
-                                       { return x.type == e.type; }),
-                    t.effects.end());
-                t.effects.push_back(e);
+                visibleChanged = applyStatusEffect(t.effects, e);
                 entityId = t.entityId;
                 connection = t.conn;
             }
-            if (!connection) return;
+            if (!visibleChanged || !connection) return;
             WriteBuffer b;
             b.varint(entityId);
             b.varint(e.type);
@@ -417,7 +417,7 @@ void GameServer::initPlayerCommandsPart05() {
         eff->executable = true;
         eff->suggestions = [](brigadier::StringReader&, brigadier::ParseCtx&) {
             std::vector<std::string> v;
-            for (int i = effects::Speed; i <= effects::Darkness; ++i)
+            for (int i = effects::Speed; i <= effects::Infested; ++i)
                 v.emplace_back(effects::nameOf(static_cast<std::uint8_t>(i)));
             return v;
         };
@@ -478,8 +478,8 @@ void GameServer::initPlayerCommandsPart05() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = dur * 20;
-                    e.amplifier = static_cast<std::int8_t>(ampv); // level-1 model
-                    storeEffect(*t, e, ampv); // raw 0..255 (int8_t wraps >127)
+                    e.amplifier = ampv;
+                    storeEffect(*t, e, ampv); // preserve the requested 0..255 value
                 }
             sendCommandFeedback(src, "Applied " + en + " (" +
                          std::to_string(dur) + "s, amplifier " +
@@ -504,7 +504,7 @@ void GameServer::initPlayerCommandsPart05() {
                     EffectInstance e;
                     e.type = it->second;
                     e.durationTicks = dur * 20;
-                    e.amplifier = static_cast<std::int8_t>(ampv);
+                    e.amplifier = ampv;
                     e.showParticles = !hidep;
                     storeEffect(*t, e, ampv);
                 }
@@ -1262,23 +1262,9 @@ void GameServer::initPlayerCommandsPart17() {
                 int n = 0;
                 for (auto& nm : sel.playerNames)
                     if (Player* t = findPlayer(*this, nm)) {
-                        PlayerCommandSnapshot target;
-                        {
-                            std::lock_guard playerLock(t->stateMtx);
-                            t->fallDist = 0;
-                            t->x = v.x; t->y = v.y; t->z = v.z;
-                            target.connection = t->conn;
-                            target.yaw = t->yaw;
-                            target.pitch = t->pitch;
-                        }
-                        WriteBuffer tb;
-                        tb.varint(++teleportCounterForTest_);
-                        tb.f64(v.x); tb.f64(v.y); tb.f64(v.z);
-                        tb.f64(0); tb.f64(0); tb.f64(0);
-                        tb.f32(target.yaw); tb.f32(target.pitch);
-                        tb.u32(0);
-                        if (target.connection)
-                            target.connection->trySendPacket(proto::pl::sc::PlayerPosition, tb);
+                        if (!teleportPlayer(*t, v.x, v.y, v.z))
+                            throw std::runtime_error(
+                                "Teleport packet could not be queued for " + nm);
                         ++n;
                     }
                 if (n == 0) throw std::runtime_error("Unknown player for teleport");

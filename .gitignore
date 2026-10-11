@@ -12,6 +12,7 @@ server.properties
 /world_the_end/
 /mods/
 /config/
+/node_modules/
 /libraries/
 /logs/
 /crash-reports/

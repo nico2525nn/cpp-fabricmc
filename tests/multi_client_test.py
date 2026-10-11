@@ -48,6 +48,7 @@ class Bot:
         self.updates = []
         self.chunks = set()
         self.confirmed = False
+        self.teleports = []
         self.infos = []
         self.spawns = []
         self.moves = []
@@ -57,6 +58,7 @@ class Bot:
         self.disconnects = 0
         self.last_move = 0.0
         self.position = (0.5, -60.0, 0.5)
+        self.server_position = self.position
 
     def move_to(self, x, y, z, on_ground=True):
         """Send a legal sequence of position packets to an integration target."""
@@ -72,6 +74,7 @@ class Bot:
                 0x1c, struct.pack(">ddd", *position) +
                 bytes([1 if step == steps and on_ground else 0]))
         self.position = (x, y, z)
+        self.server_position = (x, y, z)
 
     def pump(self, seconds=1.0, move=True):
         t_end = time.monotonic() + seconds
@@ -88,6 +91,10 @@ class Bot:
                 return
             elif pid == 0x42:
                 bio = io.BytesIO(data); tid, _ = read_varint(bio)
+                if len(data) >= bio.tell() + 24:
+                    position = struct.unpack(">ddd", bio.read(24))
+                    self.teleports.append((tid, position))
+                    self.server_position = position
                 self.confirmed = True
                 self.c.send_packet_raw(0x00, mcproto.write_varint(tid))
             elif pid == 0x0c:
@@ -150,6 +157,7 @@ def main():
         try:
             proc = subprocess.Popen([binary, "--port", str(port), "--view-distance", "6",
                                      "--world-dir", world_dir, "--level-type", "flat",
+                                     "--spawn-protection=0",
                                      "--online-mode=false", "--enforce-secure-profile=false"],
                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=cwd,
                                     env=environment,
@@ -199,7 +207,8 @@ def main():
         # entity tracker yaw/pitch
         a.c.send_packet_raw(0x1d, struct.pack(">ddd", 9.5, -60.0, 8.5) + struct.pack(">ff", 45.0, 10.0) + b"\x01")
         a.position = (9.5, -60.0, 8.5)
-        time.sleep(0.7)
+        a.server_position = a.position
+        a.pump(0.5, move=False)
         b.pump(0.5); c.pump(0.5)
         check(len(b.moves) >= 1, f"B sees A's movement tracker yaw/pitch ({len(b.moves)} pkts)")
         check(len(c.moves) >= 1, f"C sees A's movement tracker yaw/pitch ({len(c.moves)} pkts)")
@@ -223,12 +232,14 @@ def main():
               f"A drag mode5 ContainerClick 0x10 no-kick (disconnects {a.disconnects}, "
               f"keepAlives {a.keepalives}, containerUpd {len(a.container_updates)})")
 
-        # A digs a distinctive block outside the default spawn-protection radius;
-        # all clients should get the resulting update.
-        dig_x, dig_y, dig_z = 32, -61, 32
-        a.move_to(32.5, -60.0, 32.5)
-        time.sleep(0.2)
-        a.pump(0.2, move=False)
+        # Exercise the block-change broadcast at the client's last confirmed
+        # area.  Spawn protection is explicitly disabled for this isolated
+        # broadcast test; its own behavior has a separate configuration gate.
+        dig_x = math.floor(a.server_position[0])
+        dig_y = -61
+        dig_z = math.floor(a.server_position[2])
+        if a.teleports:
+            print(f"  movement corrected to {a.teleports[-1][1]} before dig")
         def pack_pos(x, y, z):
             return struct.pack(">q", ((x & 0x3FFFFFF) << 38) | ((z & 0x3FFFFFF) << 12) | (y & 0xFFF))
         a.c.send_packet_raw(0x27, mcproto.write_varint(0) + pack_pos(dig_x, dig_y, dig_z) +

@@ -30,7 +30,7 @@ int CombatManager::computeEPF(const DamageSource& ds, const Player& p) {
     std::lock_guard playerLock(p.stateMtx);
     int total = 0;
     for (int i = 5; i <= 8; ++i) {
-        if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+        if (p.inv[i].empty()) continue;
         total += EnchantmentHelper::getProtectionEPF(ds, p.inv[i]);
     }
     if (total > 20) total = 20;
@@ -60,7 +60,7 @@ void CombatManager::syncPlayerArmor(GameServer& srv, Player& p) {
         int toughness = 0;
         float kbResist = 0.f;
         for (int i = 5; i <= 8; ++i) {
-            if (i < 0 || i >= 46 || p.inv[i].empty()) continue;
+            if (p.inv[i].empty()) continue;
             const std::string n = p.inv[i].name();
             if (n.find("diamond_") != std::string::npos) toughness += 2;
             else if (n.find("netherite_") != std::string::npos) {
@@ -186,8 +186,7 @@ void CombatManager::applyThornsReflection(GameServer& srv, Player& victim,
             auto& piece = victim.inv[i];
             if (!piece.empty() && piece.itemId == expected.itemId &&
                 piece.count == expected.count &&
-                piece.components == expected.components &&
-                piece.removedComponents == expected.removedComponents) {
+                piece.sameItemData(expected)) {
                 if (DamageComponent::applyDamage(piece, 2))
                     piece = ItemStack::air();
             }

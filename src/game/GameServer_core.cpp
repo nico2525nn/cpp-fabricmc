@@ -1,10 +1,16 @@
 #include "GameServer.hpp"
 #include "../core/Json.hpp"
 #include "GameServerHelpers.hpp"
+#include "MetadataTypes.hpp"
 #include "../generated/ItemIds.hpp"
 #include "../generated/EntityIds.hpp"
 #include "BehaviorTree.hpp"
 #include "BehaviorTreeParser.hpp"
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <string_view>
+#include <vector>
 namespace cppfm {
 using namespace proto;
 
@@ -519,16 +525,29 @@ void GameServer::joinJanitorThread() {
     janitorThread_.join();
 }
 void GameServer::broadcastDigStage(Player& p, std::int8_t stage) {
-    std::int32_t entityId = 0;
+    std::lock_guard transitionLock(p.digTransitionMtx);
     std::int32_t digX = 0, digY = 0, digZ = 0;
     std::int8_t dimension = 0;
     {
-        std::lock_guard playerLock(p.stateMtx);
-        entityId = p.entityId;
+        std::lock_guard digLock(p.digMtx);
         digX = p.digX;
         digY = p.digY;
         digZ = p.digZ;
+    }
+    {
+        std::lock_guard playerLock(p.stateMtx);
         dimension = p.dimension;
+    }
+    broadcastDigStageAt(p, dimension, digX, digY, digZ, stage);
+}
+void GameServer::broadcastDigStageAt(Player& p, std::int8_t dimension,
+                                     std::int32_t digX, std::int32_t digY,
+                                     std::int32_t digZ,
+                                     std::int8_t stage) {
+    std::int32_t entityId = 0;
+    {
+        std::lock_guard playerLock(p.stateMtx);
+        entityId = p.entityId;
     }
     WriteBuffer b;
     b.varint(entityId);
@@ -556,9 +575,6 @@ void GameServer::addHungerExhaustion(Player& p, float amount) {
 void GameServer::addFoodAndSaturation(Player& p, int food, float sat) {
     HungerManager::addFoodAndSaturation(p, food, sat);
     sendSetHealth(p);
-}
-void GameServer::handleFoodConsume(Player& p, const std::string& itemName) {
-    HungerManager::handleFoodConsume(p, itemName, *this);
 }
 void GameServer::broadcastPlayerChat(Player& sender, const std::string& message, int64_t timestamp) {
     std::array<std::uint8_t, 16> uuid{};
@@ -684,6 +700,14 @@ void GameServer::broadcastMobSpawn(const MobEntity& mob) {
     b.varint(0); b.i16(0); b.i16(0); b.i16(0);
     broadcastPacketExceptInDimension(snapshot.dimension, nullptr,
                                      pl::sc::SpawnEntity, b);
+    if (snapshot.isTamed && MobEntity::usesHorseTemper(snapshot.kind)) {
+        WriteBuffer metadata;
+        metadata.varint(snapshot.entityId);
+        meta::writeMetaByte(metadata, 17, 2); // AbstractHorseEntity Tame flag
+        metadata.u8(255);
+        broadcastPacketExceptInDimension(
+            snapshot.dimension, nullptr, pl::sc::SetEntityMetadata, metadata);
+    }
     sendEquipment(snapshot);
     // JUMP_STRENGTH) via UpdateAttributes 0x7C so clients see 15-30 HP, not the static default.
     if (snapshot.kind == MobKind::Horse) {
@@ -755,7 +779,8 @@ void GameServer::eraseMobAi(std::int32_t entityId) {
 }
 
 void GameServer::noteMobHurt(std::int32_t entityId,
-                             std::int32_t attackerEntityId) {
+                             std::int32_t attackerEntityId,
+                             std::int32_t lootingLevel) {
     std::shared_ptr<MobAiEntry> entry;
     {
         std::lock_guard lock(mobAiMtx_);
@@ -763,9 +788,91 @@ void GameServer::noteMobHurt(std::int32_t entityId,
         if (it != mobAi_.end()) entry = it->second;
     }
     if (!entry || !entry->ctx) return;
-    entry->ctx->lastHurtTick.store(tickNo_, std::memory_order_release);
-    entry->ctx->lastHurtByEntityId.store(attackerEntityId,
-                                         std::memory_order_release);
+    const auto hurtTick = tickNo_.load(std::memory_order_acquire);
+    entry->ctx->lastHurtTick.store(hurtTick, std::memory_order_release);
+    // Environmental damage updates AI hurt memories but must not erase or
+    // extend the separate vanilla last-player-hit credit window.
+    if (attackerEntityId >= 0) {
+        entry->ctx->lastPlayerHurtByEntityId.store(
+            attackerEntityId, std::memory_order_release);
+        entry->ctx->lastPlayerHurtTick.store(
+            hurtTick, std::memory_order_release);
+        entry->ctx->lastPlayerHurtLootingLevel.store(
+            std::max(0, lootingLevel), std::memory_order_release);
+    }
+}
+
+LootContext GameServer::mobLootContextForDeath(
+    std::int32_t entityId, bool entityOnFire,
+    float explosionRadius) const {
+    LootContext context;
+    context.hasEntityContext = true;
+    context.entityOnFire = entityOnFire;
+    context.explosionRadius = std::max(0.f, explosionRadius);
+
+    std::shared_ptr<MobAiEntry> entry;
+    {
+        std::lock_guard lock(mobAiMtx_);
+        const auto it = mobAi_.find(entityId);
+        if (it != mobAi_.end()) entry = it->second;
+    }
+    if (!entry || !entry->ctx) return context;
+
+    const auto playerId = entry->ctx->lastPlayerHurtByEntityId.load(
+        std::memory_order_acquire);
+    const auto playerHurtTick = entry->ctx->lastPlayerHurtTick.load(
+        std::memory_order_acquire);
+    const auto currentTick = tickNo_.load(std::memory_order_acquire);
+    const bool recentPlayerDamage = playerId >= 0 && playerHurtTick >= 0 &&
+        currentTick >= playerHurtTick &&
+        currentTick - playerHurtTick <= 100;
+    context.wasKilledByPlayer = recentPlayerDamage;
+    context.lootingLevel = recentPlayerDamage
+        ? entry->ctx->lastPlayerHurtLootingLevel.load(
+              std::memory_order_acquire)
+        : 0;
+    return context;
+}
+
+void GameServer::spawnMobLootFor(MobKind kind, std::int8_t dimension,
+                                 double x, double y, double z,
+                                 const LootContext& context) {
+    const std::string kindName = MobEntity::kindName(kind);
+    const auto colon = kindName.find(':');
+    const std::string nameSpace = colon == std::string::npos
+        ? "minecraft" : kindName.substr(0, colon);
+    const std::string base = colon == std::string::npos
+        ? kindName : kindName.substr(colon + 1);
+    const std::string tableId = nameSpace + ":entities/" + base;
+
+    if (const auto* table = lootTables_.find(tableId)) {
+        const auto evaluated = lootTables_.evaluateRegisteredTableBestEffort(
+            tableId, {}, &context);
+        if (evaluated) {
+            for (const auto& stack : *evaluated) {
+                if (stack.empty()) continue;
+                spawnItemDropFor(
+                    dimension, x, y, z, stack,
+                    (nextRandom() / (double)RAND_MAX - .5) * .15, .1,
+                    (nextRandom() / (double)RAND_MAX - .5) * .15);
+            }
+            return;
+        }
+        if (table->suppressDefaultDropFallback) return;
+    }
+
+    const auto fallback = MobEntity::dropFor(kind);
+    if (!fallback.itemId) return;
+    int count = fallback.count;
+    if (context.lootingLevel > 0)
+        count = std::min(64, count +
+            static_cast<int>(nextRandom() % (context.lootingLevel + 1)));
+    if (count <= 0) return;
+    spawnItemDropFor(
+        dimension, x, y, z, fallback.itemId,
+        static_cast<std::uint8_t>(count),
+        (nextRandom() / (double)RAND_MAX - .5) * .15, .1,
+        (nextRandom() / (double)RAND_MAX - .5) * .15);
 }
 std::shared_ptr<MobEntity> GameServer::findLovePartner(const MobEntity& seeker) {
     if (mobStateLockOwnedByCurrentThread()) {
@@ -811,16 +918,17 @@ void GameServer::initPlayerProgress(Player& p) {
     }
     grantAdvancement(p, "cppfm:root");
 }
-void GameServer::savePlayerProgress(Player& p) {
+bool GameServer::savePlayerProgress(Player& p) {
     std::lock_guard playerLock(p.stateMtx);
-    if (!p.stats || !p.advancements) return;
+    if (!p.stats || !p.advancements) return false;
     if (p.joinTick) {
         const std::int64_t ticks = tickNo_ - p.joinTick;
         p.stats->add("minecraft:custom|minecraft:play_time", ticks);
         p.joinTick = tickNo_;
     }
-    p.stats->save(uuidToHex(p.uuid));
-    p.advancements->save();
+    const bool statsSaved = p.stats->save(uuidToHex(p.uuid));
+    const bool advancementsSaved = p.advancements->save();
+    return statsSaved && advancementsSaved;
 }
 void GameServer::sendAdvancementsTo(Player& p, bool reset) {
     const auto merged = getMergedAdvancements();
@@ -1317,6 +1425,35 @@ void GameServer::onItemUsedOnBlock(Player* p, int x, int y, int z, const ItemSta
         }
     }
 }
+void GameServer::publishPlayerEffectChanges(
+    Player& player, const std::int32_t entityId, const std::int8_t dimension,
+    const std::shared_ptr<Connection>& connection,
+    const std::vector<std::uint8_t>& removed,
+    const std::vector<EffectInstance>& updated, const bool stateChanged) {
+    for (const auto effect : removed) {
+        WriteBuffer packet;
+        packet.varint(entityId);
+        packet.varint(effect);
+        if (connection)
+            connection->trySendPacket(pl::sc::RemoveMobEffect, packet);
+        broadcastPacketExceptInDimension(
+            dimension, &player, pl::sc::RemoveMobEffect, packet);
+    }
+    for (const auto& effect : updated) {
+        WriteBuffer packet;
+        packet.varint(entityId);
+        packet.varint(effect.type);
+        packet.varint(effect.amplifier);
+        packet.varint(effect.durationTicks);
+        packet.u8(static_cast<std::uint8_t>(effectFlags(effect)));
+        if (connection)
+            connection->trySendPacket(pl::sc::EntityEffect, packet);
+        broadcastPacketExceptInDimension(
+            dimension, &player, pl::sc::EntityEffect, packet);
+    }
+    if (stateChanged) onEffectsChanged(&player);
+}
+
 void GameServer::onEffectsChanged(Player* p) {
     if (!p || !hasAdvancementManager(*p)) return;
     std::vector<EffectInstance> effects;
@@ -1586,41 +1723,5 @@ bool GameServer::trySpawnEgg(Player& p, ItemStack& stack, BlockPos hitPos, int f
         resendInventory(p);
     }
     return true;
-}
-void GameServer::storeCookie(const std::array<std::uint8_t, 16>& uuid,
-                             const std::string& key,
-                             const std::vector<std::uint8_t>& value) {
-    try {
-        const std::string dir = cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid);
-        std::filesystem::create_directories(dir + "/../.." );
-        std::filesystem::create_directories(dir.substr(0, dir.find_last_of('/')));
-        // sanitize key into a file name
-        std::string safe = key;
-        for (auto& c : safe)
-            if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-        std::ofstream f(dir + "/" + safe, std::ios::binary);
-        f.write(reinterpret_cast<const char*>(value.data()),
-                static_cast<std::streamsize>(value.size()));
-    } catch (...) {}
-}
-void GameServer::eraseCookie(const std::array<std::uint8_t, 16>& uuid,
-                             const std::string& key) {
-    std::string safe = key;
-    for (auto& c : safe)
-        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-    std::error_code ec;
-    std::filesystem::remove(cfg_.worldDir + "/data/cookies/" +
-                            uuidToHex(uuid) + "/" + safe, ec);
-}
-std::vector<std::uint8_t> GameServer::loadCookie(
-    const std::array<std::uint8_t, 16>& uuid, const std::string& key) {
-    std::string safe = key;
-    for (auto& c : safe)
-        if (c == '/' || c == '\\' || c == ':' || c == ' ') c = '_';
-    std::ifstream f(cfg_.worldDir + "/data/cookies/" + uuidToHex(uuid) + "/" + safe,
-                    std::ios::binary);
-    if (!f) return {};
-    return std::vector<std::uint8_t>((std::istreambuf_iterator<char>(f)),
-                                     std::istreambuf_iterator<char>());
 }
 } // namespace cppfm
